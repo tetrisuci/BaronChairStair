@@ -43,12 +43,13 @@ def render_board(board: list[list[str | None]], indent: str = "      ") -> str:
     return "\n".join(lines)
 
 
-def render_clears(clears: list[dict], boards: list) -> None:
+def render_clears(clears: list[dict], boards: list, show_boards: bool = True) -> None:
     for clear, board in zip(clears, boards):
-        btb_str  = f" (BTB {clear['b2b']})" if clear["isBTB"] and clear["b2b"] >= 0 else ""
+        btb_str   = f" (BTB {clear['b2b']})" if clear["isBTB"] and clear["b2b"] >= 0 else ""
         combo_str = f" combo {clear['combo']}" if clear["combo"] > 0 else ""
         print(f"      {clear['timeSeconds']:>8.3f}s  {clear['clearType']}{btb_str}{combo_str}")
-        print(render_board(board))
+        if show_boards:
+            print(render_board(board))
 
 
 # ── Full render ───────────────────────────────────────────────────────────────
@@ -112,7 +113,7 @@ def _window_clears(by_second: dict[int, SecondSnapshot], start: int) -> list[tup
     return pairs
 
 
-def top_attack_bursts(rounds: list[list[SecondSnapshot]], top_x: int = 3) -> None:
+def top_attack_bursts(rounds: list[list[SecondSnapshot]], top_x: int = 3, show_boards: bool = True) -> None:
     """
     Find and print the top_x highest-attack 5-second windows for each player
     across the entire replay (all rounds combined).
@@ -186,7 +187,7 @@ def top_attack_bursts(rounds: list[list[SecondSnapshot]], top_x: int = 3) -> Non
                   f"{total_lines} line{'s' if total_lines!=1 else ''}")
 
             if clears:
-                render_clears([c for c, _ in clears], [b for _, b in clears])
+                render_clears([c for c, _ in clears], [b for _, b in clears], show_boards=show_boards)
             else:
                 print("      (no clears)")
 
