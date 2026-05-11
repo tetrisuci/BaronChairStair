@@ -366,3 +366,5 @@ vite.config.ts.timestamp-*
 *.ttrm
 *.DS_STORE
 *.pkl
+
+ecosystem.config.js
