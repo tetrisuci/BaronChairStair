@@ -171,6 +171,12 @@ class TetoClient:
                 isBTB           bool
                 b2b             int   — BTB counter at time of clear (-1 = none)
                 combo           int   — combo counter (-1 = none)
+                board           list[list[str|None]]
+                                      — post-clear board state, visible rows only.
+                                        board[0] is the bottom row, board[19] the top.
+                                        Each cell is a mino string
+                                        ("I","O","T","L","J","S","Z","G","B")
+                                        or None if empty.
 
         Raises:
             TetoError: if the server cannot parse the replay.

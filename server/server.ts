@@ -48,6 +48,13 @@ interface ClearEvent {
   b2b: number;
   /** Combo counter at time of clear (-1 = no combo) */
   combo: number;
+  /**
+   * Post-clear board state — visible playfield only (rows 0–19).
+   * Row 0 is the bottom, row 19 is the top.
+   * Each cell is a mino string ("I","O","T","L","J","S","Z","G","B")
+   * or null if empty.
+   */
+  board: (string | null)[][];
 }
 
 interface ParseResult {
@@ -243,6 +250,13 @@ function parseReplay(replayString: string): ParseResult | { error: string } {
         const info = getClearInfo(lockResult, engine);
         if (!info) return;
 
+        // Capture the visible playfield (bottom 20 rows) after the clear.
+        // engine.board.state[0] = bottom row, state[height-1] = top visible row.
+        const boardHeight = engine.board.height;
+        const board = engine.board.state
+          .slice(0, boardHeight)
+          .map(row => row.map(tile => tile ? tile.mino : null));
+
         allClears.push({
           playerId: round.id,
           username: round.username,
@@ -258,6 +272,7 @@ function parseReplay(replayString: string): ParseResult | { error: string } {
           isBTB: info.isBTB,
           b2b: lockResult.stats.b2b,
           combo: lockResult.stats.combo,
+          board,
         });
       });
 
