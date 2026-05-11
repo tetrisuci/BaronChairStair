@@ -364,3 +364,4 @@ vite.config.ts.timestamp-*
 .vite/
 
 *.ttrm
+*.DS_STORE
