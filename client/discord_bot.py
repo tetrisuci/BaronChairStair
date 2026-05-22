@@ -24,7 +24,7 @@ import os
 import sys
 import asyncio
 import io
-import tempfile
+import sqlite3
 from contextlib import redirect_stdout
 from pathlib import Path
 
@@ -161,6 +161,53 @@ intents.message_content = True  # required for prefix commands and attachment ac
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+db = sqlite3.connect("stats.db")
+
+TRACKED_STICKER_ID = 1485928821038383314
+
+db.execute("""
+    CREATE TABLE IF NOT EXISTS sticker_stats (
+        user_id INTEGER PRIMARY KEY,
+        count INTEGER DEFAULT 0
+    )
+""")
+db.commit()
+
+@bot.event
+async def on_message(message):
+    if message.author.bot:
+        return
+
+    if any(s.id == TRACKED_STICKER_ID for s in message.stickers):
+        db.execute("""
+            INSERT INTO sticker_stats (user_id, count)
+            VALUES (?, 1)
+            ON CONFLICT(user_id) DO UPDATE SET count = count + 1
+        """, (message.author.id,))
+        db.commit()
+
+    await bot.process_commands(message)
+
+@bot.group(invoke_without_command=False)
+async def yauna(ctx):
+    pass
+
+@yauna.command(name="cancer")
+async def yauna_cancer(ctx):
+    rows = db.execute(
+        "SELECT user_id, count FROM sticker_stats ORDER BY count DESC LIMIT 10"
+    ).fetchall()
+
+    if not rows:
+        await ctx.send("No one has cancer yet!")
+        return
+
+    lines = []
+    for i, (user_id, count) in enumerate(rows, start=1):
+        user = bot.get_user(user_id) or f"User {user_id}"
+        lines.append(f"{i}. {user} — {count} time(s)")
+
+    await ctx.send("**Sticker Leaderboard**\n" + "\n".join(lines))
 
 @bot.event
 async def on_ready():
