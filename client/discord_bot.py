@@ -188,9 +188,11 @@ async def on_message(message):
 
     await bot.process_commands(message)
 
-@bot.group(invoke_without_command=False)
+@bot.group()
 async def yauna(ctx):
-    pass
+    if ctx.invoked_subcommand is None:
+        valid = ", ".join(sorted(cmd.name for cmd in yauna.commands))
+        await ctx.reply(f"Unknown command. Valid commands: {valid}")
 
 @yauna.command(name="cancer")
 async def yauna_cancer(ctx):
