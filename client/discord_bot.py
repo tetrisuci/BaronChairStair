@@ -206,8 +206,11 @@ async def yauna_cancer(ctx):
 
     lines = []
     for i, (user_id, count) in enumerate(rows, start=1):
-        member = ctx.guild.get_member(user_id)
-        name = member.display_name if member else f"Unknown User ({user_id})"
+        try:
+            member = await ctx.guild.fetch_member(user_id)
+            name = member.display_name
+        except discord.NotFound:
+            name = f"Unknown User ({user_id})"
         lines.append(f"{i}. {name} — {count} time(s)")
 
     await ctx.send("**Cancer Leaderboard**\n" + "\n".join(lines))
