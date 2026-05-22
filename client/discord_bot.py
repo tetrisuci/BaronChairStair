@@ -206,10 +206,11 @@ async def yauna_cancer(ctx):
 
     lines = []
     for i, (user_id, count) in enumerate(rows, start=1):
-        user = bot.get_user(user_id) or f"User {user_id}"
-        lines.append(f"{i}. {user} — {count} time(s)")
+        member = ctx.guild.get_member(user_id)
+        name = member.display_name if member else f"Unknown User ({user_id})"
+        lines.append(f"{i}. {name} — {count} time(s)")
 
-    await ctx.send("**Sticker Leaderboard**\n" + "\n".join(lines))
+    await ctx.send("**Cancer Leaderboard**\n" + "\n".join(lines))
 
 @bot.event
 async def on_ready():
