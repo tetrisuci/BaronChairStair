@@ -368,3 +368,4 @@ vite.config.ts.timestamp-*
 *.pkl
 
 ecosystem.config.cjs
+*.db
