@@ -4,10 +4,11 @@ discord_bot.py
 Discord bot that parses TETR.IO replays and returns top attack burst highlights.
 
 Setup:
-    pip install discord.py
+    pip install discord.py python-dotenv
 
-    Set your bot token:
-        export DISCORD_TOKEN=your_token_here
+    Put your bot token in .env at the repo root (see example.env):
+        DISCORD_TOKEN=your_token_here
+    It is loaded automatically; .env values override shell exports.
 
 Usage (slash command):
     /highlights top_x:5               (attach a .ttrm file)
@@ -18,25 +19,49 @@ Usage (prefix command):
 
 The bot responds with the top X attack burst highlights for each player,
 formatted in a monospace code block so the boards render correctly.
+
+Internship tracker (backed by ../internship_poller.py; swept every 15 minutes):
+    /internships recent [days] [us_only]   list recently posted tech internships
+    /internships ping                      toggle new-posting pings for yourself
 """
 
 import os
 import sys
 import asyncio
+import dataclasses
+import importlib.util
 import io
 import sqlite3
+import time
 from contextlib import redirect_stdout
 from pathlib import Path
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
+from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).parent))
 
 from teto_client import TetoClient, TetoError
 from build_snapshots import build_rounds
 from render import top_attack_bursts
+
+ROOT = Path(__file__).parent.parent
+
+# Values in .env win over inherited shell exports, so a stale `export
+# DISCORD_TOKEN=...` in the terminal can't override the real token. Flip to
+# override=False if a deployment ever injects real secrets via the environment.
+load_dotenv(ROOT / ".env", override=True)
+
+# The internship poller CLI lives at the repo root; load it by path since the
+# client/ directory is what's on sys.path. Its data files (postings.db,
+# boards.json) are anchored to its own directory, so CWD never matters.
+_spec = importlib.util.spec_from_file_location(
+    "internship_poller", ROOT / "internship_poller.py")
+poller = importlib.util.module_from_spec(_spec)
+sys.modules["internship_poller"] = poller
+_spec.loader.exec_module(poller)
 
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -49,6 +74,18 @@ SERVER_DIR    = Path(__file__).parent.parent / "server"
 MAX_CHUNK = 1850
 TOP_X_MAX = 10
 TOP_X_DEFAULT = 3
+
+# Internship tracker
+SWEEP_MINUTES = 15          # how often the background sweep polls the boards
+ANNOUNCE_MAX = 8            # max postings listed per ping announcement
+RECENT_DAYS_DEFAULT = 7     # default look-back for `internships recent`
+RECENT_MAX_ROLES = 40       # cap on roles listed per command invocation
+
+# Posting titles/locations come from external APIs and could contain <@id>
+# text: content chunks must never ping anyone. Only the announcement header,
+# whose mentions we build ourselves, may ping users.
+PING_MENTIONS = discord.AllowedMentions(users=True, everyone=False, roles=False)
+NO_MENTIONS = discord.AllowedMentions.none()
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -70,33 +107,44 @@ def _capture_highlights(replay_json: str, top_x: int) -> str:
     return buf.getvalue().strip()
 
 
+def _pack(items: list[str], limit: int, sep: str) -> list[str]:
+    """
+    Greedily pack strings into chunks of at most `limit` chars, joined by
+    `sep`. An item longer than `limit` is hard-sliced, so no chunk can ever
+    exceed the cap — Discord rejects anything over 2000 chars outright.
+    """
+    chunks: list[str] = []
+    current: list[str] = []
+    length = 0
+
+    def flush():
+        nonlocal current, length
+        if current:
+            chunks.append(sep.join(current))
+            current, length = [], 0
+
+    for item in items:
+        if len(item) > limit:
+            flush()
+            chunks.extend(item[i:i + limit] for i in range(0, len(item), limit))
+            continue
+        if length + len(item) + len(sep) > limit and current:
+            flush()
+        current.append(item)
+        length += len(item) + len(sep)
+    flush()
+    return chunks
+
+
 def _split_into_code_blocks(text: str, limit: int = MAX_CHUNK) -> list[str]:
     """
-    Wrap text in ``` code blocks and split at line boundaries so each chunk
-    fits within Discord's character limit. Boards stay intact because we only
-    ever split between lines, never mid-line.
+    Wrap text in ``` code blocks fitting Discord's character limit, splitting
+    between lines so boards stay intact (mid-line only for a pathological one).
     """
     fence = "```\n"
     close = "\n```"
-    usable = limit - len(fence) - len(close)
-
-    chunks: list[str] = []
-    current: list[str] = []
-    current_len = 0
-
-    for line in text.splitlines():
-        line_len = len(line) + 1  # +1 for the newline
-        if current_len + line_len > usable and current:
-            chunks.append(fence + "\n".join(current) + close)
-            current = []
-            current_len = 0
-        current.append(line)
-        current_len += line_len
-
-    if current:
-        chunks.append(fence + "\n".join(current) + close)
-
-    return chunks or [fence + "(no highlights found)" + close]
+    chunks = _pack(text.splitlines(), limit - len(fence) - len(close), "\n")
+    return [fence + c + close for c in chunks] or [fence + "(no highlights found)" + close]
 
 
 async def _parse_and_respond(
@@ -161,7 +209,7 @@ intents.message_content = True  # required for prefix commands and attachment ac
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-db = sqlite3.connect("stats.db")
+db = sqlite3.connect(ROOT / "stats.db")  # pinned like postings.db — never CWD
 
 TRACKED_STICKER_ID = 1485928821038383314
 
@@ -171,7 +219,23 @@ db.execute("""
         count INTEGER DEFAULT 0
     )
 """)
+db.execute("""
+    CREATE TABLE IF NOT EXISTS intern_pings (
+        user_id INTEGER PRIMARY KEY,
+        channel_id INTEGER NOT NULL
+    )
+""")
 db.commit()
+
+# Postings DB shared with the CLI poller (schema owned by
+# internship_poller.db_init). A schema mismatch disables the internship
+# tracker instead of taking the whole bot down with it.
+try:
+    pconn = poller.db_init()
+    pconn_error = None
+except poller.SchemaMismatch as e:
+    pconn, pconn_error = None, str(e)
+    print(f"internship tracker disabled: {e}", file=sys.stderr)
 
 @bot.event
 async def on_message(message):
@@ -218,6 +282,8 @@ async def yauna_cancer(ctx):
 @bot.event
 async def on_ready():
     await bot.tree.sync()
+    if pconn is not None and not internship_sweep.is_running():
+        internship_sweep.start()
     print(f"Logged in as {bot.user} (id: {bot.user.id})")
 
 
@@ -257,12 +323,213 @@ async def highlights_prefix(ctx: commands.Context, top_x: int = TOP_X_DEFAULT):
         await _parse_and_respond(ctx.send, attachment, top_x)
 
 
+# ── Internship tracker ────────────────────────────────────────────────────────
+
+def _format_role(p, c, dupes: int = 0, first_seen: float | None = None) -> str:
+    """One listing/announcement block for a posting and its classification."""
+    if p.published:
+        posted = f"posted {poller.age_str(p)} ago"
+    elif first_seen:
+        stamp = dataclasses.replace(p, published=first_seen,
+                                    approx_date=False, unbounded=False)
+        posted = f"seen {poller.age_str(stamp)} ago"
+    else:
+        posted = "date unknown"
+    term = f" · {c['term']}" if c.get("term") else ""
+    region = f" · {c['region']}" if c.get("region") else ""
+    extra = f"  (+{dupes} more location{'s' if dupes != 1 else ''})" if dupes else ""
+    block = (f"**{p.company}** — {p.title}\n"
+             f"{p.location or 'location unknown'} · {c['category']}{term}{region}"
+             f" · {posted}{extra}")
+    if p.url:
+        block += f"\n<{p.url}>"
+    return block
+
+
+def _split_blocks(blocks: list[str], limit: int = MAX_CHUNK) -> list[str]:
+    """Pack formatted blocks into messages under Discord's length limit."""
+    return _pack(blocks, limit, "\n\n")
+
+
+def _toggle_ping(user_id: int, channel_id: int) -> str:
+    if db.execute("SELECT 1 FROM intern_pings WHERE user_id=?",
+                  (user_id,)).fetchone():
+        db.execute("DELETE FROM intern_pings WHERE user_id=?", (user_id,))
+        db.commit()
+        return "Removed you from the internship ping list."
+    db.execute("INSERT INTO intern_pings VALUES (?, ?)", (user_id, channel_id))
+    db.commit()
+    return ("Added you to the internship ping list — new tech internships get "
+            "announced in this channel with a ping. Run the command again to "
+            "unsubscribe.")
+
+
+def _recent_internships(days: int, us_only: bool):
+    """Distinct recent roles from the postings DB, newest first.
+
+    Workday's unbounded "30+ days ago" rows are excluded — they are at least a
+    month old, which is never recent. Undated rows fall back to when the sweep
+    first saw them.
+    """
+    cutoff = time.time() - days * 86400
+    rows = pconn.execute(
+        "SELECT platform, external_id, company, sector, title, location, url,"
+        "       category, term, region, published, first_seen"
+        " FROM postings WHERE is_intern=1 AND is_tech=1 AND unbounded=0"
+        "  AND COALESCE(published, first_seen) >= ?", (cutoff,)).fetchall()
+
+    pairs = []
+    for (plat, eid, company, sector, title, loc, url,
+         cat, term, region, pub, seen_at) in rows:
+        if us_only and region == "non-us":
+            continue
+        # approx_date isn't persisted; only the Workday adapter ever sets it,
+        # so infer it from the platform. unbounded is always False here — the
+        # WHERE clause already excluded those rows.
+        p = poller.Posting(plat, eid, company, sector, title, loc or "", url,
+                           pub, plat == "workday")
+        pairs.append((p, {"category": cat, "term": term, "region": region},
+                      seen_at))
+
+    grouped = poller.group_roles(pairs, ts=lambda it: it[0].published or it[2])
+    return [(g[0][0], g[0][1], g[0][2], len(g) - 1) for g in grouped]
+
+
+async def _send_recent(send, days: int, us_only: bool) -> None:
+    days = max(1, min(days, poller.MAX_AGE_DAYS))
+    roles = _recent_internships(days, us_only)
+    if not roles:
+        await send(content=f"No tech internships on record for the last {days} "
+                           f"day(s). The tracker sweeps every {SWEEP_MINUTES} "
+                           "minutes — check back soon.")
+        return
+    scope = ", US/remote" if us_only else ""
+    header = f"**{len(roles)} recent tech internship roles** (last {days}d{scope})"
+    if len(roles) > RECENT_MAX_ROLES:
+        header += f" — showing the newest {RECENT_MAX_ROLES}"
+    blocks = [_format_role(p, c, dupes, seen_at)
+              for p, c, seen_at, dupes in roles[:RECENT_MAX_ROLES]]
+    await send(content=header, allowed_mentions=NO_MENTIONS)
+    for chunk in _split_blocks(blocks):
+        await send(content=chunk, allowed_mentions=NO_MENTIONS)
+
+
+_ledger_seeded = False  # flips True once `seen` is known non-empty
+
+
+@tasks.loop(minutes=SWEEP_MINUTES)
+async def internship_sweep():
+    global _ledger_seeded
+    # Everything that touches sqlite stays inside this try: an unhandled
+    # exception would permanently stop the tasks.loop.
+    try:
+        # An empty `seen` table means the very first sweep ever: it would flag
+        # every open posting as new. Let it seed the dedup ledger silently.
+        # (Checked via O(1) EXISTS, and skipped entirely once known seeded.)
+        bootstrap = False
+        if not _ledger_seeded:
+            bootstrap = not pconn.execute(
+                "SELECT EXISTS(SELECT 1 FROM seen)").fetchone()[0]
+        fresh = await poller.cmd_sweep(pconn, quiet=True)
+        if not _ledger_seeded:
+            _ledger_seeded = bool(pconn.execute(
+                "SELECT EXISTS(SELECT 1 FROM seen)").fetchone()[0])
+        subs = db.execute("SELECT user_id, channel_id FROM intern_pings").fetchall()
+    except Exception as e:
+        # Roll back so a half-written sweep can't hold the DB lock for 15
+        # minutes or leak uncommitted `seen` rows into the next iteration.
+        pconn.rollback()
+        print(f"internship sweep failed: {type(e).__name__}: {e}", file=sys.stderr)
+        return
+
+    # Unbounded "30d+" rows are at least a month old — never worth a ping
+    # (and /internships recent excludes them for the same reason).
+    fresh = [pc for pc in fresh if not pc[0].unbounded]
+    if bootstrap or not fresh or not subs:
+        return
+
+    by_channel: dict[int, list[int]] = {}
+    for uid, cid in subs:
+        by_channel.setdefault(cid, []).append(uid)
+
+    fresh.sort(key=lambda pc: -(pc[0].published or 0))
+    blocks = [_format_role(p, c) for p, c in fresh[:ANNOUNCE_MAX]]
+    if len(fresh) > ANNOUNCE_MAX:
+        blocks.append(f"...and {len(fresh) - ANNOUNCE_MAX} more — run "
+                      "`/internships recent` for the full list.")
+
+    n = len(fresh)
+    header = f"**{n} new tech internship posting{'s' if n != 1 else ''}**"
+    for cid, uids in by_channel.items():
+        # One channel failing (deleted, no send permission) must not stop the
+        # other channels' announcements or kill the loop.
+        try:
+            channel = bot.get_channel(cid) or await bot.fetch_channel(cid)
+            # _pack keeps every ping message under the limit however many
+            # subscribers there are; only these carry real mentions.
+            for ping in _pack([header] + [f"<@{u}>" for u in uids],
+                              MAX_CHUNK, " "):
+                await channel.send(content=ping, allowed_mentions=PING_MENTIONS)
+            for chunk in _split_blocks(blocks):
+                await channel.send(content=chunk, allowed_mentions=NO_MENTIONS)
+        except Exception as e:
+            print(f"internship ping to channel {cid} failed: "
+                  f"{type(e).__name__}: {e}", file=sys.stderr)
+
+
+@internship_sweep.before_loop
+async def _sweep_wait_ready():
+    await bot.wait_until_ready()
+
+
+def _tracker_disabled() -> str:
+    return (f"The internship tracker is disabled: {pconn_error} "
+            "Fix the postings database and restart the bot.")
+
+
+internships = app_commands.Group(name="internships",
+                                 description="Tech internship tracker")
+
+
+@internships.command(name="recent",
+                     description="List recently posted tech internships.")
+@app_commands.describe(
+    days=f"Look-back window in days (default {RECENT_DAYS_DEFAULT})",
+    us_only="Only show US / remote roles",
+)
+async def internships_recent_slash(
+    interaction: discord.Interaction,
+    days: app_commands.Range[int, 1, 30] = RECENT_DAYS_DEFAULT,
+    us_only: bool = False,
+):
+    if pconn is None:
+        await interaction.response.send_message(_tracker_disabled(), ephemeral=True)
+        return
+    await interaction.response.defer(thinking=True)
+    await _send_recent(interaction.followup.send, days, us_only)
+
+
+@internships.command(
+    name="ping",
+    description="Toggle internship pings for yourself in this channel.")
+async def internships_ping_slash(interaction: discord.Interaction):
+    if pconn is None:
+        await interaction.response.send_message(_tracker_disabled(), ephemeral=True)
+        return
+    await interaction.response.send_message(
+        _toggle_ping(interaction.user.id, interaction.channel_id), ephemeral=True)
+
+
+bot.tree.add_command(internships)
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     if not DISCORD_TOKEN:
-        print("Error: DISCORD_TOKEN environment variable is not set.", file=sys.stderr)
-        print("  export DISCORD_TOKEN=your_token_here", file=sys.stderr)
+        print("Error: DISCORD_TOKEN is not set.", file=sys.stderr)
+        print(f"  Add DISCORD_TOKEN=your_token_here to {ROOT / '.env'}",
+              file=sys.stderr)
         sys.exit(1)
 
     bot.run(DISCORD_TOKEN)
