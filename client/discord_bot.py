@@ -20,9 +20,12 @@ Usage (prefix command):
 The bot responds with the top X attack burst highlights for each player,
 formatted in a monospace code block so the boards render correctly.
 
-Internship tracker (backed by ../internship_poller.py; swept every 15 minutes):
+Internship tracker (backed by ../internship_poller.py; swept every 15 minutes,
+subscriber pings batched to at most one per hour):
     /internships recent [days] [us_only]   list recently posted tech internships
+    /internships info <role>               salary + description for one role
     /internships ping                      toggle new-posting pings for yourself
+    /internships pinglist                  show who is on the ping list
 """
 
 import os
@@ -77,9 +80,12 @@ TOP_X_DEFAULT = 3
 
 # Internship tracker
 SWEEP_MINUTES = 15          # how often the background sweep polls the boards
+ANNOUNCE_MINUTES = 60       # min gap between subscriber pings; finds in between
+                            # accumulate and go out as one batch
 ANNOUNCE_MAX = 8            # max postings listed per ping announcement
 RECENT_DAYS_DEFAULT = 7     # default look-back for `internships recent`
 RECENT_MAX_ROLES = 40       # cap on roles listed per command invocation
+DESC_SNIPPET_MAX = 1200     # description excerpt length for `internships info`
 
 # Posting titles/locations come from external APIs and could contain <@id>
 # text: content chunks must never ping anyone. Only the announcement header,
@@ -223,6 +229,12 @@ db.execute("""
     CREATE TABLE IF NOT EXISTS intern_pings (
         user_id INTEGER PRIMARY KEY,
         channel_id INTEGER NOT NULL
+    )
+""")
+db.execute("""
+    CREATE TABLE IF NOT EXISTS intern_meta (
+        key TEXT PRIMARY KEY,
+        value REAL
     )
 """)
 db.commit()
@@ -415,6 +427,7 @@ async def _send_recent(send, days: int, us_only: bool) -> None:
 
 
 _ledger_seeded = False  # flips True once `seen` is known non-empty
+_pending: list = []     # fresh postings waiting for the next announcement slot
 
 
 @tasks.loop(minutes=SWEEP_MINUTES)
@@ -434,31 +447,50 @@ async def internship_sweep():
         if not _ledger_seeded:
             _ledger_seeded = bool(pconn.execute(
                 "SELECT EXISTS(SELECT 1 FROM seen)").fetchone()[0])
+
+        if not bootstrap:
+            # Unbounded "30d+" rows are at least a month old — never worth a
+            # ping (and /internships recent excludes them for the same reason).
+            _pending.extend(pc for pc in fresh if not pc[0].unbounded)
+        if not _pending:
+            return
+
+        # Throttle: sweeps stay frequent so the DB is fresh, but subscribers
+        # get pinged at most once per ANNOUNCE_MINUTES, as one batch. The
+        # timestamp lives in stats.db so a restart can't reset the clock.
+        now = time.time()
+        row = db.execute("SELECT value FROM intern_meta "
+                         "WHERE key='last_announce'").fetchone()
+        if now - (row[0] if row else 0) < ANNOUNCE_MINUTES * 60:
+            return
         subs = db.execute("SELECT user_id, channel_id FROM intern_pings").fetchall()
+        if not subs:
+            # Nobody to tell; same semantics as pre-throttle — postings found
+            # while nobody subscribed are never pinged retroactively.
+            _pending.clear()
+            return
+        batch, _pending[:] = list(_pending), []
+        db.execute("INSERT OR REPLACE INTO intern_meta VALUES('last_announce', ?)",
+                   (now,))
+        db.commit()
     except Exception as e:
-        # Roll back so a half-written sweep can't hold the DB lock for 15
-        # minutes or leak uncommitted `seen` rows into the next iteration.
+        # Roll back so a half-written sweep can't hold the DB lock until the
+        # next iteration or leak uncommitted `seen` rows into it.
         pconn.rollback()
         print(f"internship sweep failed: {type(e).__name__}: {e}", file=sys.stderr)
-        return
-
-    # Unbounded "30d+" rows are at least a month old — never worth a ping
-    # (and /internships recent excludes them for the same reason).
-    fresh = [pc for pc in fresh if not pc[0].unbounded]
-    if bootstrap or not fresh or not subs:
         return
 
     by_channel: dict[int, list[int]] = {}
     for uid, cid in subs:
         by_channel.setdefault(cid, []).append(uid)
 
-    fresh.sort(key=lambda pc: -(pc[0].published or 0))
-    blocks = [_format_role(p, c) for p, c in fresh[:ANNOUNCE_MAX]]
-    if len(fresh) > ANNOUNCE_MAX:
-        blocks.append(f"...and {len(fresh) - ANNOUNCE_MAX} more — run "
+    batch.sort(key=lambda pc: -(pc[0].published or 0))
+    blocks = [_format_role(p, c) for p, c in batch[:ANNOUNCE_MAX]]
+    if len(batch) > ANNOUNCE_MAX:
+        blocks.append(f"...and {len(batch) - ANNOUNCE_MAX} more — run "
                       "`/internships recent` for the full list.")
 
-    n = len(fresh)
+    n = len(batch)
     header = f"**{n} new tech internship posting{'s' if n != 1 else ''}**"
     for cid, uids in by_channel.items():
         # One channel failing (deleted, no send permission) must not stop the
@@ -518,6 +550,123 @@ async def internships_ping_slash(interaction: discord.Interaction):
         return
     await interaction.response.send_message(
         _toggle_ping(interaction.user.id, interaction.channel_id), ephemeral=True)
+
+
+_INFO_COLS = ("platform, external_id, company, sector, title, location, url,"
+              " category, term, region, published, first_seen")
+
+
+def _find_posting(role: str):
+    """Resolve an `info` argument: rowid from autocomplete, else fuzzy text
+    (every typed word must appear somewhere in company + title)."""
+    role = role.strip()
+    if role.isdigit():
+        row = pconn.execute(
+            f"SELECT {_INFO_COLS} FROM postings WHERE rowid=?",
+            (int(role),)).fetchone()
+        if row:
+            return row
+    tokens = role.lower().split()
+    if not tokens:
+        return None
+    cond = " AND ".join(["(company || ' ' || title) LIKE ?"] * len(tokens))
+    return pconn.execute(
+        f"SELECT {_INFO_COLS} FROM postings WHERE is_intern=1 AND is_tech=1"
+        f"  AND {cond}"
+        " ORDER BY COALESCE(published, first_seen) DESC LIMIT 1",
+        [f"%{t}%" for t in tokens]).fetchone()
+
+
+@internships.command(name="info",
+                     description="Salary and description for a recent internship.")
+@app_commands.describe(role="Start typing a company or title and pick a suggestion")
+async def internships_info_slash(interaction: discord.Interaction, role: str):
+    if pconn is None:
+        await interaction.response.send_message(_tracker_disabled(), ephemeral=True)
+        return
+    row = _find_posting(role)
+    if row is None:
+        await interaction.response.send_message(
+            "Couldn't find that role — start typing and pick one of the "
+            "suggestions, or check `/internships recent` for what's tracked.",
+            ephemeral=True)
+        return
+    await interaction.response.defer(thinking=True)
+    (plat, eid, company, sector, title, loc, url,
+     cat, term, region, pub, seen_at) = row
+
+    try:
+        details = await poller.fetch_details(plat, url, eid)
+    except Exception as e:
+        print(f"detail fetch failed for {company} — {title}: "
+              f"{type(e).__name__}: {e}", file=sys.stderr)
+        details = {}
+
+    p = poller.Posting(plat, eid, company, sector, title, loc or "", url,
+                       pub, plat == "workday")
+    blocks = [_format_role(p, {"category": cat, "term": term, "region": region},
+                           first_seen=seen_at),
+              f"**Salary:** {details.get('salary') or 'not listed'}"]
+    desc = (details.get("description") or "").strip()
+    if desc:
+        if len(desc) > DESC_SNIPPET_MAX:
+            desc = desc[:DESC_SNIPPET_MAX].rsplit(" ", 1)[0] + " …"
+        blocks.append(desc)
+    else:
+        blocks.append("No description available — the posting may have closed.")
+
+    for chunk in _split_blocks(blocks):
+        await interaction.followup.send(chunk, allowed_mentions=NO_MENTIONS)
+
+
+@internships_info_slash.autocomplete("role")
+async def internships_info_autocomplete(interaction: discord.Interaction,
+                                        current: str):
+    if pconn is None:
+        return []
+    tokens = current.lower().split()
+    choices = []
+    for rid, company, title in pconn.execute(
+            "SELECT rowid, company, title FROM postings"
+            " WHERE is_intern=1 AND is_tech=1 AND unbounded=0"
+            " ORDER BY COALESCE(published, first_seen) DESC LIMIT 400"):
+        label = f"{company} — {title}"
+        if not all(t in label.lower() for t in tokens):
+            continue
+        choices.append(app_commands.Choice(name=label[:100], value=str(rid)))
+        if len(choices) == 25:
+            break
+    return choices
+
+
+@internships.command(name="pinglist",
+                     description="Show who is on the internship ping list.")
+async def internships_pinglist_slash(interaction: discord.Interaction):
+    if pconn is None:
+        await interaction.response.send_message(_tracker_disabled(), ephemeral=True)
+        return
+    subs = db.execute("SELECT user_id, channel_id FROM intern_pings").fetchall()
+    if not subs:
+        await interaction.response.send_message(
+            "Nobody is on the ping list yet — subscribe with `/internships ping`.",
+            ephemeral=True)
+        return
+
+    by_channel: dict[int, list[int]] = {}
+    for uid, cid in subs:
+        by_channel.setdefault(cid, []).append(uid)
+
+    lines = [f"**{len(subs)} on the internship ping list**"]
+    for cid, uids in sorted(by_channel.items()):
+        lines.append(f"<#{cid}>: " + " ".join(f"<@{u}>" for u in uids))
+
+    # NO_MENTIONS renders the <@id>/<#id> chips without pinging anyone.
+    chunks = _pack(lines, MAX_CHUNK, "\n")
+    await interaction.response.send_message(chunks[0], ephemeral=True,
+                                            allowed_mentions=NO_MENTIONS)
+    for chunk in chunks[1:]:
+        await interaction.followup.send(chunk, ephemeral=True,
+                                        allowed_mentions=NO_MENTIONS)
 
 
 bot.tree.add_command(internships)
