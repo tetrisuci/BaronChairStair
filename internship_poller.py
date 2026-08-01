@@ -38,6 +38,7 @@ WORKDAY NOTE
 import argparse
 import asyncio
 import hashlib
+import html
 import os
 import json
 import re
@@ -411,6 +412,143 @@ async def fetch_workday(sess, slug, company, sector, etag):
 
 ADAPTERS = {"greenhouse": fetch_greenhouse, "lever": fetch_lever,
             "ashby": fetch_ashby, "workday": fetch_workday}
+
+# --------------------------------------------------------------------------
+# Detail fetch — salary + full description for ONE posting, on demand. The
+# sweep never stores these (they would bloat the DB and the list endpoints
+# mostly omit them); frontends call this when a user asks about a role.
+# --------------------------------------------------------------------------
+
+GH_JOB_URL_RE = re.compile(r"greenhouse\.io/([a-z0-9_-]+)/jobs/(\d+)", re.I)
+LEVER_JOB_URL_RE = re.compile(r"jobs\.lever\.co/([a-z0-9_-]+)/([0-9a-f-]{16,})", re.I)
+ASHBY_JOB_URL_RE = re.compile(r"jobs\.ashbyhq\.com/([^/?#]+)/", re.I)
+WD_JOB_URL_RE = re.compile(
+    r"https://([a-z0-9-]+)\.(wd\d+)\.myworkdayjobs\.com/([^/]+)(/job/.+)$", re.I)
+
+SALARY_TEXT_RE = re.compile(
+    r"(?:\$|USD\s?|€|£)\s?\d{1,3}(?:[,.]\d{3})*(?:\.\d{2})?\s?(?:k\b)?"
+    r"(?:\s*(?:[-–—]|to\s)\s*(?:\$|USD\s?|€|£)?\s?\d{1,3}(?:[,.]\d{3})*"
+    r"(?:\.\d{2})?\s?(?:k\b)?)?"
+    r"(?:\s*(?:per|/)\s*(?:hour|hr|year|yr|annum|month|week))?", re.I)
+
+
+def strip_html(s: str) -> str:
+    """Best-effort HTML -> readable plain text, no external deps."""
+    s = html.unescape(s or "")  # Greenhouse escapes its whole content field
+    s = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", s, flags=re.S | re.I)
+    s = re.sub(r"</?(?:p|br|li|ul|ol|div|h[1-6]|tr|table)[^>]*>", "\n", s, flags=re.I)
+    s = re.sub(r"<[^>]+>", " ", s)
+    s = re.sub(r"[ \t\f\v]+", " ", s)
+    s = re.sub(r"\s*\n\s*", "\n", s)
+    return s.strip()
+
+
+def find_salary_in_text(text) -> Optional[str]:
+    """Fallback for boards without structured pay data: first believable
+    money figure in the description. Demands a range, a 'k', a per-period,
+    or a 5+ digit amount so a bare '$5' can't match."""
+    for m in SALARY_TEXT_RE.finditer(text or ""):
+        s = m.group(0).strip()
+        if (re.search(r"[-–—]|\bto\s", s) or re.search(r"\dk\b", s, re.I)
+                or re.search(r"per|/", s) or re.search(r"\d[\d,]{4,}", s)):
+            return s
+    return None
+
+
+async def fetch_details(platform, url, external_id) -> dict:
+    """{'salary': str|None, 'description': str|None} for one posting.
+
+    Best-effort by design: any HTTP failure, unrecognized URL, or missing
+    field just leaves the value None — callers treat both as optional.
+    """
+    out = {"salary": None, "description": None}
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20),
+                                     headers={"User-Agent": UA}) as sess:
+        if platform == "greenhouse":
+            m = GH_JOB_URL_RE.search(url or "")
+            if not m:
+                return out
+            slug, jid = m.groups()
+            async with sess.get("https://boards-api.greenhouse.io/v1/boards/"
+                                f"{slug}/jobs/{jid}") as r:
+                if r.status != 200:
+                    return out
+                d = await r.json(content_type=None)
+            out["description"] = strip_html(d.get("content") or "")
+            parts = []
+            for pr in d.get("pay_input_ranges") or []:
+                lo, hi = pr.get("min_cents"), pr.get("max_cents")
+                if lo is None or hi is None:
+                    continue
+                sym = "$" if (pr.get("currency_type") or "USD") == "USD" \
+                    else f"{pr['currency_type']} "
+                rng = f"{sym}{lo / 100:,.0f}–{sym}{hi / 100:,.0f}"
+                if pr.get("title"):
+                    rng += f" ({pr['title']})"
+                parts.append(rng)
+            out["salary"] = "; ".join(parts) or None
+
+        elif platform == "lever":
+            m = LEVER_JOB_URL_RE.search(url or "")
+            if not m:
+                return out
+            slug, pid = m.groups()
+            async with sess.get(
+                    f"https://api.lever.co/v0/postings/{slug}/{pid}") as r:
+                if r.status != 200:
+                    return out
+                d = await r.json(content_type=None)
+            pieces = [d.get("descriptionPlain")
+                      or strip_html(d.get("description") or "")]
+            for sec in d.get("lists") or []:
+                pieces.append(f"{sec.get('text', '')}\n"
+                              f"{strip_html(sec.get('content') or '')}")
+            out["description"] = "\n".join(x for x in pieces if x).strip()
+            sr = d.get("salaryRange") or {}
+            if sr.get("min") is not None and sr.get("max") is not None:
+                sym = "$" if (sr.get("currency") or "USD") == "USD" \
+                    else f"{sr['currency']} "
+                iv = (sr.get("interval") or "").replace("-", " ")
+                out["salary"] = (f"{sym}{sr['min']:,}–{sym}{sr['max']:,}"
+                                 + (f" {iv}" if iv else ""))
+
+        elif platform == "ashby":
+            m = ASHBY_JOB_URL_RE.search(url or "")
+            if not m:
+                return out
+            async with sess.get("https://api.ashbyhq.com/posting-api/job-board/"
+                                f"{m.group(1)}?includeCompensation=true") as r:
+                if r.status != 200:
+                    return out
+                d = await r.json(content_type=None)
+            job = next((j for j in d.get("jobs", [])
+                        if str(j.get("id")) == str(external_id)), None)
+            if not job:
+                return out
+            out["description"] = strip_html(job.get("descriptionHtml")
+                                            or job.get("descriptionPlain") or "")
+            comp = job.get("compensation") or {}
+            out["salary"] = (job.get("compensationTierSummary")
+                             or comp.get("compensationTierSummary")
+                             or comp.get("scrapeableCompensationSalarySummary"))
+
+        elif platform == "workday":
+            m = WD_JOB_URL_RE.match(url or "")
+            if not m:
+                return out
+            tenant, wd, site, path = m.groups()
+            api = (f"https://{tenant}.{wd}.myworkdayjobs.com/wday/cxs/"
+                   f"{tenant}/{site}{path}")
+            async with sess.get(api, headers={"Accept": "application/json"}) as r:
+                if r.status != 200:
+                    return out
+                d = await r.json(content_type=None)
+            info = d.get("jobPostingInfo") or {}
+            out["description"] = strip_html(info.get("jobDescription") or "")
+
+    if not out["salary"] and out["description"]:
+        out["salary"] = find_salary_in_text(out["description"])
+    return out
 
 # --------------------------------------------------------------------------
 # Classifier — pure function
