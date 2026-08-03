@@ -474,8 +474,15 @@ def _format_bennxt(p, v, show_evidence: bool = False) -> str:
     if show_evidence and v.get("evidence"):
         ev = v["evidence"].replace("`", "'")[:180]
         block += f"\n> {ev}"
+    links = []
     if p.url:
-        block += f"\n<{p.url}>"
+        links.append(f"[apply]({p.url})")
+    if v.get("company_site"):
+        # The employer's own site — for researching the company, and for
+        # applying there directly when its careers page carries the role.
+        links.append(f"[company site]({v['company_site']})")
+    if links:
+        block += "\n" + " · ".join(links)
     return block
 
 
@@ -843,7 +850,8 @@ async def bennxt_roles_slash(
     if not sel:
         await interaction.followup.send(
             "No civil/mechanical California roles matched that filter right "
-            f"now (last scan: ✅ {tally['yes']} sponsor · ❔ {tally['unknown']} "
+            f"now, among postings from the last {poller.BENNXT_MAX_AGE_DAYS} "
+            f"days (last scan: ✅ {tally['yes']} sponsor · ❔ {tally['unknown']} "
             f"not stated · 🚫 {tally['no']} ruled out).",
             allowed_mentions=NO_MENTIONS)
         return
@@ -851,7 +859,8 @@ async def bennxt_roles_slash(
     scope = ("in SoCal (Irvine / LA / OC / SD)" if region
              and region.value == "socal" else "in California, SoCal first")
     header = (f"**{len(sel)} civil/mechanical roles {scope}** "
-              f"(internships + new grad)\n"
+              f"(internships + new grad, posted in the last "
+              f"{poller.BENNXT_MAX_AGE_DAYS} days)\n"
               f"Last scan: 📍 {socal_n} SoCal · ✅ {tally['yes']} sponsor · "
               f"❔ {tally['unknown']} not stated · 🚫 {tally['no']} ruled out"
               + ("" if mode == "all" else " (hidden)"))
