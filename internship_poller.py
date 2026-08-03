@@ -537,6 +537,68 @@ def find_salary_in_text(text) -> Optional[str]:
     return None
 
 
+# Hosts that appear on job pages but are never the employer's own site.
+_NOT_COMPANY_HOST = re.compile(
+    r"greenhouse|lever\.co|ashbyhq|ashbyprd|myworkdayjobs|workday|"
+    r"linkedin|twitter|x\.com|facebook|instagram|youtube|tiktok|glassdoor|"
+    r"indeed|google|gstatic|cloudflare|w3\.org|schema\.org|gravatar|"
+    r"dol\.gov|eeoc\.gov|ecfr\.gov|uscis\.gov|ada\.gov|sequoia\.com|"
+    r"documentcloud|githubusercontent|amazonaws|cdn\b|fonts\.", re.I)
+
+COMPANY_SITE_CACHE: dict = {}
+
+
+def _company_site_from_html(text: str, company: str) -> Optional[str]:
+    """Pick the employer's own site out of a job page's outbound links.
+
+    Scores candidates by how well the host matches the company name, since a
+    posting also links to regulators, benefits providers, and investors.
+    """
+    slug = _norm(company)
+    best, best_score = None, 0
+    for m in re.finditer(r'href="(https?://[^"#?]+)', text):
+        u = m.group(1).rstrip("/")
+        host = re.sub(r"^https?://(www\.)?", "", u).split("/")[0].lower()
+        if not host or _NOT_COMPANY_HOST.search(u):
+            continue
+        root = _norm(host.rsplit(".", 1)[0].split(".")[-1])  # 'hermeus' etc.
+        if not root:
+            continue
+        score = 0
+        if slug and root == slug:
+            score = 5
+        elif slug and (root in slug or slug in root):
+            score = 4
+        elif slug and slug[:6] and slug[:6] in root:
+            score = 3
+        if score and re.search(r"/(careers?|jobs?)\b", u, re.I):
+            score += 1          # prefer the careers page over the homepage
+        if score > best_score:
+            best, best_score = u, score
+    return best
+
+
+async def fetch_company_site(sess, platform, url, company) -> Optional[str]:
+    """The employer's own website, scraped from the job page's outbound links.
+
+    The ATS APIs do not expose it (verified for all four platforms), and Ashby
+    renders client-side so it often yields nothing — hence best-effort with a
+    process-wide cache keyed on the company.
+    """
+    key = (platform, _norm(company))
+    if key in COMPANY_SITE_CACHE:
+        return COMPANY_SITE_CACHE[key]
+    site = None
+    try:
+        async with sess.get(url) as r:
+            if r.status == 200:
+                site = _company_site_from_html(await r.text(), company)
+    except Exception:
+        pass
+    COMPANY_SITE_CACHE[key] = site
+    return site
+
+
 async def fetch_details(platform, url, external_id) -> dict:
     """{'salary': str|None, 'description': str|None} for one posting.
 
@@ -1323,9 +1385,11 @@ async def classify_sponsorship(conn, items, verbose=True):
 
 BENNXT_DETAIL_CONCURRENCY = 6
 BENNXT_MAX_DETAILS = int(os.environ.get("BENNXT_MAX_DETAILS", "80"))
+BENNXT_MAX_AGE_DAYS = 60   # older postings are almost always stale/filled
 
 
-async def bennxt_scan(conn, verbose=True, max_details=BENNXT_MAX_DETAILS):
+async def bennxt_scan(conn, verbose=True, max_details=BENNXT_MAX_DETAILS,
+                      max_age=BENNXT_MAX_AGE_DAYS):
     """Full bennxt pass: poll AEC boards -> prefilter -> fetch descriptions ->
     classify sponsorship. Returns [(Posting, verdict-dict)], newest first.
 
@@ -1341,6 +1405,21 @@ async def bennxt_scan(conn, verbose=True, max_details=BENNXT_MAX_DETAILS):
         BOARDS = saved
 
     cands = [p for p in posts if bennxt_prefilter(p)]
+
+    # Drop anything we KNOW is older than max_age, before spending description
+    # fetches and Gemini calls on it. Undated postings are kept — we can't
+    # prove they're stale, and dropping a real opening is the worse error.
+    stale = 0
+    if max_age:
+        fresh_cands = []
+        for p in cands:
+            age = age_days(p)
+            if age is not None and not p.unbounded and age > max_age:
+                stale += 1
+                continue
+            fresh_cands.append(p)
+        cands = fresh_cands
+
     # SoCal first (the Irvine/LA belt is the priority), then rest-of-CA, then
     # remote/unknown; newest first inside each tier. The detail-fetch cap
     # therefore spends its budget on the most relevant postings.
@@ -1351,9 +1430,11 @@ async def bennxt_scan(conn, verbose=True, max_details=BENNXT_MAX_DETAILS):
         by_region = defaultdict(int)
         for p in cands:
             by_region[bennxt_region(p.location)] += 1
+        note = f" · ignored {stale} older than {max_age}d" if stale else ""
         print(f"  bennxt: {stats['ok']} boards · {len(posts)} postings · "
               f"{len(cands)} pass the civil/mech + CA prefilter "
-              f"({', '.join(f'{k}={v}' for k, v in sorted(by_region.items()))})")
+              f"({', '.join(f'{k}={v}' for k, v in sorted(by_region.items()))})"
+              f"{note}")
     if len(cands) > max_details:
         if verbose:
             print(f"  bennxt: capping description fetches at {max_details} "
@@ -1367,11 +1448,27 @@ async def bennxt_scan(conn, verbose=True, max_details=BENNXT_MAX_DETAILS):
     async def detail(p):
         async with sem:
             try:
-                return p, await fetch_details(p.platform, p.url, p.external_id)
+                d = await fetch_details(p.platform, p.url, p.external_id)
             except Exception:
-                return p, {}
+                d = {}
+        return p, d
 
     fetched = await asyncio.gather(*(detail(p) for p in cands))
+
+    # The employer's own website, so the user can research the company (and
+    # apply on its careers page where one exists) rather than only via the ATS.
+    # One request per COMPANY, not per posting — the cache collapses repeats.
+    async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=25),
+            headers={"User-Agent": "Mozilla/5.0 (compatible; "
+                                   "internship-poller/0.4)"}) as csess:
+        async def site(p):
+            async with sem:
+                return await fetch_company_site(csess, p.platform, p.url,
+                                                p.company)
+        sites = await asyncio.gather(*(site(p) for p, _ in fetched))
+    for (p, d), s in zip(fetched, sites):
+        d["company_site"] = s
     with_desc = [(p, d) for p, d in fetched if (d.get("description") or "").strip()]
     if verbose:
         print(f"  bennxt: {len(with_desc)}/{len(cands)} descriptions retrieved")
@@ -1392,6 +1489,7 @@ async def bennxt_scan(conn, verbose=True, max_details=BENNXT_MAX_DETAILS):
             continue
         v["salary"] = d.get("salary")
         v["description"] = d.get("description")
+        v["company_site"] = d.get("company_site")
         v["region"] = bennxt_region(p.location)
         out.append((p, v))
     # SoCal first, then rest-of-CA, newest first within each tier.
