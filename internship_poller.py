@@ -1076,6 +1076,33 @@ BENNXT_FIELD_RE = re.compile(
     r"renewable|solar|draft)"
     r"|\b(cad|fea|cfd)\b", re.I)
 
+# Engineering DOMAINS that imply civil/mech work without naming the discipline
+# ("Spacecraft Structures Test Engineer", "Integration and Test Engineer").
+# These only count alongside an engineering role noun — otherwise "Assembly"
+# would admit warehouse jobs.
+BENNXT_DOMAIN_RE = re.compile(
+    r"\b(spacecraft|satellite|launch|mission|payload|orbital|avionic|"
+    r"gnc|guidance|dynamics|kinematic|actuator|mechanism|"
+    r"integration|verification|assembly|weld|machinist|machining|tooling|"
+    r"fixture|composite|\bcnc\b|additive|quality|reliability|"
+    r"refrigerat|pipeline|utilit|geospatial|\bgis\b|"
+    r"pavement|asphalt|concrete|soil|foundation|seismic|"
+    r"process|packaging|harness|thermal|cryo|vacuum|propellant|valve|pump|"
+    r"turbo|maintenance|continuous improvement|\bopex\b|water treatment|"
+    r"controls|automation|test)", re.I)
+
+# Engineering role nouns — the domain terms above need one of these present.
+BENNXT_ROLE_NOUN_RE = re.compile(
+    r"\b(engineer|engineering|designer|drafter|analyst|scientist|"
+    r"technologist|technician)\b", re.I)
+
+# Titles that are operational/commercial rather than engineering, even when a
+# domain word appears ("Technical Sales Engineer", "Assembly Laborer").
+BENNXT_NON_ENG_RE = re.compile(
+    r"\b(laborer|driver|operator|janitor|custodian|warehouse|forklift|"
+    r"picker|packer|cook|guard|sales|recruit|account executive|"
+    r"customer success|support specialist)\b", re.I)
+
 # Software/CS terms that must never qualify, even when a title also contains a
 # generic word this profile likes (e.g. "Software Engineer, Robotics").
 BENNXT_FIELD_EXCLUDE_RE = re.compile(
@@ -1085,20 +1112,67 @@ BENNXT_FIELD_EXCLUDE_RE = re.compile(
     r"game|graphics|compiler|database|analytics|business|finance|marketing|"
     r"sales|recruit|human resources|\bhr\b|legal|account)\b", re.I)
 
-# Roles this profile wants: internships AND early-career/new-grad.
+# Explicit early-career markers.
 BENNXT_LEVEL_RE = re.compile(
     r"\b(intern|interns|internship|interning|co-?op|"
     r"new\s?grad|new\s?graduate|recent\s?graduate|entry[\s-]?level|early\s?career|"
     r"campus|university\s?graduate|graduate\s?engineer|"
     r"\beit\b|engineer[\s-]?in[\s-]?training|"
     r"engineer\s?(i|1)\b|associate\s?engineer|junior\s?engineer|"
-    r"rotational|development\s?program|analyst\s?program|trainee)\b", re.I)
+    r"assistant\s+(?:\w+\s+){0,2}engineer|"
+    r"rotational|development\s?program|analyst\s?program|trainee)\b"
+    r"|\((early|entry)\)", re.I)
 
-# Senior roles that BENNXT_LEVEL_RE might otherwise catch via "engineer I".
+# Seniority markers that rule a posting out. Deliberately narrower than a
+# blanket keyword list: "Construction Manager" is a discipline title, so
+# "manager" only counts when it heads the role (Engineering Manager, Manager of
+# X) rather than appearing anywhere in it.
 BENNXT_LEVEL_EXCLUDE_RE = re.compile(
-    r"\b(senior|staff|principal|lead|manager|director|head\s+of|vp\b|"
-    r"engineer\s?(ii|iii|iv|v|2|3|4|5)\b|\bpe\b\s+required|"
-    r"\d{1,2}\+?\s*years)\b", re.I)
+    r"\b(senior|sr\.|staff|principal|distinguished|director|head\s+of|\bvp\b|"
+    r"chief|executive|"
+    r"(?:engineer|analyst|designer|scientist|specialist|technician)\s*"
+    r"(?:i{2,3}|iv|v|[2-9])\b|"
+    r"\b(?:level|grade)\s*[2-9]\b|\bmid\b|mid[\s-]level|"
+    r"\d{1,2}\+?\s*years?|"
+    r"(?:engineering|design|project|program|product|operations|"
+    r"people|hiring|account|sales|marketing)\s+manager\b|"
+    r"manager\s+of\b|\bteam\s+lead\b|\btech\s+lead\b)", re.I)
+
+# A bare discipline title with no seniority marker ("Environmental Engineer",
+# "Mechanical Design Engineer") is AMBIGUOUS: it may be entry-level or may want
+# 10 years. Those go to the LLM, which reads the requirements section — but
+# only after the cheap text check below rules out obvious senior postings.
+BENNXT_BARE_ROLE_RE = re.compile(
+    r"\b(engineer|designer|drafter|technician|analyst|scientist|surveyor)\b", re.I)
+
+# Years-of-experience demands found in the DESCRIPTION. Cheap pre-LLM filter
+# for the ambiguous bare-title postings.
+BENNXT_YOE_RE = re.compile(
+    r"\b(\d{1,2})\s*\+?\s*(?:-\s*\d{1,2}\s*)?(?:or\s+more\s+)?years?"
+    r"(?:\s+of)?(?:\s+(?:relevant|related|professional|industry|work))?"
+    r"\s+(?:of\s+)?experience", re.I)
+BENNXT_MAX_YOE = 2   # a posting demanding more than this is not entry-level
+
+
+def bennxt_level_from_title(title: str) -> str:
+    """'early' | 'senior' | 'ambiguous' from the title alone."""
+    t = title or ""
+    if BENNXT_LEVEL_EXCLUDE_RE.search(t):
+        return "senior"
+    if BENNXT_LEVEL_RE.search(t):
+        return "early"
+    return "ambiguous" if BENNXT_BARE_ROLE_RE.search(t) else "senior"
+
+
+def bennxt_yoe_ok(desc: str, max_yoe=BENNXT_MAX_YOE) -> bool:
+    """False when the description demands more than max_yoe years anywhere."""
+    for m in BENNXT_YOE_RE.finditer(desc or ""):
+        try:
+            if int(m.group(1)) > max_yoe:
+                return False
+        except ValueError:
+            continue
+    return True
 
 # California-only: cities, regions, and the state itself. NOTE: a bare "CA"
 # is ambiguous — Workday writes Canadian locations as "CA | ON | Whitby" — so
@@ -1136,18 +1210,26 @@ BENNXT_REMOTE_RE = re.compile(
     r"\bremote\b(?!.*\b(europe|emea|apac|india|canada|uk|latam)\b)", re.I)
 
 
+# Workday collapses multi-site roles to "4 Locations", hiding whether one of
+# them is California. Treat those as unknown (the LLM reads the description)
+# rather than rejecting them outright.
+BENNXT_MULTI_LOC_RE = re.compile(r"^\s*\d+\s+locations?\s*$", re.I)
+
+
 def bennxt_region(loc: str) -> str:
-    """'socal' | 'ca' | 'remote' | 'other' for one location string."""
+    """'socal' | 'ca' | 'remote' | 'unknown' | 'other' for one location."""
     loc = loc or ""
-    if BENNXT_NOT_CA_RE.search(loc) or NON_US.search(loc):
-        return "other"
     if BENNXT_SOCAL_RE.search(loc):
         return "socal"
+    if BENNXT_NOT_CA_RE.search(loc) or NON_US.search(loc):
+        return "other"
     if BENNXT_CA_RE.search(loc):
         return "ca"
     if BENNXT_REMOTE_RE.search(loc):
         return "remote"
-    return "other" if loc else "unknown"
+    if not loc.strip() or BENNXT_MULTI_LOC_RE.match(loc):
+        return "unknown"
+    return "other"
 
 # Hard veto: non-US locations, including Canada's "CA" province formatting and
 # the poller's existing NON_US city list.
@@ -1158,11 +1240,18 @@ BENNXT_NOT_CA_RE = re.compile(
 
 def bennxt_prefilter(p: "Posting") -> bool:
     """Cheap regex gate: is this posting worth spending a description fetch and
-    an LLM call on? Deliberately generous — the LLM makes the real call."""
+    an LLM call on? Deliberately generous — titles that merely LOOK like they
+    could be entry-level are admitted, and the description check plus the LLM
+    settle it. Rejecting here is final, so err toward keeping."""
     t = p.title or ""
-    if not BENNXT_LEVEL_RE.search(t) or BENNXT_LEVEL_EXCLUDE_RE.search(t):
+    if bennxt_level_from_title(t) == "senior":
         return False
-    if not BENNXT_FIELD_RE.search(t) or BENNXT_FIELD_EXCLUDE_RE.search(t):
+    if BENNXT_FIELD_EXCLUDE_RE.search(t) or BENNXT_NON_ENG_RE.search(t):
+        return False
+    # Either the title names the discipline outright, or it pairs an
+    # engineering domain with an engineering role noun.
+    if not (BENNXT_FIELD_RE.search(t)
+            or (BENNXT_DOMAIN_RE.search(t) and BENNXT_ROLE_NOUN_RE.search(t))):
         return False
     loc = p.location or ""
     if BENNXT_NOT_CA_RE.search(loc) or NON_US.search(loc):
@@ -1384,7 +1473,10 @@ async def classify_sponsorship(conn, items, verbose=True):
 
 
 BENNXT_DETAIL_CONCURRENCY = 6
-BENNXT_MAX_DETAILS = int(os.environ.get("BENNXT_MAX_DETAILS", "80"))
+# High enough to cover every candidate a normal scan produces (~360), so no
+# qualifying role is silently dropped. Description fetches are cheap HTTP;
+# only the postings the regex can't settle reach Gemini.
+BENNXT_MAX_DETAILS = int(os.environ.get("BENNXT_MAX_DETAILS", "600"))
 BENNXT_MAX_AGE_DAYS = 60   # older postings are almost always stale/filled
 
 
@@ -1421,10 +1513,13 @@ async def bennxt_scan(conn, verbose=True, max_details=BENNXT_MAX_DETAILS,
         cands = fresh_cands
 
     # SoCal first (the Irvine/LA belt is the priority), then rest-of-CA, then
-    # remote/unknown; newest first inside each tier. The detail-fetch cap
-    # therefore spends its budget on the most relevant postings.
+    # remote/unknown; within a region, titles that explicitly say intern/new-grad
+    # outrank bare "Mechanical Engineer" titles whose level is still unknown;
+    # newest first inside that. The detail-fetch cap therefore spends its
+    # budget on the most relevant postings.
     tier = {"socal": 0, "ca": 1, "remote": 2, "unknown": 3, "other": 4}
     cands.sort(key=lambda p: (tier.get(bennxt_region(p.location), 4),
+                              0 if bennxt_level_from_title(p.title) == "early" else 1,
                               -(p.published or 0)))
     if verbose:
         by_region = defaultdict(int)
@@ -1436,9 +1531,14 @@ async def bennxt_scan(conn, verbose=True, max_details=BENNXT_MAX_DETAILS,
               f"({', '.join(f'{k}={v}' for k, v in sorted(by_region.items()))})"
               f"{note}")
     if len(cands) > max_details:
-        if verbose:
-            print(f"  bennxt: capping description fetches at {max_details} "
-                  f"(dropping {len(cands) - max_details} oldest)")
+        dropped = cands[max_details:]
+        lost_early = sum(1 for p in dropped
+                         if bennxt_level_from_title(p.title) == "early")
+        # Loudly, because a silent cap reads as "nothing else matched".
+        print(f"  bennxt: WARNING capping description fetches at {max_details}"
+              f" — {len(dropped)} candidates not checked "
+              f"({lost_early} of them explicitly intern/new-grad). "
+              f"Raise BENNXT_MAX_DETAILS to see them.", file=sys.stderr)
         cands = cands[:max_details]
     if not cands:
         return []
@@ -1454,6 +1554,23 @@ async def bennxt_scan(conn, verbose=True, max_details=BENNXT_MAX_DETAILS,
         return p, d
 
     fetched = await asyncio.gather(*(detail(p) for p in cands))
+
+    # Ambiguous bare titles ("Mechanical Engineer") are settled here rather
+    # than by the LLM: if the description demands more than BENNXT_MAX_YOE
+    # years of experience, it is not an entry-level role. Free, and it keeps
+    # the Gemini budget for the postings that are genuinely in question.
+    kept, dropped_yoe = [], 0
+    for p, d in fetched:
+        desc = d.get("description") or ""
+        if (bennxt_level_from_title(p.title) == "ambiguous" and desc
+                and not bennxt_yoe_ok(desc)):
+            dropped_yoe += 1
+            continue
+        kept.append((p, d))
+    fetched = kept
+    if verbose and dropped_yoe:
+        print(f"  bennxt: {dropped_yoe} ambiguous titles dropped on "
+              f"years-of-experience (> {BENNXT_MAX_YOE}y)")
 
     # The employer's own website, so the user can research the company (and
     # apply on its careers page where one exists) rather than only via the ATS.
@@ -1482,10 +1599,14 @@ async def bennxt_scan(conn, verbose=True, max_details=BENNXT_MAX_DETAILS,
                  or {"sponsorship": "unknown", "evidence": None,
                      "source": "none"})
         # The LLM also re-checks field/level/California from the full text; a
-        # clear "other"/non-CA verdict overrules the title-only prefilter.
+        # clear "other" verdict overrules the title-only prefilter. Only trust
+        # its california=False when the regex agreed the location was non-CA —
+        # for collapsed ("4 Locations") or missing locations the model is
+        # guessing, and dropping a real CA role is the worse error.
         if v.get("field") == "other" or v.get("level") == "other":
             continue
-        if v.get("california") is False:
+        region = bennxt_region(p.location)
+        if v.get("california") is False and region not in ("unknown", "socal", "ca"):
             continue
         v["salary"] = d.get("salary")
         v["description"] = d.get("description")
