@@ -487,7 +487,12 @@ def _format_bennxt(p, v, show_evidence: bool = False) -> str:
     """One listing block for a bennxt role, led by its sponsorship verdict."""
     status = SPONSOR_LABEL.get(v.get("sponsorship"), "❔ not stated")
     posted = f"posted {poller.age_str(p)} ago" if p.published else "date unknown"
-    loc = p.location or REGION_LABEL.get(v.get("region"), "location not stated")
+    # resolved_location is Gemini's reading for postings whose location field
+    # was blank or collapsed ("4 Locations").
+    loc = (v.get("resolved_location") or p.location
+           or REGION_LABEL.get(v.get("region"), "location not stated"))
+    if v.get("resolved_location") and not (p.location or "").strip():
+        loc = f"{loc} (from posting text)"
     if v.get("region") == "socal":
         loc = f"📍 {loc}"
     bits = [loc]

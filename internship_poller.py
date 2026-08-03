@@ -690,7 +690,12 @@ async def fetch_details(platform, url, external_id) -> dict:
             info = d.get("jobPostingInfo") or {}
             out["description"] = strip_html(info.get("jobDescription") or "")
 
+    # Everything above came from a structured pay field — trustworthy. Mark it
+    # so callers know whether the value needs LLM confirmation.
+    out["salary_certain"] = out["salary"] is not None
     if not out["salary"] and out["description"]:
+        # Regex guess, used only when nothing better is available (e.g. the
+        # /internships path, which makes no LLM call).
         out["salary"] = find_salary_in_text(out["description"])
     return out
 
@@ -1273,7 +1278,11 @@ NO_SPONSOR_RE = re.compile(
     r"|unable\s+to\s+(?:offer|provide)\s+(?:visa\s+)?sponsorship"
     r"|no\s+(?:visa\s+)?sponsorship\s+(?:is\s+)?(?:available|provided|offered)"
     r"|sponsorship\s+is\s+not\s+available"
-    r"|must\s+be\s+(?:a\s+)?(?:US|U\.S\.)\s+citizen"
+    r"|must\s+be\s+(?:a\s+)?(?:\(i+\)\s*)?(?:US|U\.S\.)\s+citizen"
+    r"|(?:US|U\.S\.)\s+citizen\s+or\s+national"
+    r"|lawful[,\s]+permanent\s+resident"
+    r"|permanent\s+resident|protected\s+individual"
+    r"|authorizations?\s+from\s+the\s+U\.?S\.?\s+Department\s+of\s+State"
     r"|US\s+[Cc]itizenship\s+(?:is\s+)?required"
     r"|\bUS\s+Person\b|\bU\.S\.\s+Person\b|\bITAR\b|export\s+control"
     r"|security\s+clearance)", re.I)
@@ -1285,10 +1294,11 @@ YES_SPONSOR_RE = re.compile(
     r"|open\s+to\s+sponsoring|able\s+to\s+sponsor"
     r"|\bH-?1B\s+sponsorship|\bcap-exempt\b|sponsor\s+(?:work\s+)?visas?)", re.I)
 
-SPONSOR_PROMPT = """You read job postings and report their visa-sponsorship stance
-for a candidate who is NOT a US citizen or permanent resident and WILL need
-employer sponsorship (e.g. H-1B, or an F-1 student needing CPT/OPT then
-sponsorship later).
+SPONSOR_PROMPT = """You read job postings and extract facts for a candidate who
+is NOT a US citizen or permanent resident and WILL need employer sponsorship
+(e.g. H-1B, or an F-1 student needing CPT/OPT then sponsorship later). They
+want civil/mechanical engineering internships and new-grad roles in California,
+especially Southern California (Irvine / LA / Orange County / San Diego).
 
 For each numbered posting return one object:
   i            the posting number
@@ -1302,18 +1312,49 @@ For each numbered posting return one object:
                manufacturing, materials, environmental, robotics...), or
                "other" if it is not an engineering role in these areas
   level        "intern" (internship/co-op for current students) or
-               "newgrad" (entry-level/new-grad/EIT/Engineer I) or
-               "other" (experienced/senior roles)
+               "newgrad" (entry-level/new-grad/EIT/Engineer I, or any role
+               asking for 0-2 years of experience) or
+               "other" (experienced/senior roles, 3+ years required)
   california   true if the role's work location is in California, or is
-               explicitly remote within the US. false otherwise.
+               explicitly remote within the US. false otherwise. The Location
+               line may be blank or say "4 Locations" — in that case read the
+               description for the real work site.
+  socal        true ONLY if the work location is in Southern California
+               (Los Angeles, Orange County, Irvine, Long Beach, El Segundo,
+               San Diego, Riverside, San Bernardino, Ventura, Santa Barbara).
+               false for Bay Area / Sacramento / anywhere else.
+  location     the work location as a short human-readable string
+               (e.g. "Irvine, CA" or "Long Beach, CA; Denver, CO"), or null if
+               the posting truly does not say.
+  salary       the pay range exactly as stated, including period
+               (e.g. "$25-$33 per hour", "$90,000-$110,000 per year"), or null
+               if the posting does not state pay. Do NOT use tuition benefits,
+               relocation stipends, or 401k match figures.
   evidence     a SHORT verbatim quote (<=160 chars) from the posting that
                justifies the sponsorship value, or null if it is "unknown".
 
 Be strict about "no": ITAR, export control, security clearance, and "US Person"
 requirements all mean sponsorship is impossible, even if the posting never uses
-the word "sponsorship". Be strict about "yes" too — only when the text
-affirmatively says sponsorship is offered. When the posting is silent about
-work authorization, the answer is "unknown", never a guess.
+the word "sponsorship".
+
+CRITICAL — do not mistake export-control boilerplate for an offer to sponsor.
+Text like "applicant must be a U.S. citizen or national, U.S. lawful permanent
+resident, protected individual, OR eligible to obtain the required
+authorizations from the U.S. Department of State" is an ITAR/export-control
+requirement. The "authorizations" are export licences, NOT work visas, and this
+text means sponsorship is NOT available. Classify it "no", never "yes".
+Similarly, "eligible to work in the US" / "must be authorized to work in the
+US" describes a requirement the candidate must already meet — that is "no" or
+"unknown", never "yes".
+
+Answer "yes" ONLY when the posting explicitly says the EMPLOYER will sponsor,
+petition for, or support a work visa (e.g. "we sponsor H-1B", "visa sponsorship
+is available", "we will support your visa application"). If you are not certain
+the employer is offering visa sponsorship, answer "unknown".
+
+When the posting is silent about work authorization, the answer is "unknown",
+never a guess. Same for salary and location: report null rather than inferring
+a value the text does not contain.
 
 Return ONLY a JSON array. No markdown fences, no commentary.
 
@@ -1331,9 +1372,13 @@ SPONSOR_SCHEMA = {
                       "enum": ["civil", "mechanical", "adjacent", "other"]},
             "level": {"type": "STRING", "enum": ["intern", "newgrad", "other"]},
             "california": {"type": "BOOLEAN"},
+            "socal": {"type": "BOOLEAN"},
+            "location": {"type": "STRING", "nullable": True},
+            "salary": {"type": "STRING", "nullable": True},
             "evidence": {"type": "STRING", "nullable": True},
         },
-        "required": ["i", "sponsorship", "field", "level", "california"],
+        "required": ["i", "sponsorship", "field", "level", "california",
+                     "socal"],
     },
 }
 
@@ -1364,14 +1409,20 @@ def sponsorship_from_text(desc: str):
 
 
 async def classify_sponsorship(conn, items, verbose=True):
-    """items: [(Posting, description)]. Returns {posting_hash: verdict-dict}.
+    """items: [(Posting, description, known)]. Returns {posting_hash: verdict}.
 
-    Regex decides the formulaic cases for free; Gemini reads the rest. Results
-    are cached in llm_cache under a distinct key prefix, so a posting is never
-    re-read and re-runs cost nothing.
+    `known` carries what the structured data already told us for certain
+    (salary from an ATS pay field, an unambiguous location, an explicit
+    intern/new-grad title). Anything NOT certain is left to Gemini, which reads
+    the description once and returns every uncertain field in the same call —
+    so richer extraction costs no extra requests.
+
+    The regex shortcut is only taken when it settles sponsorship AND nothing
+    else about the posting is in question. Results are cached in llm_cache
+    under a distinct key prefix, so a posting is never re-read.
     """
     out, todo = {}, []
-    for p, desc in items:
+    for p, desc, known in items:
         h = "sp:" + posting_hash(p)
         row = conn.execute("SELECT payload FROM llm_cache WHERE hash=?",
                            (h,)).fetchone()
@@ -1379,13 +1430,17 @@ async def classify_sponsorship(conn, items, verbose=True):
             out[h] = json.loads(row[0])
             continue
         verdict, ev = sponsorship_from_text(desc)
-        if verdict:
-            rec = {"sponsorship": verdict, "evidence": ev, "source": "regex"}
+        # Only skip the LLM when every field is already certain.
+        if verdict and known.get("complete"):
+            rec = {"sponsorship": verdict, "evidence": ev, "source": "regex",
+                   "salary": known.get("salary"),
+                   "location": known.get("location"),
+                   "level": known.get("level")}
             out[h] = rec
             conn.execute("INSERT OR REPLACE INTO llm_cache VALUES(?,?,?)",
                          (h, json.dumps(rec), time.time()))
             continue
-        todo.append((p, desc))
+        todo.append((p, desc, known))
     conn.commit()
 
     if not todo:
@@ -1418,7 +1473,7 @@ async def classify_sponsorship(conn, items, verbose=True):
                           file=sys.stderr)
                 break
             parts = []
-            for i, (p, desc) in enumerate(batch):
+            for i, (p, desc, known) in enumerate(batch):
                 parts.append(f"### Posting {i}\n"
                              f"Title: {p.title}\n"
                              f"Company: {p.company}\n"
@@ -1455,14 +1510,26 @@ async def classify_sponsorship(conn, items, verbose=True):
                               file=sys.stderr)
                         break
             fails = 0 if res else fails + 1
-            for i, (p, _) in enumerate(batch):
+            for i, (p, _, known) in enumerate(batch):
                 f = res.get(i)
                 if not f:
                     continue
-                rec = {"sponsorship": f.get("sponsorship") or "unknown",
+                # Structured ATS values win where they exist; the model fills
+                # in only what was genuinely uncertain.
+                verdict = f.get("sponsorship") or "unknown"
+                ev = f.get("evidence") or None
+                # Guard against the model reading ITAR/export-control
+                # boilerplate as an offer to sponsor: if its own evidence
+                # demands citizenship or permanent residence, that is a "no".
+                if verdict == "yes" and ev and NO_SPONSOR_RE.search(ev):
+                    verdict = "no"
+                rec = {"sponsorship": verdict,
                        "field": f.get("field"), "level": f.get("level"),
                        "california": bool(f.get("california")),
-                       "evidence": (f.get("evidence") or None),
+                       "socal": bool(f.get("socal")),
+                       "location": known.get("location") or f.get("location"),
+                       "salary": known.get("salary") or f.get("salary"),
+                       "evidence": ev,
                        "source": "llm"}
                 h = "sp:" + posting_hash(p)
                 out[h] = rec
@@ -1555,22 +1622,23 @@ async def bennxt_scan(conn, verbose=True, max_details=BENNXT_MAX_DETAILS,
 
     fetched = await asyncio.gather(*(detail(p) for p in cands))
 
-    # Ambiguous bare titles ("Mechanical Engineer") are settled here rather
-    # than by the LLM: if the description demands more than BENNXT_MAX_YOE
-    # years of experience, it is not an entry-level role. Free, and it keeps
-    # the Gemini budget for the postings that are genuinely in question.
+    # Cheap, unambiguous pre-filter: a bare title whose description demands
+    # well beyond entry level is not worth an LLM call. Only fires on a clear
+    # excess (>= 2x the entry threshold) so genuinely borderline postings —
+    # "3 years preferred" — still reach Gemini, which reads the requirements
+    # in context rather than pattern-matching a number.
     kept, dropped_yoe = [], 0
     for p, d in fetched:
         desc = d.get("description") or ""
         if (bennxt_level_from_title(p.title) == "ambiguous" and desc
-                and not bennxt_yoe_ok(desc)):
+                and not bennxt_yoe_ok(desc, max_yoe=BENNXT_MAX_YOE * 2)):
             dropped_yoe += 1
             continue
         kept.append((p, d))
     fetched = kept
     if verbose and dropped_yoe:
         print(f"  bennxt: {dropped_yoe} ambiguous titles dropped on "
-              f"years-of-experience (> {BENNXT_MAX_YOE}y)")
+              f"years-of-experience (> {BENNXT_MAX_YOE * 2}y)")
 
     # The employer's own website, so the user can research the company (and
     # apply on its careers page where one exists) rather than only via the ATS.
@@ -1590,8 +1658,23 @@ async def bennxt_scan(conn, verbose=True, max_details=BENNXT_MAX_DETAILS,
     if verbose:
         print(f"  bennxt: {len(with_desc)}/{len(cands)} descriptions retrieved")
 
+    # What the structured data already establishes for certain. Anything absent
+    # here is uncertain and gets answered by Gemini in the sponsorship call.
+    def certain(p, d):
+        region = bennxt_region(p.location)
+        loc_certain = region in ("socal", "ca", "remote", "other")
+        lvl = bennxt_level_from_title(p.title)
+        k = {"salary": d.get("salary") if d.get("salary_certain") else None,
+             "location": p.location if loc_certain else None,
+             "level": {"early": None, "ambiguous": None}.get(lvl, lvl)}
+        # "complete" means nothing is left to ask about: pay from an ATS field,
+        # an unambiguous location, and a title that states its level.
+        k["complete"] = bool(k["salary"] and k["location"] and lvl == "early")
+        return k
+
     verdicts = await classify_sponsorship(
-        conn, [(p, d["description"]) for p, d in with_desc], verbose=verbose)
+        conn, [(p, d["description"], certain(p, d)) for p, d in with_desc],
+        verbose=verbose)
 
     out = []
     for p, d in with_desc:
@@ -1608,10 +1691,28 @@ async def bennxt_scan(conn, verbose=True, max_details=BENNXT_MAX_DETAILS,
         region = bennxt_region(p.location)
         if v.get("california") is False and region not in ("unknown", "socal", "ca"):
             continue
-        v["salary"] = d.get("salary")
+        # Salary: an ATS pay field wins; otherwise the model's reading of the
+        # description, which is more reliable than the money-shaped regex.
+        v["salary"] = (d.get("salary") if d.get("salary_certain")
+                       else v.get("salary") or d.get("salary"))
         v["description"] = d.get("description")
         v["company_site"] = d.get("company_site")
-        v["region"] = bennxt_region(p.location)
+
+        # Region: trust the regex when the location string was unambiguous;
+        # fall back to the model when it was blank or collapsed ("4 Locations").
+        # A model verdict of "not California" is authoritative here — it read
+        # the description, which is the only place that location exists.
+        region = bennxt_region(p.location)
+        if region == "unknown" and v.get("source") == "llm":
+            region = ("socal" if v.get("socal")
+                      else "ca" if v.get("california") else "other")
+        v["region"] = region
+        if region == "other":
+            continue    # resolved to a non-California site
+        # Show the model's resolved location when the posting had none.
+        if not (p.location or "").strip() or BENNXT_MULTI_LOC_RE.match(
+                p.location or ""):
+            v["resolved_location"] = v.get("location")
         out.append((p, v))
     # SoCal first, then rest-of-CA, newest first within each tier.
     out.sort(key=lambda pv: (tier.get(pv[1]["region"], 4),
