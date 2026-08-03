@@ -103,6 +103,8 @@ BENNXT_SWEEP_MINUTES = 180   # Gemini free tier — scan far less often than tec
 BENNXT_MAX_ROLES = 25        # roles listed per command invocation
 SPONSOR_LABEL = {"yes": "✅ sponsors", "unknown": "❔ not stated",
                  "no": "🚫 no sponsorship"}
+REGION_LABEL = {"socal": "📍 SoCal", "ca": "CA", "remote": "remote",
+                "unknown": "location TBD"}
 
 # Posting titles/locations come from external APIs and could contain <@id>
 # text, and announcements are deliberately silent — nothing this bot sends
@@ -460,7 +462,10 @@ def _format_bennxt(p, v, show_evidence: bool = False) -> str:
     """One listing block for a bennxt role, led by its sponsorship verdict."""
     status = SPONSOR_LABEL.get(v.get("sponsorship"), "❔ not stated")
     posted = f"posted {poller.age_str(p)} ago" if p.published else "date unknown"
-    bits = [p.location or "location not stated"]
+    loc = p.location or REGION_LABEL.get(v.get("region"), "location not stated")
+    if v.get("region") == "socal":
+        loc = f"📍 {loc}"
+    bits = [loc]
     if v.get("salary"):
         bits.append(v["salary"])
     bits.append(posted)
@@ -794,15 +799,22 @@ bennxt = app_commands.Group(
                 description="Civil/mech CA roles, filtered by visa sponsorship.")
 @app_commands.describe(
     sponsorship="Which sponsorship statuses to show (default: hides explicit no)",
+    region="Where the role is (default: SoCal first, then rest of California)",
     evidence="Show the quoted sponsorship language from each posting")
-@app_commands.choices(sponsorship=[
-    app_commands.Choice(name="Sponsors or not stated (default)", value="open"),
-    app_commands.Choice(name="Only explicitly sponsors", value="yes"),
-    app_commands.Choice(name="Everything, including no-sponsorship", value="all"),
-])
+@app_commands.choices(
+    sponsorship=[
+        app_commands.Choice(name="Sponsors or not stated (default)", value="open"),
+        app_commands.Choice(name="Only explicitly sponsors", value="yes"),
+        app_commands.Choice(name="Everything, including no-sponsorship", value="all"),
+    ],
+    region=[
+        app_commands.Choice(name="SoCal first, then all CA (default)", value="all"),
+        app_commands.Choice(name="SoCal only (Irvine / LA / OC / SD)", value="socal"),
+    ])
 async def bennxt_roles_slash(
     interaction: discord.Interaction,
     sponsorship: app_commands.Choice[str] = None,
+    region: app_commands.Choice[str] = None,
     evidence: bool = False,
 ):
     if pconn is None:
@@ -823,8 +835,11 @@ async def bennxt_roles_slash(
     keep = {"open": ("yes", "unknown"), "yes": ("yes",),
             "all": ("yes", "unknown", "no")}[mode]
     sel = [(p, v) for p, v in roles if v.get("sponsorship") in keep]
+    if region and region.value == "socal":
+        sel = [(p, v) for p, v in sel if v.get("region") == "socal"]
     tally = {k: sum(1 for _, v in roles if v.get("sponsorship") == k)
              for k in ("yes", "unknown", "no")}
+    socal_n = sum(1 for _, v in roles if v.get("region") == "socal")
     if not sel:
         await interaction.followup.send(
             "No civil/mechanical California roles matched that filter right "
@@ -833,9 +848,11 @@ async def bennxt_roles_slash(
             allowed_mentions=NO_MENTIONS)
         return
 
-    header = (f"**{len(sel)} civil/mechanical roles in California** "
+    scope = ("in SoCal (Irvine / LA / OC / SD)" if region
+             and region.value == "socal" else "in California, SoCal first")
+    header = (f"**{len(sel)} civil/mechanical roles {scope}** "
               f"(internships + new grad)\n"
-              f"Last scan: ✅ {tally['yes']} sponsor · "
+              f"Last scan: 📍 {socal_n} SoCal · ✅ {tally['yes']} sponsor · "
               f"❔ {tally['unknown']} not stated · 🚫 {tally['no']} ruled out"
               + ("" if mode == "all" else " (hidden)"))
     blocks = [_format_bennxt(p, v, evidence) for p, v in sel[:BENNXT_MAX_ROLES]]
