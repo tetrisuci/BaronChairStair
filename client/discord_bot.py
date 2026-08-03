@@ -21,11 +21,15 @@ The bot responds with the top X attack burst highlights for each player,
 formatted in a monospace code block so the boards render correctly.
 
 Internship tracker (backed by ../internship_poller.py; swept every 15 minutes,
-subscriber pings batched to at most one per hour):
+notices batched to at most one per hour):
     /internships recent [days] [us_only]   list recently posted tech internships
     /internships info <role>               salary + description for one role
-    /internships ping                      toggle new-posting pings for yourself
-    /internships pinglist                  show who is on the ping list
+    /internships ping                      toggle notices for yourself
+    /internships pinglist                  show who is subscribed
+
+New postings produce one quiet, mention-free notice per subscribed channel
+with a button; pressing it replies with the listing as an ephemeral ("only you
+can see this") message, so the channel is never flooded.
 """
 
 import os
@@ -88,9 +92,8 @@ RECENT_MAX_ROLES = 40       # cap on roles listed per command invocation
 DESC_SNIPPET_MAX = 1200     # description excerpt length for `internships info`
 
 # Posting titles/locations come from external APIs and could contain <@id>
-# text: content chunks must never ping anyone. Only the announcement header,
-# whose mentions we build ourselves, may ping users.
-PING_MENTIONS = discord.AllowedMentions(users=True, everyone=False, roles=False)
+# text, and announcements are deliberately silent — nothing this bot sends
+# about internships should ever ping anyone.
 NO_MENTIONS = discord.AllowedMentions.none()
 
 
@@ -294,8 +297,12 @@ async def yauna_cancer(ctx):
 @bot.event
 async def on_ready():
     await bot.tree.sync()
-    if pconn is not None and not internship_sweep.is_running():
-        internship_sweep.start()
+    if pconn is not None:
+        # Re-attach the digest button so notices posted before a restart stay
+        # clickable (registering twice across reconnects is harmless).
+        bot.add_view(InternshipDigestView())
+        if not internship_sweep.is_running():
+            internship_sweep.start()
     print(f"Logged in as {bot.user} (id: {bot.user.id})")
 
 
@@ -368,12 +375,13 @@ def _toggle_ping(user_id: int, channel_id: int) -> str:
                   (user_id,)).fetchone():
         db.execute("DELETE FROM intern_pings WHERE user_id=?", (user_id,))
         db.commit()
-        return "Removed you from the internship ping list."
+        return "Removed you from the internship notify list."
     db.execute("INSERT INTO intern_pings VALUES (?, ?)", (user_id, channel_id))
     db.commit()
-    return ("Added you to the internship ping list — new tech internships get "
-            "announced in this channel with a ping. Run the command again to "
-            "unsubscribe.")
+    return ("Added you to the internship notify list — when new tech "
+            "internships are found, this channel gets one quiet notice with a "
+            "button, and pressing it shows you the list privately (no pings, "
+            "nobody else sees it). Run the command again to unsubscribe.")
 
 
 def _recent_internships(days: int, us_only: bool):
@@ -428,6 +436,49 @@ async def _send_recent(send, days: int, us_only: bool) -> None:
 
 _ledger_seeded = False  # flips True once `seen` is known non-empty
 _pending: list = []     # fresh postings waiting for the next announcement slot
+_last_batch: list = []  # the batch the current notice's button hands out
+
+
+class InternshipDigestView(discord.ui.View):
+    """The button on a new-postings notice.
+
+    A bot can only send an ephemeral message as a reply to an interaction, and
+    a background sweep has no interaction — so the sweep posts one quiet notice
+    per channel and each subscriber presses this to get their own private copy.
+    timeout=None + a fixed custom_id makes it survive bot restarts.
+    """
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Show me the new internships",
+                       emoji="📋", style=discord.ButtonStyle.primary,
+                       custom_id="internships:digest")
+    async def digest(self, interaction: discord.Interaction,
+                     button: discord.ui.Button):
+        if pconn is None:
+            await interaction.response.send_message(_tracker_disabled(),
+                                                    ephemeral=True)
+            return
+        if not _last_batch:
+            # Restart cleared the in-memory batch, or a newer one replaced it.
+            await interaction.response.send_message(
+                "That batch is no longer loaded — `/internships recent` has "
+                "everything from the last few days.", ephemeral=True)
+            return
+        # ephemeral=True: "Only you can see this message".
+        await interaction.response.defer(thinking=True, ephemeral=True)
+        n = len(_last_batch)
+        blocks = [_format_role(p, c) for p, c in _last_batch[:ANNOUNCE_MAX]]
+        if n > ANNOUNCE_MAX:
+            blocks.append(f"...and {n - ANNOUNCE_MAX} more — run "
+                          "`/internships recent` for the full list.")
+        header = f"**{n} new tech internship posting{'s' if n != 1 else ''}**"
+        await interaction.followup.send(header, ephemeral=True,
+                                        allowed_mentions=NO_MENTIONS)
+        for chunk in _split_blocks(blocks):
+            await interaction.followup.send(chunk, ephemeral=True,
+                                            allowed_mentions=NO_MENTIONS)
 
 
 @tasks.loop(minutes=SWEEP_MINUTES)
@@ -485,27 +536,23 @@ async def internship_sweep():
         by_channel.setdefault(cid, []).append(uid)
 
     batch.sort(key=lambda pc: -(pc[0].published or 0))
-    blocks = [_format_role(p, c) for p, c in batch[:ANNOUNCE_MAX]]
-    if len(batch) > ANNOUNCE_MAX:
-        blocks.append(f"...and {len(batch) - ANNOUNCE_MAX} more — run "
-                      "`/internships recent` for the full list.")
-
+    _last_batch[:] = batch      # what the button will show, until the next batch
     n = len(batch)
-    header = f"**{n} new tech internship posting{'s' if n != 1 else ''}**"
-    for cid, uids in by_channel.items():
+    # One quiet notice per channel, no mentions. Subscribers click the button
+    # to get the listing as an ephemeral ("only you can see this") reply, so
+    # the channel never fills with pings or posting dumps.
+    header = (f"**{n} new tech internship posting{'s' if n != 1 else ''}** — "
+              f"{len(subs)} subscriber{'s' if len(subs) != 1 else ''} notified. "
+              "Press the button for your private list.")
+    for cid in by_channel:
         # One channel failing (deleted, no send permission) must not stop the
         # other channels' announcements or kill the loop.
         try:
             channel = bot.get_channel(cid) or await bot.fetch_channel(cid)
-            # _pack keeps every ping message under the limit however many
-            # subscribers there are; only these carry real mentions.
-            for ping in _pack([header] + [f"<@{u}>" for u in uids],
-                              MAX_CHUNK, " "):
-                await channel.send(content=ping, allowed_mentions=PING_MENTIONS)
-            for chunk in _split_blocks(blocks):
-                await channel.send(content=chunk, allowed_mentions=NO_MENTIONS)
+            await channel.send(content=header, view=InternshipDigestView(),
+                               allowed_mentions=NO_MENTIONS)
         except Exception as e:
-            print(f"internship ping to channel {cid} failed: "
+            print(f"internship notice to channel {cid} failed: "
                   f"{type(e).__name__}: {e}", file=sys.stderr)
 
 
@@ -640,7 +687,7 @@ async def internships_info_autocomplete(interaction: discord.Interaction,
 
 
 @internships.command(name="pinglist",
-                     description="Show who is on the internship ping list.")
+                     description="Show who is subscribed to internship notices.")
 async def internships_pinglist_slash(interaction: discord.Interaction):
     if pconn is None:
         await interaction.response.send_message(_tracker_disabled(), ephemeral=True)
@@ -648,7 +695,7 @@ async def internships_pinglist_slash(interaction: discord.Interaction):
     subs = db.execute("SELECT user_id, channel_id FROM intern_pings").fetchall()
     if not subs:
         await interaction.response.send_message(
-            "Nobody is on the ping list yet — subscribe with `/internships ping`.",
+            "Nobody is subscribed yet — sign up with `/internships ping`.",
             ephemeral=True)
         return
 
@@ -656,7 +703,7 @@ async def internships_pinglist_slash(interaction: discord.Interaction):
     for uid, cid in subs:
         by_channel.setdefault(cid, []).append(uid)
 
-    lines = [f"**{len(subs)} on the internship ping list**"]
+    lines = [f"**{len(subs)} subscribed to internship notices**"]
     for cid, uids in sorted(by_channel.items()):
         lines.append(f"<#{cid}>: " + " ".join(f"<@{u}>" for u in uids))
 
