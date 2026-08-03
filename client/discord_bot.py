@@ -346,6 +346,12 @@ async def yauna_cancer(ctx):
 async def on_ready():
     await bot.tree.sync()
     if pconn is not None:
+        # Say plainly at boot whether resume matching is on — otherwise a
+        # missing PDF only shows up as an empty `fit:strong` much later.
+        resume = poller.load_resume()
+        print(f"bennxt resume: {'loaded' if resume else 'MISSING'} "
+              f"({poller.RESUME_PATH})"
+              + ("" if resume else " — /bennxt fit ratings disabled"))
         # Re-attach the digest button so notices posted before a restart stay
         # clickable (registering twice across reconnects is harmless).
         bot.add_view(InternshipDigestView())
@@ -923,9 +929,16 @@ async def bennxt_roles_slash(
             "with the employer before applying.*")
     unscored = sum(1 for _, v in sel if not v.get("fit"))
     if unscored:
-        note += (f"\n*{unscored} role(s) here have no resume-fit rating yet — "
-                 "the daily Gemini budget ran out mid-scan; they get scored on "
-                 "the next run.*")
+        # Two very different causes, two very different fixes — don't guess.
+        if poller.load_resume() is None:
+            note += (f"\n*No resume is loaded, so {unscored} role(s) have no "
+                     f"fit rating and `fit:strong` matches nothing. Put a PDF "
+                     f"at `{poller.RESUME_PATH}` (and `pip install pypdf`), "
+                     "then restart the bot.*")
+        else:
+            note += (f"\n*{unscored} role(s) here have no resume-fit rating "
+                     "yet — the scan did not finish scoring them (usually the "
+                     "daily Gemini budget). They get scored on the next run.*")
     blocks.append(note)
     await interaction.followup.send(header, allowed_mentions=NO_MENTIONS)
     for chunk in _split_blocks(blocks):
