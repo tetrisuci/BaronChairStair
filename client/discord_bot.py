@@ -416,6 +416,7 @@ def _recent_internships(days: int, us_only: bool):
 
 
 async def _send_recent(send, days: int, us_only: bool) -> None:
+    """`send` must already be bound to ephemeral delivery — see _private."""
     days = max(1, min(days, poller.MAX_AGE_DAYS))
     roles = _recent_internships(days, us_only)
     if not roles:
@@ -432,6 +433,15 @@ async def _send_recent(send, days: int, us_only: bool) -> None:
     await send(content=header, allowed_mentions=NO_MENTIONS)
     for chunk in _split_blocks(blocks):
         await send(content=chunk, allowed_mentions=NO_MENTIONS)
+
+
+def _private(interaction: discord.Interaction):
+    """followup.send bound to ephemeral — every internship reply uses this so
+    a listing is only ever visible to the user who asked for it."""
+    async def send(content=None, **kw):
+        kw.setdefault("allowed_mentions", NO_MENTIONS)
+        return await interaction.followup.send(content, ephemeral=True, **kw)
+    return send
 
 
 _ledger_seeded = False  # flips True once `seen` is known non-empty
@@ -474,11 +484,10 @@ class InternshipDigestView(discord.ui.View):
             blocks.append(f"...and {n - ANNOUNCE_MAX} more — run "
                           "`/internships recent` for the full list.")
         header = f"**{n} new tech internship posting{'s' if n != 1 else ''}**"
-        await interaction.followup.send(header, ephemeral=True,
-                                        allowed_mentions=NO_MENTIONS)
+        send = _private(interaction)
+        await send(header)
         for chunk in _split_blocks(blocks):
-            await interaction.followup.send(chunk, ephemeral=True,
-                                            allowed_mentions=NO_MENTIONS)
+            await send(chunk)
 
 
 @tasks.loop(minutes=SWEEP_MINUTES)
@@ -584,8 +593,8 @@ async def internships_recent_slash(
     if pconn is None:
         await interaction.response.send_message(_tracker_disabled(), ephemeral=True)
         return
-    await interaction.response.defer(thinking=True)
-    await _send_recent(interaction.followup.send, days, us_only)
+    await interaction.response.defer(thinking=True, ephemeral=True)
+    await _send_recent(_private(interaction), days, us_only)
 
 
 @internships.command(
@@ -638,7 +647,7 @@ async def internships_info_slash(interaction: discord.Interaction, role: str):
             "suggestions, or check `/internships recent` for what's tracked.",
             ephemeral=True)
         return
-    await interaction.response.defer(thinking=True)
+    await interaction.response.defer(thinking=True, ephemeral=True)
     (plat, eid, company, sector, title, loc, url,
      cat, term, region, pub, seen_at) = row
 
@@ -662,8 +671,9 @@ async def internships_info_slash(interaction: discord.Interaction, role: str):
     else:
         blocks.append("No description available — the posting may have closed.")
 
+    send = _private(interaction)
     for chunk in _split_blocks(blocks):
-        await interaction.followup.send(chunk, allowed_mentions=NO_MENTIONS)
+        await send(chunk)
 
 
 @internships_info_slash.autocomplete("role")
@@ -711,9 +721,9 @@ async def internships_pinglist_slash(interaction: discord.Interaction):
     chunks = _pack(lines, MAX_CHUNK, "\n")
     await interaction.response.send_message(chunks[0], ephemeral=True,
                                             allowed_mentions=NO_MENTIONS)
+    send = _private(interaction)
     for chunk in chunks[1:]:
-        await interaction.followup.send(chunk, ephemeral=True,
-                                        allowed_mentions=NO_MENTIONS)
+        await send(chunk)
 
 
 bot.tree.add_command(internships)
