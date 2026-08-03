@@ -30,6 +30,11 @@ notices batched to at most one per hour):
 New postings produce one quiet, mention-free notice per subscribed channel
 with a button; pressing it replies with the listing as an ephemeral ("only you
 can see this") message, so the channel is never flooded.
+
+bennxt tracker — civil/mechanical internships AND new-grad roles in California,
+screened for visa sponsorship with Gemini (replies are PUBLIC, not ephemeral):
+    /bennxt roles [sponsorship] [evidence]   list matching roles
+    /bennxt notify                           toggle new-role notices
 """
 
 import os
@@ -90,6 +95,13 @@ ANNOUNCE_MAX = 8            # max postings listed per ping announcement
 RECENT_DAYS_DEFAULT = 7     # default look-back for `internships recent`
 RECENT_MAX_ROLES = 40       # cap on roles listed per command invocation
 DESC_SNIPPET_MAX = 1200     # description excerpt length for `internships info`
+
+# bennxt: civil/mechanical + new-grad + California + visa sponsorship.
+# Public (non-ephemeral) by request, with its own opt-in notify list.
+BENNXT_SWEEP_MINUTES = 180   # Gemini free tier — scan far less often than tech
+BENNXT_MAX_ROLES = 25        # roles listed per command invocation
+SPONSOR_LABEL = {"yes": "✅ sponsors", "unknown": "❔ not stated",
+                 "no": "🚫 no sponsorship"}
 
 # Posting titles/locations come from external APIs and could contain <@id>
 # text, and announcements are deliberately silent — nothing this bot sends
@@ -240,6 +252,12 @@ db.execute("""
         value REAL
     )
 """)
+db.execute("""
+    CREATE TABLE IF NOT EXISTS bennxt_pings (
+        user_id INTEGER PRIMARY KEY,
+        channel_id INTEGER NOT NULL
+    )
+""")
 db.commit()
 
 # Postings DB shared with the CLI poller (schema owned by
@@ -303,6 +321,8 @@ async def on_ready():
         bot.add_view(InternshipDigestView())
         if not internship_sweep.is_running():
             internship_sweep.start()
+        if not bennxt_sweep.is_running():
+            bennxt_sweep.start()
     print(f"Logged in as {bot.user} (id: {bot.user.id})")
 
 
@@ -433,6 +453,39 @@ async def _send_recent(send, days: int, us_only: bool) -> None:
     await send(content=header, allowed_mentions=NO_MENTIONS)
     for chunk in _split_blocks(blocks):
         await send(content=chunk, allowed_mentions=NO_MENTIONS)
+
+
+def _format_bennxt(p, v, show_evidence: bool = False) -> str:
+    """One listing block for a bennxt role, led by its sponsorship verdict."""
+    status = SPONSOR_LABEL.get(v.get("sponsorship"), "❔ not stated")
+    posted = f"posted {poller.age_str(p)} ago" if p.published else "date unknown"
+    bits = [p.location or "location not stated"]
+    if v.get("salary"):
+        bits.append(v["salary"])
+    bits.append(posted)
+    block = (f"**{p.company}** — {p.title}\n"
+             f"{status} · " + " · ".join(bits))
+    if show_evidence and v.get("evidence"):
+        ev = v["evidence"].replace("`", "'")[:180]
+        block += f"\n> {ev}"
+    if p.url:
+        block += f"\n<{p.url}>"
+    return block
+
+
+# Latest bennxt scan, kept in memory: the scan costs Gemini calls, so commands
+# read this rather than re-scanning per invocation.
+_bennxt_cache: dict = {"at": 0.0, "roles": []}
+
+
+async def _bennxt_roles(force: bool = False):
+    """Cached bennxt results, refreshed at most every BENNXT_SWEEP_MINUTES."""
+    age = time.time() - _bennxt_cache["at"]
+    if force or (not _bennxt_cache["roles"] and age > 60) \
+            or age > BENNXT_SWEEP_MINUTES * 60:
+        roles = await poller.bennxt_scan(pconn, verbose=True)
+        _bennxt_cache.update(at=time.time(), roles=roles)
+    return _bennxt_cache["roles"]
 
 
 def _private(interaction: discord.Interaction):
@@ -727,6 +780,146 @@ async def internships_pinglist_slash(interaction: discord.Interaction):
 
 
 bot.tree.add_command(internships)
+
+
+# ── bennxt: civil/mechanical + California + visa sponsorship ──────────────────
+
+bennxt = app_commands.Group(
+    name="bennxt",
+    description="Civil/mechanical internships & new-grad roles in California")
+
+
+@bennxt.command(name="roles",
+                description="Civil/mech CA roles, filtered by visa sponsorship.")
+@app_commands.describe(
+    sponsorship="Which sponsorship statuses to show (default: hides explicit no)",
+    evidence="Show the quoted sponsorship language from each posting")
+@app_commands.choices(sponsorship=[
+    app_commands.Choice(name="Sponsors or not stated (default)", value="open"),
+    app_commands.Choice(name="Only explicitly sponsors", value="yes"),
+    app_commands.Choice(name="Everything, including no-sponsorship", value="all"),
+])
+async def bennxt_roles_slash(
+    interaction: discord.Interaction,
+    sponsorship: app_commands.Choice[str] = None,
+    evidence: bool = False,
+):
+    if pconn is None:
+        await interaction.response.send_message(_tracker_disabled(), ephemeral=True)
+        return
+    mode = sponsorship.value if sponsorship else "open"
+    # Public by design — bennxt replies are visible to the whole channel.
+    await interaction.response.defer(thinking=True)
+    try:
+        roles = await _bennxt_roles()
+    except Exception as e:
+        print(f"bennxt scan failed: {type(e).__name__}: {e}", file=sys.stderr)
+        await interaction.followup.send(
+            "The bennxt scan failed — try again in a few minutes.",
+            allowed_mentions=NO_MENTIONS)
+        return
+
+    keep = {"open": ("yes", "unknown"), "yes": ("yes",),
+            "all": ("yes", "unknown", "no")}[mode]
+    sel = [(p, v) for p, v in roles if v.get("sponsorship") in keep]
+    tally = {k: sum(1 for _, v in roles if v.get("sponsorship") == k)
+             for k in ("yes", "unknown", "no")}
+    if not sel:
+        await interaction.followup.send(
+            "No civil/mechanical California roles matched that filter right "
+            f"now (last scan: ✅ {tally['yes']} sponsor · ❔ {tally['unknown']} "
+            f"not stated · 🚫 {tally['no']} ruled out).",
+            allowed_mentions=NO_MENTIONS)
+        return
+
+    header = (f"**{len(sel)} civil/mechanical roles in California** "
+              f"(internships + new grad)\n"
+              f"Last scan: ✅ {tally['yes']} sponsor · "
+              f"❔ {tally['unknown']} not stated · 🚫 {tally['no']} ruled out"
+              + ("" if mode == "all" else " (hidden)"))
+    blocks = [_format_bennxt(p, v, evidence) for p, v in sel[:BENNXT_MAX_ROLES]]
+    if len(sel) > BENNXT_MAX_ROLES:
+        blocks.append(f"...and {len(sel) - BENNXT_MAX_ROLES} more.")
+    blocks.append("*❔ = the posting never mentions work authorization; verify "
+                  "with the employer before applying.*")
+    await interaction.followup.send(header, allowed_mentions=NO_MENTIONS)
+    for chunk in _split_blocks(blocks):
+        await interaction.followup.send(chunk, allowed_mentions=NO_MENTIONS)
+
+
+@bennxt.command(name="notify",
+                description="Toggle notices for new civil/mech CA roles.")
+async def bennxt_notify_slash(interaction: discord.Interaction):
+    if pconn is None:
+        await interaction.response.send_message(_tracker_disabled(), ephemeral=True)
+        return
+    uid, cid = interaction.user.id, interaction.channel_id
+    if db.execute("SELECT 1 FROM bennxt_pings WHERE user_id=?", (uid,)).fetchone():
+        db.execute("DELETE FROM bennxt_pings WHERE user_id=?", (uid,))
+        db.commit()
+        msg = "Removed you from the bennxt notify list."
+    else:
+        db.execute("INSERT INTO bennxt_pings VALUES (?, ?)", (uid, cid))
+        db.commit()
+        msg = ("Added you to the bennxt notify list — new civil/mechanical "
+               "California roles are posted in this channel. Run the command "
+               "again to unsubscribe.")
+    await interaction.response.send_message(msg, ephemeral=True)
+
+
+bot.tree.add_command(bennxt)
+
+
+_bennxt_announced: set = set()   # (platform, external_id) already posted
+
+
+@tasks.loop(minutes=BENNXT_SWEEP_MINUTES)
+async def bennxt_sweep():
+    """Scan and post genuinely-new civil/mech CA roles to subscribed channels.
+
+    Public messages (per request), no mentions. Runs far less often than the
+    tech sweep because every scan spends Gemini calls on the free tier.
+    """
+    try:
+        roles = await _bennxt_roles(force=True)
+        subs = db.execute("SELECT user_id, channel_id FROM bennxt_pings").fetchall()
+    except Exception as e:
+        pconn.rollback()
+        print(f"bennxt sweep failed: {type(e).__name__}: {e}", file=sys.stderr)
+        return
+
+    first_run = not _bennxt_announced
+    fresh = [(p, v) for p, v in roles
+             if (p.platform, p.external_id) not in _bennxt_announced
+             and v.get("sponsorship") in ("yes", "unknown")]
+    _bennxt_announced.update((p.platform, p.external_id) for p, _ in roles)
+    # First run seeds the set silently, exactly like the tech tracker.
+    if first_run or not fresh or not subs:
+        return
+
+    by_channel: dict[int, list[int]] = {}
+    for uid, cid in subs:
+        by_channel.setdefault(cid, []).append(uid)
+    n = len(fresh)
+    header = (f"**{n} new civil/mechanical role{'s' if n != 1 else ''} in "
+              f"California** — {len(subs)} subscribed")
+    blocks = [_format_bennxt(p, v) for p, v in fresh[:ANNOUNCE_MAX]]
+    if n > ANNOUNCE_MAX:
+        blocks.append(f"...and {n - ANNOUNCE_MAX} more — run `/bennxt roles`.")
+    for cid in by_channel:
+        try:
+            channel = bot.get_channel(cid) or await bot.fetch_channel(cid)
+            await channel.send(header, allowed_mentions=NO_MENTIONS)
+            for chunk in _split_blocks(blocks):
+                await channel.send(chunk, allowed_mentions=NO_MENTIONS)
+        except Exception as e:
+            print(f"bennxt notice to channel {cid} failed: "
+                  f"{type(e).__name__}: {e}", file=sys.stderr)
+
+
+@bennxt_sweep.before_loop
+async def _bennxt_wait_ready():
+    await bot.wait_until_ready()
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

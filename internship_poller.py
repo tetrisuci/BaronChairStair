@@ -150,6 +150,37 @@ SEED_BOARDS = [
     ("ashby",      "weaviate",           "Weaviate",             "tech"),
 ]
 
+# Civil / mechanical / AEC employers, for the bennxt profile — the
+# tech-weighted seed list above surfaces almost no civil or mechanical roles.
+# Every entry below was mined from the community repo listings and probed live
+# on 2026-08-01 (guessed ATS slugs are ~0% accurate; these are real). Sector
+# "aec". Run `discover` to grow this from boards.json.
+BENNXT_BOARDS = [
+    ("workday",    "parsons/wd5/search",               "Parsons",           "aec"),
+    ("greenhouse", "olsson",                           "Olsson",            "aec"),
+    ("workday",    "hntb/wd5/hntb_university_careers", "HNTB",              "aec"),
+    ("workday",    "hntb/wd5/hntb_careers",            "HNTB",              "aec"),
+    ("workday",    "mydpr/wd5/11212017",               "DPR Construction",  "aec"),
+    ("workday",    "granite/wd1/careers",              "Granite",           "aec"),
+    ("workday",    "amesconstruction/wd12/ames",       "Ames Construction", "aec"),
+    ("workday",    "gi/wd1/Global_Infrastructure",     "Global Infra",      "aec"),
+    ("ashby",      "astro-mechanica",                  "Astro Mechanica",   "aec"),
+    ("ashby",      "civilgrid",                        "CivilGrid",         "aec"),
+    # Mechanical/hardware employers already validated in SEED_BOARDS that post
+    # heavy mech/aero roles; listed here so bennxt polls them too.
+    ("greenhouse", "lucidmotors",                      "Lucid Motors",      "aec"),
+    ("greenhouse", "spacex",                           "SpaceX",            "aec"),
+    ("greenhouse", "rocketlab",                        "Rocket Lab",        "aec"),
+    ("greenhouse", "astranis",                         "Astranis",          "aec"),
+    ("greenhouse", "vast",                             "Vast",              "aec"),
+    ("greenhouse", "nuro",                             "Nuro",              "aec"),
+    ("greenhouse", "waymo",                            "Waymo",             "aec"),
+    ("greenhouse", "redwoodmaterials",                 "Redwood Materials", "aec"),
+    ("greenhouse", "solidpower",                       "Solid Power",       "aec"),
+    ("workday",    "cat/wd5/CaterpillarCareers",       "Caterpillar",       "aec"),
+    ("workday",    "boeing/wd1/EXTERNAL_CAREERS",      "Boeing",            "aec"),
+]
+
 # Discovered boards live in boards.json (written by `discover`). The seed list
 # above is the hand-curated fallback so the tool works with no setup.
 BOARDS_FILE = os.path.join(_HERE, "boards.json")
@@ -666,8 +697,12 @@ GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")
 GEMINI_URL = ("https://generativelanguage.googleapis.com/v1beta/models/"
               "{model}:generateContent")
 LLM_BATCH = int(os.environ.get("GEMINI_BATCH", "25"))
-LLM_RPM = int(os.environ.get("GEMINI_RPM", "10"))
+# Free AI Studio tier: flash-lite is 15 RPM / 250k TPM, flash is 5 RPM / 250k
+# TPM. Defaults here are the conservative flash numbers so a model switch
+# can't silently exceed the limit; raise GEMINI_RPM for flash-lite.
+LLM_RPM = int(os.environ.get("GEMINI_RPM", "5"))
 LLM_RPD = int(os.environ.get("GEMINI_RPD", "200"))
+LLM_TPM = int(os.environ.get("GEMINI_TPM", "250000"))
 
 LLM_PROMPT = """You classify job postings for a tech-internship alert bot.
 
@@ -735,11 +770,20 @@ def posting_hash(p):
 
 
 class LlmBudget:
-    """Token-bucket RPM limiter plus a daily counter persisted in sqlite."""
+    """Rate limiter for the free AI Studio tier: requests/min, tokens/min, and
+    a requests/day counter persisted in sqlite.
 
-    def __init__(self, conn, rpm=LLM_RPM, rpd=LLM_RPD):
-        self.conn, self.rpm, self.rpd = conn, rpm, rpd
-        self.calls = []
+    TPM matters once we send descriptions rather than titles — a sponsorship
+    batch is thousands of tokens, so RPM alone would blow the 250k/min cap.
+    Token counts are estimated at ~4 chars/token (Gemini's rule of thumb) with
+    headroom; being approximate is fine because we only need to stay under a
+    ceiling, not bill against it.
+    """
+
+    def __init__(self, conn, rpm=LLM_RPM, rpd=LLM_RPD, tpm=LLM_TPM):
+        self.conn, self.rpm, self.rpd, self.tpm = conn, rpm, rpd, tpm
+        self.calls = []          # timestamps of recent requests
+        self.tokens = []         # (timestamp, est_tokens) of recent requests
         self.day = datetime.now().strftime("%Y-%m-%d")
         row = conn.execute("SELECT n FROM llm_usage WHERE day=?",
                            (self.day,)).fetchone()
@@ -748,16 +792,35 @@ class LlmBudget:
     def remaining(self):
         return max(0, self.rpd - self.used)
 
-    async def acquire(self):
+    @staticmethod
+    def estimate_tokens(text: str) -> int:
+        return len(text or "") // 4 + 64   # +64 for the response/schema overhead
+
+    def _prune(self, now):
+        self.calls = [t for t in self.calls if now - t < 60]
+        self.tokens = [(t, n) for t, n in self.tokens if now - t < 60]
+
+    async def acquire(self, est_tokens=0):
+        """Wait until this request fits inside RPM and TPM. False if the daily
+        request budget is exhausted."""
         if self.used >= self.rpd:
             return False
+        for _ in range(12):      # bounded: never wait more than ~12 windows
+            now = time.time()
+            self._prune(now)
+            over_rpm = len(self.calls) >= self.rpm
+            over_tpm = (sum(n for _, n in self.tokens) + est_tokens) > self.tpm
+            if not over_rpm and not over_tpm:
+                break
+            # Sleep until the oldest relevant entry ages out of the window.
+            oldest = min([t for t in self.calls] +
+                         [t for t, _ in self.tokens] or [now])
+            await asyncio.sleep(max(0.5, 60 - (now - oldest) + 0.5))
+        else:
+            return False
         now = time.time()
-        self.calls = [t for t in self.calls if now - t < 60]
-        if len(self.calls) >= self.rpm:
-            wait = 60 - (now - self.calls[0]) + 0.5
-            await asyncio.sleep(max(0, wait))
-            self.calls = [t for t in self.calls if time.time() - t < 60]
-        self.calls.append(time.time())
+        self.calls.append(now)
+        self.tokens.append((now, est_tokens))
         self.used += 1
         self.conn.execute(
             "INSERT INTO llm_usage VALUES(?,?) ON CONFLICT(day) "
@@ -768,10 +831,10 @@ class LlmBudget:
 
 async def _llm_call(sess, budget, batch):
     """One batched request. Returns {index: fields} or {} on any failure."""
-    if not await budget.acquire():
-        return {}
     lines = "\n".join(f'{i}. {p.title} — {p.location or "no location given"}'
                        for i, p in batch)
+    if not await budget.acquire(budget.estimate_tokens(LLM_PROMPT + lines)):
+        return {}
     body = {
         "contents": [{"parts": [{"text": LLM_PROMPT + lines}]}],
         "generationConfig": {"responseMimeType": "application/json",
@@ -870,6 +933,387 @@ async def llm_classify(conn, postings, verbose=True):
                 conn.execute("INSERT OR REPLACE INTO llm_cache VALUES(?,?,?)",
                              (h, json.dumps(rec), time.time()))
     conn.commit()
+    return out
+
+
+# --------------------------------------------------------------------------
+# BENNXT profile — civil/mechanical engineering internships AND new-grad roles
+# in California, filtered by visa-sponsorship status.
+#
+# Two things make this different from the tech tracker:
+#   1. New-grad roles count, so the strict intern-only gate is replaced by a
+#      level check that also accepts "New Grad", "EIT", "Engineer I", etc.
+#   2. Sponsorship is the deciding factor and is NEVER in the list endpoint —
+#      it lives in the description body. So candidates get their description
+#      fetched, then classified into yes/no/unknown (see sponsorship_status).
+# --------------------------------------------------------------------------
+
+# Civil, mechanical, and adjacent disciplines.
+BENNXT_FIELD_RE = re.compile(
+    # Stems (no trailing \b) so "manufactur" matches "Manufacturing", etc.
+    r"\b(civil|structural|geotechnical|geotech|transportation|traffic|highway|"
+    r"bridge|water resources|wastewater|stormwater|hydraulic|hydrolog|"
+    r"land development|site development|survey|construction|"
+    r"mechanical|thermal|hvac|mep|plumbing|piping|fluid|"
+    r"aerospace|aeronautic|astronautic|propulsion|"
+    r"manufactur|industrial|material|metallurg|welding|"
+    r"mechatronic|robotic|automotive|vehicle|machine design|"
+    r"solidworks|autocad|revit|catia|finite element|"
+    r"environmental engineer|architectural engineer|facilit|"
+    r"renewable|solar|draft)"
+    r"|\b(cad|fea|cfd)\b", re.I)
+
+# Software/CS terms that must never qualify, even when a title also contains a
+# generic word this profile likes (e.g. "Software Engineer, Robotics").
+BENNXT_FIELD_EXCLUDE_RE = re.compile(
+    r"\b(software|firmware|full.?stack|frontend|front-end|backend|back-end|"
+    r"web|mobile|ios|android|data scien|data engineer|machine learning|\bml\b|"
+    r"\bai\b|devops|\bsre\b|cloud|cyber|security|network|\bqa\b|test automation|"
+    r"game|graphics|compiler|database|analytics|business|finance|marketing|"
+    r"sales|recruit|human resources|\bhr\b|legal|account)\b", re.I)
+
+# Roles this profile wants: internships AND early-career/new-grad.
+BENNXT_LEVEL_RE = re.compile(
+    r"\b(intern|interns|internship|interning|co-?op|"
+    r"new\s?grad|new\s?graduate|recent\s?graduate|entry[\s-]?level|early\s?career|"
+    r"campus|university\s?graduate|graduate\s?engineer|"
+    r"\beit\b|engineer[\s-]?in[\s-]?training|"
+    r"engineer\s?(i|1)\b|associate\s?engineer|junior\s?engineer|"
+    r"rotational|development\s?program|analyst\s?program|trainee)\b", re.I)
+
+# Senior roles that BENNXT_LEVEL_RE might otherwise catch via "engineer I".
+BENNXT_LEVEL_EXCLUDE_RE = re.compile(
+    r"\b(senior|staff|principal|lead|manager|director|head\s+of|vp\b|"
+    r"engineer\s?(ii|iii|iv|v|2|3|4|5)\b|\bpe\b\s+required|"
+    r"\d{1,2}\+?\s*years)\b", re.I)
+
+# California-only: cities, regions, and the state itself. NOTE: a bare "CA"
+# is ambiguous — Workday writes Canadian locations as "CA | ON | Whitby" — so
+# it is only accepted with a US-style suffix (", CA") or the full state name;
+# BENNXT_NOT_CA_RE below vetoes Canadian strings outright.
+BENNXT_CA_RE = re.compile(
+    r"\b(california|,\s*ca\b|\bca\s*\d{5}|san francisco|bay area|silicon valley|san jose|"
+    r"oakland|berkeley|palo alto|mountain view|sunnyvale|santa clara|"
+    r"redwood city|menlo park|fremont|hayward|san mateo|cupertino|milpitas|"
+    r"los angeles|\bla\b|long beach|pasadena|burbank|glendale|santa monica|"
+    r"el segundo|torrance|irvine|anaheim|santa ana|costa mesa|newport beach|"
+    r"orange county|riverside|san bernardino|ontario, ca|"
+    r"san diego|carlsbad|chula vista|escondido|"
+    r"sacramento|davis|roseville|folsom|stockton|modesto|fresno|bakersfield|"
+    r"santa barbara|ventura|san luis obispo|salinas|monterey|santa cruz|"
+    r"walnut creek|concord|pleasanton|livermore|dublin, ca|vallejo|napa|"
+    r"rancho cordova|city of industry|carson|vernon|commerce, ca)\b", re.I)
+
+# Remote roles count only if they're US-based (a remote-EU role is useless).
+BENNXT_REMOTE_RE = re.compile(
+    r"\bremote\b(?!.*\b(europe|emea|apac|india|canada|uk|latam)\b)", re.I)
+
+# Hard veto: non-US locations, including Canada's "CA" province formatting and
+# the poller's existing NON_US city list.
+BENNXT_NOT_CA_RE = re.compile(
+    r"\b(canada|ontario|quebec|alberta|british columbia|toronto|vancouver|"
+    r"montreal|ottawa|calgary|whitby|mississauga)\b|\bCA\s*\|", re.I)
+
+
+def bennxt_prefilter(p: "Posting") -> bool:
+    """Cheap regex gate: is this posting worth spending a description fetch and
+    an LLM call on? Deliberately generous — the LLM makes the real call."""
+    t = p.title or ""
+    if not BENNXT_LEVEL_RE.search(t) or BENNXT_LEVEL_EXCLUDE_RE.search(t):
+        return False
+    if not BENNXT_FIELD_RE.search(t) or BENNXT_FIELD_EXCLUDE_RE.search(t):
+        return False
+    loc = p.location or ""
+    if BENNXT_NOT_CA_RE.search(loc) or NON_US.search(loc):
+        return False
+    # No location given is common on these boards (Parsons lists none at all);
+    # keep those and let the LLM read the description for the real location.
+    return not loc or bool(BENNXT_CA_RE.search(loc)) or bool(
+        BENNXT_REMOTE_RE.search(loc))
+
+
+# Formulaic phrases that rule sponsorship out. These are legally-worded and
+# near-verbatim across employers, so regex is reliable here and saves an LLM
+# call on the most common case.
+NO_SPONSOR_RE = re.compile(
+    r"(without\s+(?:current\s+or\s+future\s+)?(?:need\s+for\s+)?(?:visa\s+)?sponsorship"
+    r"|not\s+(?:be\s+)?(?:able|willing)\s+to\s+sponsor"
+    r"|do(?:es)?\s+not\s+(?:currently\s+)?(?:offer|provide|sponsor)\s*"
+    r"(?:visa\s+)?(?:sponsorship|applicants)?"
+    r"|unable\s+to\s+(?:offer|provide)\s+(?:visa\s+)?sponsorship"
+    r"|no\s+(?:visa\s+)?sponsorship\s+(?:is\s+)?(?:available|provided|offered)"
+    r"|sponsorship\s+is\s+not\s+available"
+    r"|must\s+be\s+(?:a\s+)?(?:US|U\.S\.)\s+citizen"
+    r"|US\s+[Cc]itizenship\s+(?:is\s+)?required"
+    r"|\bUS\s+Person\b|\bU\.S\.\s+Person\b|\bITAR\b|export\s+control"
+    r"|security\s+clearance)", re.I)
+
+# Phrases that affirm sponsorship. Rarer, but unambiguous when present.
+YES_SPONSOR_RE = re.compile(
+    r"(will\s+sponsor|do\s+sponsor|offer(?:s|ing)?\s+(?:visa\s+)?sponsorship"
+    r"|sponsorship\s+(?:is\s+)?available|visa\s+sponsorship\s+(?:is\s+)?provided"
+    r"|open\s+to\s+sponsoring|able\s+to\s+sponsor"
+    r"|\bH-?1B\s+sponsorship|\bcap-exempt\b|sponsor\s+(?:work\s+)?visas?)", re.I)
+
+SPONSOR_PROMPT = """You read job postings and report their visa-sponsorship stance
+for a candidate who is NOT a US citizen or permanent resident and WILL need
+employer sponsorship (e.g. H-1B, or an F-1 student needing CPT/OPT then
+sponsorship later).
+
+For each numbered posting return one object:
+  i            the posting number
+  sponsorship  "yes"     the posting says sponsorship is available/offered
+               "no"      the posting rules it out (requires US citizenship or
+                         permanent residence, "without current or future
+                         sponsorship", US Person / ITAR / export-control /
+                         security clearance requirements, government-only work)
+               "unknown" the posting simply does not address work authorization
+  field        "civil", "mechanical", "adjacent" (aerospace, structural, MEP,
+               manufacturing, materials, environmental, robotics...), or
+               "other" if it is not an engineering role in these areas
+  level        "intern" (internship/co-op for current students) or
+               "newgrad" (entry-level/new-grad/EIT/Engineer I) or
+               "other" (experienced/senior roles)
+  california   true if the role's work location is in California, or is
+               explicitly remote within the US. false otherwise.
+  evidence     a SHORT verbatim quote (<=160 chars) from the posting that
+               justifies the sponsorship value, or null if it is "unknown".
+
+Be strict about "no": ITAR, export control, security clearance, and "US Person"
+requirements all mean sponsorship is impossible, even if the posting never uses
+the word "sponsorship". Be strict about "yes" too — only when the text
+affirmatively says sponsorship is offered. When the posting is silent about
+work authorization, the answer is "unknown", never a guess.
+
+Return ONLY a JSON array. No markdown fences, no commentary.
+
+Postings:
+"""
+
+SPONSOR_SCHEMA = {
+    "type": "ARRAY",
+    "items": {
+        "type": "OBJECT",
+        "properties": {
+            "i": {"type": "INTEGER"},
+            "sponsorship": {"type": "STRING", "enum": ["yes", "no", "unknown"]},
+            "field": {"type": "STRING",
+                      "enum": ["civil", "mechanical", "adjacent", "other"]},
+            "level": {"type": "STRING", "enum": ["intern", "newgrad", "other"]},
+            "california": {"type": "BOOLEAN"},
+            "evidence": {"type": "STRING", "nullable": True},
+        },
+        "required": ["i", "sponsorship", "field", "level", "california"],
+    },
+}
+
+# How much of a description to send. Sponsorship language is usually in the
+# requirements/EEO tail, so we send the head AND the tail rather than a prefix.
+SPONSOR_HEAD = 2500
+SPONSOR_TAIL = 2500
+SPONSOR_BATCH = int(os.environ.get("GEMINI_SPONSOR_BATCH", "4"))
+
+
+def _sponsor_excerpt(desc: str) -> str:
+    d = (desc or "").strip()
+    if len(d) <= SPONSOR_HEAD + SPONSOR_TAIL:
+        return d
+    return f"{d[:SPONSOR_HEAD]}\n...\n{d[-SPONSOR_TAIL:]}"
+
+
+def sponsorship_from_text(desc: str):
+    """Regex-only verdict: ('no'|'yes'|None, evidence). None means 'ask the
+    LLM' — the text has no formulaic phrase either way."""
+    for rx, verdict in ((NO_SPONSOR_RE, "no"), (YES_SPONSOR_RE, "yes")):
+        m = rx.search(desc or "")
+        if m:
+            start = max(0, m.start() - 60)
+            return verdict, (desc[start:m.end() + 60].strip()
+                             .replace("\n", " ")[:160])
+    return None, None
+
+
+async def classify_sponsorship(conn, items, verbose=True):
+    """items: [(Posting, description)]. Returns {posting_hash: verdict-dict}.
+
+    Regex decides the formulaic cases for free; Gemini reads the rest. Results
+    are cached in llm_cache under a distinct key prefix, so a posting is never
+    re-read and re-runs cost nothing.
+    """
+    out, todo = {}, []
+    for p, desc in items:
+        h = "sp:" + posting_hash(p)
+        row = conn.execute("SELECT payload FROM llm_cache WHERE hash=?",
+                           (h,)).fetchone()
+        if row:
+            out[h] = json.loads(row[0])
+            continue
+        verdict, ev = sponsorship_from_text(desc)
+        if verdict:
+            rec = {"sponsorship": verdict, "evidence": ev, "source": "regex"}
+            out[h] = rec
+            conn.execute("INSERT OR REPLACE INTO llm_cache VALUES(?,?,?)",
+                         (h, json.dumps(rec), time.time()))
+            continue
+        todo.append((p, desc))
+    conn.commit()
+
+    if not todo:
+        return out
+    if not GEMINI_KEY:
+        if verbose:
+            print("  sponsorship: GEMINI_API_KEY not set — leaving "
+                  f"{len(todo)} postings as 'unknown'", file=sys.stderr)
+        return out
+
+    budget = LlmBudget(conn)
+    batches = [todo[i:i + SPONSOR_BATCH]
+               for i in range(0, len(todo), SPONSOR_BATCH)]
+    if len(batches) > budget.remaining():
+        if verbose:
+            print(f"  sponsorship: {len(batches)} calls needed, "
+                  f"{budget.remaining()} left in today's budget", file=sys.stderr)
+        batches = batches[:budget.remaining()]
+    if verbose and batches:
+        print(f"  sponsorship: {len(todo)} postings -> {len(batches)} Gemini "
+              f"calls ({GEMINI_MODEL})")
+
+    fails = 0
+    async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=90)) as sess:
+        for batch in batches:
+            if fails >= 2:
+                if verbose:
+                    print("  sponsorship: 2 consecutive failures — stopping",
+                          file=sys.stderr)
+                break
+            parts = []
+            for i, (p, desc) in enumerate(batch):
+                parts.append(f"### Posting {i}\n"
+                             f"Title: {p.title}\n"
+                             f"Company: {p.company}\n"
+                             f"Location: {p.location or 'not stated'}\n"
+                             f"Description:\n{_sponsor_excerpt(desc)}\n")
+            prompt = SPONSOR_PROMPT + "\n".join(parts)
+            body = {"contents": [{"parts": [{"text": prompt}]}],
+                    "generationConfig": {"responseMimeType": "application/json",
+                                         "responseSchema": SPONSOR_SCHEMA,
+                                         "temperature": 0}}
+            res = {}
+            if await budget.acquire(budget.estimate_tokens(prompt)):
+                for attempt in range(3):
+                    try:
+                        async with sess.post(
+                                GEMINI_URL.format(model=GEMINI_MODEL), json=body,
+                                headers={"x-goog-api-key": GEMINI_KEY}) as r:
+                            if r.status == 429:
+                                await asyncio.sleep(2 ** attempt * 10)
+                                continue
+                            if r.status != 200:
+                                print(f"  sponsorship: HTTP {r.status}",
+                                      file=sys.stderr)
+                                break
+                            d = await r.json(content_type=None)
+                        text = d["candidates"][0]["content"]["parts"][0]["text"]
+                        rows = json.loads(
+                            text.strip().strip("`").removeprefix("json"))
+                        res = {x["i"]: x for x in rows
+                               if isinstance(x, dict) and "i" in x}
+                        break
+                    except Exception as e:
+                        print(f"  sponsorship: {type(e).__name__}",
+                              file=sys.stderr)
+                        break
+            fails = 0 if res else fails + 1
+            for i, (p, _) in enumerate(batch):
+                f = res.get(i)
+                if not f:
+                    continue
+                rec = {"sponsorship": f.get("sponsorship") or "unknown",
+                       "field": f.get("field"), "level": f.get("level"),
+                       "california": bool(f.get("california")),
+                       "evidence": (f.get("evidence") or None),
+                       "source": "llm"}
+                h = "sp:" + posting_hash(p)
+                out[h] = rec
+                conn.execute("INSERT OR REPLACE INTO llm_cache VALUES(?,?,?)",
+                             (h, json.dumps(rec), time.time()))
+    conn.commit()
+    return out
+
+
+BENNXT_DETAIL_CONCURRENCY = 6
+BENNXT_MAX_DETAILS = int(os.environ.get("BENNXT_MAX_DETAILS", "60"))
+
+
+async def bennxt_scan(conn, verbose=True, max_details=BENNXT_MAX_DETAILS):
+    """Full bennxt pass: poll AEC boards -> prefilter -> fetch descriptions ->
+    classify sponsorship. Returns [(Posting, verdict-dict)], newest first.
+
+    verdict: {"sponsorship": yes|no|unknown, "evidence": str|None,
+              "source": regex|llm, "field"/"level"/"california" when the LLM
+              answered, plus "salary" and "description" from the detail fetch}
+    """
+    global BOARDS
+    saved, BOARDS = BOARDS, BENNXT_BOARDS
+    try:
+        posts, stats = await fetch_all()
+    finally:
+        BOARDS = saved
+
+    cands = [p for p in posts if bennxt_prefilter(p)]
+    # Newest first, undated last, so the detail-fetch cap spends its budget on
+    # the freshest postings.
+    cands.sort(key=lambda p: -(p.published or 0))
+    if verbose:
+        print(f"  bennxt: {stats['ok']} boards · {len(posts)} postings · "
+              f"{len(cands)} pass the civil/mech + CA prefilter")
+    if len(cands) > max_details:
+        if verbose:
+            print(f"  bennxt: capping description fetches at {max_details} "
+                  f"(dropping {len(cands) - max_details} oldest)")
+        cands = cands[:max_details]
+    if not cands:
+        return []
+
+    sem = asyncio.Semaphore(BENNXT_DETAIL_CONCURRENCY)
+
+    async def detail(p):
+        async with sem:
+            try:
+                return p, await fetch_details(p.platform, p.url, p.external_id)
+            except Exception:
+                return p, {}
+
+    fetched = await asyncio.gather(*(detail(p) for p in cands))
+    with_desc = [(p, d) for p, d in fetched if (d.get("description") or "").strip()]
+    if verbose:
+        print(f"  bennxt: {len(with_desc)}/{len(cands)} descriptions retrieved")
+
+    verdicts = await classify_sponsorship(
+        conn, [(p, d["description"]) for p, d in with_desc], verbose=verbose)
+
+    out = []
+    for p, d in with_desc:
+        v = dict(verdicts.get("sp:" + posting_hash(p))
+                 or {"sponsorship": "unknown", "evidence": None,
+                     "source": "none"})
+        # The LLM also re-checks field/level/California from the full text; a
+        # clear "other"/non-CA verdict overrules the title-only prefilter.
+        if v.get("field") == "other" or v.get("level") == "other":
+            continue
+        if v.get("california") is False:
+            continue
+        v["salary"] = d.get("salary")
+        v["description"] = d.get("description")
+        out.append((p, v))
+    out.sort(key=lambda pv: -(pv[0].published or 0))
+    if verbose:
+        tally = defaultdict(int)
+        for _, v in out:
+            tally[v["sponsorship"]] += 1
+        print(f"  bennxt: {len(out)} roles · " +
+              " · ".join(f"{k}={tally[k]}" for k in ("yes", "unknown", "no")))
     return out
 
 
