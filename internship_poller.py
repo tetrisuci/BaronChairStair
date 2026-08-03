@@ -15,7 +15,7 @@ Internship poller. Covers Greenhouse, Lever, Ashby, Workday.
 
     export GEMINI_API_KEY=...               # required for --llm
     export GEMINI_MODEL=gemini-3.5-flash-lite   # or gemini-3.6-flash
-    export GEMINI_RPM=10 GEMINI_RPD=200     # match your AI Studio dashboard
+    export GEMINI_RPM=15 GEMINI_RPD=500     # match your AI Studio dashboard
     python internship_poller.py discover            # mine + validate ~2k boards -> boards.json
     python internship_poller.py discover --yc       # + probe YC's 6k company dataset (slow)
     python internship_poller.py prune --dry-run     # see what the retention rule removes
@@ -815,11 +815,12 @@ GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")
 GEMINI_URL = ("https://generativelanguage.googleapis.com/v1beta/models/"
               "{model}:generateContent")
 LLM_BATCH = int(os.environ.get("GEMINI_BATCH", "25"))
-# Free AI Studio tier: flash-lite is 15 RPM / 250k TPM, flash is 5 RPM / 250k
-# TPM. Defaults here are the conservative flash numbers so a model switch
-# can't silently exceed the limit; raise GEMINI_RPM for flash-lite.
+# Free AI Studio tier: flash-lite is 15 RPM / 500 RPD, flash is 5 RPM / 250
+# RPD; both are 250k TPM. Defaults here are the conservative flash numbers so
+# a model switch can't silently exceed the limit — .env raises them for
+# flash-lite. Check your own dashboard; the published tables go stale.
 LLM_RPM = int(os.environ.get("GEMINI_RPM", "5"))
-LLM_RPD = int(os.environ.get("GEMINI_RPD", "200"))
+LLM_RPD = int(os.environ.get("GEMINI_RPD", "250"))
 LLM_TPM = int(os.environ.get("GEMINI_TPM", "250000"))
 
 LLM_PROMPT = """You classify job postings for a tech-internship alert bot.
@@ -1332,6 +1333,29 @@ For each numbered posting return one object:
                relocation stipends, or 401k match figures.
   evidence     a SHORT verbatim quote (<=160 chars) from the posting that
                justifies the sponsorship value, or null if it is "unknown".
+  fit          how well the posting matches the CANDIDATE RESUME below, if one
+               is provided: "strong" (their degree/skills/experience line up
+               well and they meet the stated requirements), "possible" (a
+               plausible stretch — adjacent discipline, or missing some
+               preferred skills), or "weak" (wrong discipline, or requires
+               credentials/experience they clearly do not have, e.g. a PE
+               licence, a security clearance, or a degree in another field).
+               Use null when no resume is provided.
+  fit_reason   one short sentence (<=200 chars) naming the specific overlap or
+               the specific gap. Null when no resume is provided.
+
+Judge fit on substance: degree field and level, coursework, tools and software,
+and the kind of work they have actually done. Do not reward keyword overlap
+alone.
+
+EXPERIENCE IS A HARD GATE. The candidate is a student/new graduate whose only
+work history is internships and academic projects. If the posting requires a
+specific number of years of professional experience beyond that (e.g. "4+
+years", "3-5 years", "minimum 2 years industry experience"), the fit is "weak"
+— no matter how well the discipline matches. Never claim the candidate "meets"
+an experience requirement they cannot meet. The same applies to credentials
+they do not hold, such as a PE licence, an EIT certificate they have not
+earned, or an active security clearance.
 
 Be strict about "no": ITAR, export control, security clearance, and "US Person"
 requirements all mean sponsorship is impossible, even if the posting never uses
@@ -1376,6 +1400,9 @@ SPONSOR_SCHEMA = {
             "location": {"type": "STRING", "nullable": True},
             "salary": {"type": "STRING", "nullable": True},
             "evidence": {"type": "STRING", "nullable": True},
+            "fit": {"type": "STRING", "nullable": True,
+                    "enum": ["strong", "possible", "weak"]},
+            "fit_reason": {"type": "STRING", "nullable": True},
         },
         "required": ["i", "sponsorship", "field", "level", "california",
                      "socal"],
@@ -1387,6 +1414,49 @@ SPONSOR_SCHEMA = {
 SPONSOR_HEAD = 2500
 SPONSOR_TAIL = 2500
 SPONSOR_BATCH = int(os.environ.get("GEMINI_SPONSOR_BATCH", "4"))
+
+# --------------------------------------------------------------------------
+# Resume matching. The candidate's resume is sent once per batch alongside the
+# postings, so Gemini judges fit in the SAME call that decides sponsorship —
+# no extra requests against the free tier.
+# --------------------------------------------------------------------------
+
+RESUME_PATH = os.environ.get("BENNXT_RESUME",
+                             os.path.join(_HERE, "data", "resume.pdf"))
+RESUME_MAX_CHARS = 6000
+_RESUME_CACHE: dict = {}
+
+
+def load_resume(path=None) -> Optional[str]:
+    """Plain text of the candidate's resume, or None if unavailable.
+
+    Cached by (path, mtime) so editing the PDF picks up automatically.
+    """
+    path = path or RESUME_PATH
+    try:
+        stamp = (path, os.path.getmtime(path))
+    except OSError:
+        return None
+    if stamp in _RESUME_CACHE:
+        return _RESUME_CACHE[stamp]
+    text = None
+    try:
+        from pypdf import PdfReader
+        pages = PdfReader(path).pages
+        text = "\n".join((pg.extract_text() or "") for pg in pages)
+        # The extractor spaces out letters in headings; collapse the noise.
+        text = re.sub(r"[ \t ]+", " ", text)
+        text = re.sub(r"\n{2,}", "\n", text).strip() or None
+    except ImportError:
+        print("  resume: pypdf not installed — resume matching disabled "
+              "(pip install pypdf)", file=sys.stderr)
+    except Exception as e:
+        print(f"  resume: could not read {path} ({type(e).__name__}) — "
+              "resume matching disabled", file=sys.stderr)
+    if text:
+        text = text[:RESUME_MAX_CHARS]
+    _RESUME_CACHE[stamp] = text
+    return text
 
 
 def _sponsor_excerpt(desc: str) -> str:
@@ -1421,9 +1491,13 @@ async def classify_sponsorship(conn, items, verbose=True):
     else about the posting is in question. Results are cached in llm_cache
     under a distinct key prefix, so a posting is never re-read.
     """
+    resume = load_resume()
+    # Cache key includes whether a resume was in play, so verdicts recorded
+    # without fit scoring are not reused once a resume exists (and vice versa).
+    prefix = "sp2:" if resume else "sp:"
     out, todo = {}, []
     for p, desc, known in items:
-        h = "sp:" + posting_hash(p)
+        h = prefix + posting_hash(p)
         row = conn.execute("SELECT payload FROM llm_cache WHERE hash=?",
                            (h,)).fetchone()
         if row:
@@ -1455,9 +1529,14 @@ async def classify_sponsorship(conn, items, verbose=True):
     batches = [todo[i:i + SPONSOR_BATCH]
                for i in range(0, len(todo), SPONSOR_BATCH)]
     if len(batches) > budget.remaining():
-        if verbose:
-            print(f"  sponsorship: {len(batches)} calls needed, "
-                  f"{budget.remaining()} left in today's budget", file=sys.stderr)
+        skipped = (len(batches) - budget.remaining()) * SPONSOR_BATCH
+        # Loud: a truncated scan leaves postings unscored, and silence would
+        # read as "these roles have no sponsorship/fit answer" rather than
+        # "we ran out of quota".
+        print(f"  sponsorship: WARNING daily Gemini budget exhausted — "
+              f"{len(batches)} calls needed, {budget.remaining()} left. "
+              f"~{skipped} postings will stay unscored until tomorrow "
+              f"(raise GEMINI_RPD or wait for the reset).", file=sys.stderr)
         batches = batches[:budget.remaining()]
     if verbose and batches:
         print(f"  sponsorship: {len(todo)} postings -> {len(batches)} Gemini "
@@ -1480,35 +1559,41 @@ async def classify_sponsorship(conn, items, verbose=True):
                              f"Location: {p.location or 'not stated'}\n"
                              f"Description:\n{_sponsor_excerpt(desc)}\n")
             prompt = SPONSOR_PROMPT + "\n".join(parts)
+            if resume:
+                prompt += ("\n\n=== CANDIDATE RESUME ===\n" + resume +
+                           "\n=== END RESUME ===\n")
             body = {"contents": [{"parts": [{"text": prompt}]}],
                     "generationConfig": {"responseMimeType": "application/json",
                                          "responseSchema": SPONSOR_SCHEMA,
                                          "temperature": 0}}
             res = {}
-            if await budget.acquire(budget.estimate_tokens(prompt)):
-                for attempt in range(3):
-                    try:
-                        async with sess.post(
-                                GEMINI_URL.format(model=GEMINI_MODEL), json=body,
-                                headers={"x-goog-api-key": GEMINI_KEY}) as r:
-                            if r.status == 429:
-                                await asyncio.sleep(2 ** attempt * 10)
-                                continue
-                            if r.status != 200:
-                                print(f"  sponsorship: HTTP {r.status}",
-                                      file=sys.stderr)
-                                break
-                            d = await r.json(content_type=None)
-                        text = d["candidates"][0]["content"]["parts"][0]["text"]
-                        rows = json.loads(
-                            text.strip().strip("`").removeprefix("json"))
-                        res = {x["i"]: x for x in rows
-                               if isinstance(x, dict) and "i" in x}
-                        break
-                    except Exception as e:
-                        print(f"  sponsorship: {type(e).__name__}",
-                              file=sys.stderr)
-                        break
+            est = budget.estimate_tokens(prompt)
+            for attempt in range(3):
+                # Every attempt is a real API call, so every attempt must take
+                # a slot — otherwise retries spend quota invisibly.
+                if not await budget.acquire(est):
+                    break
+                try:
+                    async with sess.post(
+                            GEMINI_URL.format(model=GEMINI_MODEL), json=body,
+                            headers={"x-goog-api-key": GEMINI_KEY}) as r:
+                        if r.status == 429:
+                            await asyncio.sleep(2 ** attempt * 10)
+                            continue
+                        if r.status != 200:
+                            print(f"  sponsorship: HTTP {r.status}",
+                                  file=sys.stderr)
+                            break
+                        d = await r.json(content_type=None)
+                    text = d["candidates"][0]["content"]["parts"][0]["text"]
+                    rows = json.loads(
+                        text.strip().strip("`").removeprefix("json"))
+                    res = {x["i"]: x for x in rows
+                           if isinstance(x, dict) and "i" in x}
+                    break
+                except Exception as e:
+                    print(f"  sponsorship: {type(e).__name__}", file=sys.stderr)
+                    break
             fails = 0 if res else fails + 1
             for i, (p, _, known) in enumerate(batch):
                 f = res.get(i)
@@ -1523,6 +1608,14 @@ async def classify_sponsorship(conn, items, verbose=True):
                 # demands citizenship or permanent residence, that is a "no".
                 if verdict == "yes" and ev and NO_SPONSOR_RE.search(ev):
                     verdict = "no"
+                # Same defensive idea as the sponsorship guard: the model has
+                # been seen calling a "4+ years" role a strong match. If its
+                # own reason cites a multi-year requirement, it is not.
+                fit_v, fit_r = f.get("fit"), (f.get("fit_reason") or None)
+                if (fit_v in ("strong", "possible") and fit_r
+                        and BENNXT_YOE_RE.search(fit_r)
+                        and not bennxt_yoe_ok(fit_r, max_yoe=BENNXT_MAX_YOE)):
+                    fit_v = "weak"
                 rec = {"sponsorship": verdict,
                        "field": f.get("field"), "level": f.get("level"),
                        "california": bool(f.get("california")),
@@ -1530,8 +1623,10 @@ async def classify_sponsorship(conn, items, verbose=True):
                        "location": known.get("location") or f.get("location"),
                        "salary": known.get("salary") or f.get("salary"),
                        "evidence": ev,
+                       "fit": fit_v,
+                       "fit_reason": fit_r,
                        "source": "llm"}
-                h = "sp:" + posting_hash(p)
+                h = prefix + posting_hash(p)
                 out[h] = rec
                 conn.execute("INSERT OR REPLACE INTO llm_cache VALUES(?,?,?)",
                              (h, json.dumps(rec), time.time()))
@@ -1676,9 +1771,10 @@ async def bennxt_scan(conn, verbose=True, max_details=BENNXT_MAX_DETAILS,
         conn, [(p, d["description"], certain(p, d)) for p, d in with_desc],
         verbose=verbose)
 
+    _prefix = "sp2:" if load_resume() else "sp:"
     out = []
     for p, d in with_desc:
-        v = dict(verdicts.get("sp:" + posting_hash(p))
+        v = dict(verdicts.get(_prefix + posting_hash(p))
                  or {"sponsorship": "unknown", "evidence": None,
                      "source": "none"})
         # The LLM also re-checks field/level/California from the full text; a
@@ -1714,15 +1810,30 @@ async def bennxt_scan(conn, verbose=True, max_details=BENNXT_MAX_DETAILS,
                 p.location or ""):
             v["resolved_location"] = v.get("location")
         out.append((p, v))
-    # SoCal first, then rest-of-CA, newest first within each tier.
+    # SoCal first, then rest-of-CA; within a region, the roles the resume
+    # actually fits come first; newest first within that.
+    # Unscored (budget ran out before this posting) ranks below scored matches
+    # but above known-weak ones, so a truncated scan can't bury real matches.
+    fit_rank = {"strong": 0, "possible": 1, None: 2, "weak": 3}
     out.sort(key=lambda pv: (tier.get(pv[1]["region"], 4),
+                             fit_rank.get(pv[1].get("fit"), 2),
                              -(pv[0].published or 0)))
     if verbose:
         tally = defaultdict(int)
         for _, v in out:
             tally[v["sponsorship"]] += 1
-        print(f"  bennxt: {len(out)} roles · " +
-              " · ".join(f"{k}={tally[k]}" for k in ("yes", "unknown", "no")))
+        line = (f"  bennxt: {len(out)} roles · " +
+                " · ".join(f"{k}={tally[k]}" for k in ("yes", "unknown", "no")))
+        fits = defaultdict(int)
+        for _, v in out:
+            if v.get("fit"):
+                fits[v["fit"]] += 1
+        if fits:
+            line += (" · resume fit " +
+                     " ".join(f"{k}={fits[k]}"
+                              for k in ("strong", "possible", "weak")
+                              if fits[k]))
+        print(line)
     return out
 
 
