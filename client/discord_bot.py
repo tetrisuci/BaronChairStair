@@ -105,6 +105,8 @@ SPONSOR_LABEL = {"yes": "✅ sponsors", "unknown": "❔ not stated",
                  "no": "🚫 no sponsorship"}
 REGION_LABEL = {"socal": "📍 SoCal", "ca": "CA", "remote": "remote",
                 "unknown": "location TBD"}
+FIT_LABEL = {"strong": "🎯 strong resume fit", "possible": "🤔 possible fit",
+             "weak": "⚠️ weak fit"}
 
 # Posting titles/locations come from external APIs and could contain <@id>
 # text, and announcements are deliberately silent — nothing this bot sends
@@ -499,8 +501,13 @@ def _format_bennxt(p, v, show_evidence: bool = False) -> str:
     if v.get("salary"):
         bits.append(v["salary"])
     bits.append(posted)
+    head = status
+    if v.get("fit"):
+        head += " · " + FIT_LABEL[v["fit"]]
     block = (f"**{p.company}** — {p.title}\n"
-             f"{status} · " + " · ".join(bits))
+             f"{head} · " + " · ".join(bits))
+    if v.get("fit_reason"):
+        block += f"\n_{v['fit_reason'][:200]}_"
     if show_evidence and v.get("evidence"):
         ev = v["evidence"].replace("`", "'")[:180]
         block += f"\n> {ev}"
@@ -837,6 +844,7 @@ bennxt = app_commands.Group(
 @app_commands.describe(
     sponsorship="Which sponsorship statuses to show (default: hides explicit no)",
     region="Where the role is (default: SoCal first, then rest of California)",
+    fit="How well the role matches the resume (default: hides weak matches)",
     evidence="Show the quoted sponsorship language from each posting")
 @app_commands.choices(
     sponsorship=[
@@ -847,11 +855,17 @@ bennxt = app_commands.Group(
     region=[
         app_commands.Choice(name="SoCal first, then all CA (default)", value="all"),
         app_commands.Choice(name="SoCal only (Irvine / LA / OC / SD)", value="socal"),
+    ],
+    fit=[
+        app_commands.Choice(name="Hide weak resume matches (default)", value="ok"),
+        app_commands.Choice(name="Only strong resume matches", value="strong"),
+        app_commands.Choice(name="Everything, regardless of fit", value="all"),
     ])
 async def bennxt_roles_slash(
     interaction: discord.Interaction,
     sponsorship: app_commands.Choice[str] = None,
     region: app_commands.Choice[str] = None,
+    fit: app_commands.Choice[str] = None,
     evidence: bool = False,
 ):
     if pconn is None:
@@ -874,6 +888,12 @@ async def bennxt_roles_slash(
     sel = [(p, v) for p, v in roles if v.get("sponsorship") in keep]
     if region and region.value == "socal":
         sel = [(p, v) for p, v in sel if v.get("region") == "socal"]
+    fit_mode = fit.value if fit else "ok"
+    if fit_mode == "strong":
+        sel = [(p, v) for p, v in sel if v.get("fit") == "strong"]
+    elif fit_mode == "ok":
+        # Unscored roles (no resume, or the LLM didn't answer) are kept.
+        sel = [(p, v) for p, v in sel if v.get("fit") != "weak"]
     tally = {k: sum(1 for _, v in roles if v.get("sponsorship") == k)
              for k in ("yes", "unknown", "no")}
     socal_n = sum(1 for _, v in roles if v.get("region") == "socal")
@@ -888,17 +908,25 @@ async def bennxt_roles_slash(
 
     scope = ("in SoCal (Irvine / LA / OC / SD)" if region
              and region.value == "socal" else "in California, SoCal first")
+    strong_n = sum(1 for _, v in roles if v.get("fit") == "strong")
     header = (f"**{len(sel)} civil/mechanical roles {scope}** "
               f"(internships + new grad, posted in the last "
               f"{poller.BENNXT_MAX_AGE_DAYS} days)\n"
               f"Last scan: 📍 {socal_n} SoCal · ✅ {tally['yes']} sponsor · "
               f"❔ {tally['unknown']} not stated · 🚫 {tally['no']} ruled out"
-              + ("" if mode == "all" else " (hidden)"))
+              + ("" if mode == "all" else " (hidden)")
+              + (f" · 🎯 {strong_n} strong resume matches" if strong_n else ""))
     blocks = [_format_bennxt(p, v, evidence) for p, v in sel[:BENNXT_MAX_ROLES]]
     if len(sel) > BENNXT_MAX_ROLES:
         blocks.append(f"...and {len(sel) - BENNXT_MAX_ROLES} more.")
-    blocks.append("*❔ = the posting never mentions work authorization; verify "
-                  "with the employer before applying.*")
+    note = ("*❔ = the posting never mentions work authorization; verify "
+            "with the employer before applying.*")
+    unscored = sum(1 for _, v in sel if not v.get("fit"))
+    if unscored:
+        note += (f"\n*{unscored} role(s) here have no resume-fit rating yet — "
+                 "the daily Gemini budget ran out mid-scan; they get scored on "
+                 "the next run.*")
+    blocks.append(note)
     await interaction.followup.send(header, allowed_mentions=NO_MENTIONS)
     for chunk in _split_blocks(blocks):
         await interaction.followup.send(chunk, allowed_mentions=NO_MENTIONS)
