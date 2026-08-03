@@ -156,29 +156,80 @@ SEED_BOARDS = [
 # on 2026-08-01 (guessed ATS slugs are ~0% accurate; these are real). Sector
 # "aec". Run `discover` to grow this from boards.json.
 BENNXT_BOARDS = [
-    ("workday",    "parsons/wd5/search",               "Parsons",           "aec"),
-    ("greenhouse", "olsson",                           "Olsson",            "aec"),
-    ("workday",    "hntb/wd5/hntb_university_careers", "HNTB",              "aec"),
-    ("workday",    "hntb/wd5/hntb_careers",            "HNTB",              "aec"),
-    ("workday",    "mydpr/wd5/11212017",               "DPR Construction",  "aec"),
-    ("workday",    "granite/wd1/careers",              "Granite",           "aec"),
-    ("workday",    "amesconstruction/wd12/ames",       "Ames Construction", "aec"),
-    ("workday",    "gi/wd1/Global_Infrastructure",     "Global Infra",      "aec"),
-    ("ashby",      "astro-mechanica",                  "Astro Mechanica",   "aec"),
-    ("ashby",      "civilgrid",                        "CivilGrid",         "aec"),
-    # Mechanical/hardware employers already validated in SEED_BOARDS that post
-    # heavy mech/aero roles; listed here so bennxt polls them too.
-    ("greenhouse", "lucidmotors",                      "Lucid Motors",      "aec"),
-    ("greenhouse", "spacex",                           "SpaceX",            "aec"),
-    ("greenhouse", "rocketlab",                        "Rocket Lab",        "aec"),
-    ("greenhouse", "astranis",                         "Astranis",          "aec"),
-    ("greenhouse", "vast",                             "Vast",              "aec"),
-    ("greenhouse", "nuro",                             "Nuro",              "aec"),
-    ("greenhouse", "waymo",                            "Waymo",             "aec"),
-    ("greenhouse", "redwoodmaterials",                 "Redwood Materials", "aec"),
-    ("greenhouse", "solidpower",                       "Solid Power",       "aec"),
-    ("workday",    "cat/wd5/CaterpillarCareers",       "Caterpillar",       "aec"),
-    ("workday",    "boeing/wd1/EXTERNAL_CAREERS",      "Boeing",            "aec"),
+    # ---- civil / AEC consultancies and contractors (Workday) ----
+    ("workday",    "parsons/wd5/search",               "Parsons",            "aec"),
+    ("workday",    "hntb/wd5/hntb_university_careers", "HNTB",               "aec"),
+    ("workday",    "hntb/wd5/hntb_careers",            "HNTB",               "aec"),
+    ("workday",    "mydpr/wd5/11212017",               "DPR Construction",   "aec"),
+    ("workday",    "granite/wd1/careers",              "Granite",            "aec"),
+    ("workday",    "amesconstruction/wd12/ames",       "Ames Construction",  "aec"),
+    ("workday",    "gi/wd1/Global_Infrastructure",     "Global Infra",       "aec"),
+    ("workday",    "cat/wd5/CaterpillarCareers",       "Caterpillar",        "aec"),
+    ("workday",    "boeing/wd1/EXTERNAL_CAREERS",      "Boeing",             "aec"),
+    # ---- civil / environmental / survey consultancies ----
+    ("greenhouse", "olsson",                           "Olsson",             "aec"),
+    ("greenhouse", "apexcompanies",                    "Apex Companies",     "aec"),
+    ("greenhouse", "woolpert",                         "Woolpert",           "aec"),
+    ("greenhouse", "bgeinc",                           "BGE",                "aec"),
+    ("greenhouse", "mcadams",                          "McAdams",            "aec"),
+    ("lever",      "fehrandpeers",                     "Fehr & Peers",       "aec"),
+    ("greenhouse", "tpcengineeringholdingsllc",        "TPC Engineering",    "aec"),
+    ("ashby",      "civilgrid",                        "CivilGrid",          "aec"),
+    ("ashby",      "apex-technology-inc",              "Apex Technology",    "aec"),
+    ("greenhouse", "oldcastlebuildingenvelope",        "Oldcastle",          "aec"),
+    ("greenhouse", "biomedrealty",                     "BioMed Realty",      "aec"),
+    # ---- SoCal aerospace / defense / hardware (Irvine-LA-San Diego belt) ----
+    ("greenhouse", "spacex",                           "SpaceX",             "aec"),
+    ("greenhouse", "andurilindustries",                "Anduril",            "aec"),
+    ("greenhouse", "relativity",                       "Relativity Space",   "aec"),
+    ("greenhouse", "rocketlab",                        "Rocket Lab",         "aec"),
+    ("greenhouse", "vast",                             "Vast",               "aec"),
+    ("greenhouse", "astranis",                         "Astranis",           "aec"),
+    ("greenhouse", "vardaspace",                       "Varda Space",        "aec"),
+    ("greenhouse", "trueanomalyinc",                   "True Anomaly",       "aec"),
+    ("greenhouse", "terranorbitalcorporation",         "Terran Orbital",     "aec"),
+    ("greenhouse", "freeformfuturecorp",               "Freeform",           "aec"),
+    ("greenhouse", "spacekinetic",                     "Space Kinetic",      "aec"),
+    ("greenhouse", "nerostechnologies",                "Neros Technologies", "aec"),
+    ("greenhouse", "salientmotion",                    "Salient Motion",     "aec"),
+    ("greenhouse", "silvus",                           "Silvus Technologies", "aec"),
+    ("greenhouse", "arcboatcompany",                   "Arc Boats",          "aec"),
+    ("greenhouse", "rebuildmanufacturing",             "Rebuild Manufacturing", "aec"),
+    ("greenhouse", "rocketems",                        "Rocket EMS",         "aec"),
+    ("greenhouse", "voyagertechnologiesinc",           "Voyager Technologies", "aec"),
+    ("greenhouse", "generalmatter",                    "General Matter",     "aec"),
+    ("greenhouse", "gotion",                           "Gotion",             "aec"),
+    ("greenhouse", "horizonsurgicalsystems",           "Horizon Surgical",   "aec"),
+    ("ashby",      "hadrian-automation",               "Hadrian",            "aec"),
+    ("ashby",      "saronic",                          "Saronic",            "aec"),
+    ("ashby",      "mach",                             "Mach Industries",    "aec"),
+    ("ashby",      "antares",                          "Antares",            "aec"),
+    ("ashby",      "astro-mechanica",                  "Astro Mechanica",    "aec"),
+    ("ashby",      "northwoodspace",                   "Northwood Space",    "aec"),
+    ("ashby",      "turion-space",                     "Turion Space",       "aec"),
+    ("ashby",      "logos-space",                      "Logos Space",        "aec"),
+    ("ashby",      "observable-space",                 "Observable Space",   "aec"),
+    ("ashby",      "oligo",                            "Oligo",              "aec"),
+    ("lever",      "hermeus",                          "Hermeus",            "aec"),
+    ("lever",      "shieldai",                         "Shield AI",          "aec"),
+    ("lever",      "field-ai",                         "Field AI",           "aec"),
+    ("lever",      "layup",                            "Layup Parts",        "aec"),
+    ("lever",      "longwall",                         "Longwall",           "aec"),
+    ("lever",      "kepler",                           "Kepler",             "aec"),
+    ("lever",      "multiplylabs",                     "Multiply Labs",      "aec"),
+    ("lever",      "fluxergy-2",                       "Fluxergy",           "aec"),
+    ("lever",      "make-rain",                        "Rain",               "aec"),
+    # ---- NorCal / statewide mech & energy (still California) ----
+    ("greenhouse", "lucidmotors",                      "Lucid Motors",       "aec"),
+    ("greenhouse", "redwoodmaterials",                 "Redwood Materials",  "aec"),
+    ("greenhouse", "solidpower",                       "Solid Power",        "aec"),
+    ("greenhouse", "nuro",                             "Nuro",               "aec"),
+    ("greenhouse", "waymo",                            "Waymo",              "aec"),
+    ("greenhouse", "kairospower",                      "Kairos Power",       "aec"),
+    ("greenhouse", "figureai",                         "Figure AI",          "aec"),
+    ("greenhouse", "inversionspace",                   "Inversion Space",    "aec"),
+    ("greenhouse", "zone5technologies",                "Zone 5 Technologies", "aec"),
+    ("ashby",      "applied",                          "Applied Intuition",  "aec"),
 ]
 
 # Discovered boards live in boards.json (written by `discover`). The seed list
@@ -1004,9 +1055,37 @@ BENNXT_CA_RE = re.compile(
     r"walnut creek|concord|pleasanton|livermore|dublin, ca|vallejo|napa|"
     r"rancho cordova|city of industry|carson|vernon|commerce, ca)\b", re.I)
 
+# Southern California — the Irvine / LA / OC / San Diego belt the user cares
+# about most. These rank above the rest of the state and can be filtered on.
+BENNXT_SOCAL_RE = re.compile(
+    r"\b(irvine|los angeles|long beach|pasadena|burbank|glendale|santa monica|"
+    r"el segundo|torrance|hawthorne|inglewood|culver city|redondo|hermosa|"
+    r"manhattan beach|carson|cerritos|downey|whittier|pico rivera|commerce|"
+    r"vernon|city of industry|pomona|chino|upland|ontario|corona|"
+    r"anaheim|santa ana|costa mesa|newport beach|huntington beach|fullerton|"
+    r"brea|tustin|mission viejo|laguna|orange county|\borange, ca\b|"
+    r"riverside|san bernardino|temecula|murrieta|"
+    r"san diego|carlsbad|chula vista|escondido|oceanside|poway|la jolla|"
+    r"ventura|oxnard|thousand oaks|simi valley|santa clarita|"
+    r"socal|southern california)\b", re.I)
+
 # Remote roles count only if they're US-based (a remote-EU role is useless).
 BENNXT_REMOTE_RE = re.compile(
     r"\bremote\b(?!.*\b(europe|emea|apac|india|canada|uk|latam)\b)", re.I)
+
+
+def bennxt_region(loc: str) -> str:
+    """'socal' | 'ca' | 'remote' | 'other' for one location string."""
+    loc = loc or ""
+    if BENNXT_NOT_CA_RE.search(loc) or NON_US.search(loc):
+        return "other"
+    if BENNXT_SOCAL_RE.search(loc):
+        return "socal"
+    if BENNXT_CA_RE.search(loc):
+        return "ca"
+    if BENNXT_REMOTE_RE.search(loc):
+        return "remote"
+    return "other" if loc else "unknown"
 
 # Hard veto: non-US locations, including Canada's "CA" province formatting and
 # the poller's existing NON_US city list.
@@ -1243,7 +1322,7 @@ async def classify_sponsorship(conn, items, verbose=True):
 
 
 BENNXT_DETAIL_CONCURRENCY = 6
-BENNXT_MAX_DETAILS = int(os.environ.get("BENNXT_MAX_DETAILS", "60"))
+BENNXT_MAX_DETAILS = int(os.environ.get("BENNXT_MAX_DETAILS", "80"))
 
 
 async def bennxt_scan(conn, verbose=True, max_details=BENNXT_MAX_DETAILS):
@@ -1262,12 +1341,19 @@ async def bennxt_scan(conn, verbose=True, max_details=BENNXT_MAX_DETAILS):
         BOARDS = saved
 
     cands = [p for p in posts if bennxt_prefilter(p)]
-    # Newest first, undated last, so the detail-fetch cap spends its budget on
-    # the freshest postings.
-    cands.sort(key=lambda p: -(p.published or 0))
+    # SoCal first (the Irvine/LA belt is the priority), then rest-of-CA, then
+    # remote/unknown; newest first inside each tier. The detail-fetch cap
+    # therefore spends its budget on the most relevant postings.
+    tier = {"socal": 0, "ca": 1, "remote": 2, "unknown": 3, "other": 4}
+    cands.sort(key=lambda p: (tier.get(bennxt_region(p.location), 4),
+                              -(p.published or 0)))
     if verbose:
+        by_region = defaultdict(int)
+        for p in cands:
+            by_region[bennxt_region(p.location)] += 1
         print(f"  bennxt: {stats['ok']} boards · {len(posts)} postings · "
-              f"{len(cands)} pass the civil/mech + CA prefilter")
+              f"{len(cands)} pass the civil/mech + CA prefilter "
+              f"({', '.join(f'{k}={v}' for k, v in sorted(by_region.items()))})")
     if len(cands) > max_details:
         if verbose:
             print(f"  bennxt: capping description fetches at {max_details} "
@@ -1306,8 +1392,11 @@ async def bennxt_scan(conn, verbose=True, max_details=BENNXT_MAX_DETAILS):
             continue
         v["salary"] = d.get("salary")
         v["description"] = d.get("description")
+        v["region"] = bennxt_region(p.location)
         out.append((p, v))
-    out.sort(key=lambda pv: -(pv[0].published or 0))
+    # SoCal first, then rest-of-CA, newest first within each tier.
+    out.sort(key=lambda pv: (tier.get(pv[1]["region"], 4),
+                             -(pv[0].published or 0)))
     if verbose:
         tally = defaultdict(int)
         for _, v in out:
