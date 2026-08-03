@@ -35,6 +35,7 @@ bennxt tracker — civil/mechanical internships AND new-grad roles in California
 screened for visa sponsorship with Gemini (replies are PUBLIC, not ephemeral):
     /bennxt roles [sponsorship] [evidence]   list matching roles
     /bennxt notify                           toggle new-role notices
+    /bennxt notifylist                       show who is subscribed
 """
 
 import os
@@ -865,6 +866,36 @@ async def bennxt_notify_slash(interaction: discord.Interaction):
                "California roles are posted in this channel. Run the command "
                "again to unsubscribe.")
     await interaction.response.send_message(msg, ephemeral=True)
+
+
+@bennxt.command(name="notifylist",
+                description="Show who is subscribed to bennxt notices.")
+async def bennxt_notifylist_slash(interaction: discord.Interaction):
+    if pconn is None:
+        await interaction.response.send_message(_tracker_disabled(), ephemeral=True)
+        return
+    subs = db.execute("SELECT user_id, channel_id FROM bennxt_pings").fetchall()
+    if not subs:
+        await interaction.response.send_message(
+            "Nobody is subscribed yet — sign up with `/bennxt notify`.",
+            allowed_mentions=NO_MENTIONS)
+        return
+
+    by_channel: dict[int, list[int]] = {}
+    for uid, cid in subs:
+        by_channel.setdefault(cid, []).append(uid)
+
+    lines = [f"**{len(subs)} subscribed to bennxt notices**"]
+    for cid, uids in sorted(by_channel.items()):
+        lines.append(f"<#{cid}>: " + " ".join(f"<@{u}>" for u in uids))
+
+    # NO_MENTIONS renders the name chips without pinging anyone. Public, like
+    # the rest of /bennxt.
+    chunks = _pack(lines, MAX_CHUNK, "\n")
+    await interaction.response.send_message(chunks[0],
+                                            allowed_mentions=NO_MENTIONS)
+    for chunk in chunks[1:]:
+        await interaction.followup.send(chunk, allowed_mentions=NO_MENTIONS)
 
 
 bot.tree.add_command(bennxt)
