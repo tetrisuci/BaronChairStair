@@ -233,6 +233,31 @@ intents.message_content = True  # required for prefix commands and attachment ac
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+
+# ── No link-preview embeds, anywhere ──────────────────────────────────────────
+# Job listings carry apply/company URLs, and Discord would render a preview
+# card per link — several per message, burying the text. Rather than passing
+# suppress_embeds=True at ~30 call sites (and remembering it forever), patch
+# the three send paths once so every message the bot sends defaults to it.
+# Callers can still opt out explicitly with suppress_embeds=False.
+
+def _no_embeds(send):
+    async def wrapper(*args, **kwargs):
+        if not kwargs.get("embed") and not kwargs.get("embeds"):
+            kwargs.setdefault("suppress_embeds", True)
+        return await send(*args, **kwargs)
+    return wrapper
+
+
+discord.abc.Messageable.send = _no_embeds(discord.abc.Messageable.send)
+discord.InteractionResponse.send_message = _no_embeds(
+    discord.InteractionResponse.send_message)
+discord.Webhook.send = _no_embeds(discord.Webhook.send)   # interaction.followup
+# Context.send / Message.reply override Messageable.send, so patch them too.
+commands.Context.send = _no_embeds(commands.Context.send)
+commands.Context.reply = _no_embeds(commands.Context.reply)
+discord.Message.reply = _no_embeds(discord.Message.reply)
+
 db = sqlite3.connect(ROOT / "stats.db")  # pinned like postings.db — never CWD
 
 TRACKED_STICKER_ID = 1485928821038383314
