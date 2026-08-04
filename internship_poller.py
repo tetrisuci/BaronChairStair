@@ -230,6 +230,13 @@ BENNXT_BOARDS = [
     ("greenhouse", "inversionspace",                   "Inversion Space",    "aec"),
     ("greenhouse", "zone5technologies",                "Zone 5 Technologies", "aec"),
     ("ashby",      "applied",                          "Applied Intuition",  "aec"),
+    # ---- verified H-1B sponsors (DOL LCA data) with live boards ----
+    ("greenhouse", "jensenhughes",                     "Jensen Hughes",      "aec"),
+    ("lever",      "mainspringenergy",                 "Mainspring Energy",  "aec"),
+    ("lever",      "dexterity",                        "Dexterity",          "aec"),
+    ("greenhouse", "rondoenergy",                      "Rondo Energy",       "aec"),
+    ("greenhouse", "latitude",                         "Latitude AI",        "aec"),
+    ("lever",      "intersect",                        "Intersect ENT",      "aec"),
 ]
 
 # Discovered boards live in boards.json (written by `discover`). The seed list
@@ -1427,6 +1434,110 @@ SPONSOR_BATCH = int(os.environ.get("GEMINI_SPONSOR_BATCH", "4"))
 # no extra requests against the free tier.
 # --------------------------------------------------------------------------
 
+# --------------------------------------------------------------------------
+# Verified H-1B sponsors (DOL LCA filings, last 2 years, pre-filtered to roles
+# relevant to this candidate). A posting from one of these employers is from a
+# company that HAS actually sponsored — far stronger evidence than a job
+# description's silence, which is all the LLM has to go on.
+# --------------------------------------------------------------------------
+
+H1B_SPONSORS_CSV = os.environ.get(
+    "BENNXT_H1B_SPONSORS", os.path.join(_HERE, "data", "h1b_matching_sponsors.csv"))
+_H1B_CACHE: dict = {}
+
+# Corporate suffixes and filler that differ between DOL filings and job boards.
+_CORP_SUFFIX_RE = re.compile(
+    r"\b(inc|incorporated|llc|l\.l\.c|llp|lp|corp|corporation|company|co|ltd|"
+    r"limited|holdings?|group|usa|u\.s\.a|us|u\.s|america|americas|"
+    r"international|intl|technologies|technology|solutions|services|"
+    r"consultants?|consulting|engineering|engineers|associates|partners|"
+    r"the|and|of)\b", re.I)
+
+
+def _company_key(name: str) -> str:
+    """Normalize an employer name so DOL and job-board spellings collide."""
+    s = re.sub(r"[^a-z0-9 &]", " ", (name or "").lower()).replace("&", " and ")
+    s = _CORP_SUFFIX_RE.sub(" ", s)
+    return re.sub(r"\s+", "", s)
+
+
+def _company_words(name: str) -> list:
+    """Normalized name as a WORD LIST, so matching can respect boundaries —
+    'vast' must not match 'vastek', but 'hdr' should match 'hdr engineering'."""
+    s = re.sub(r"[^a-z0-9 &]", " ", (name or "").lower()).replace("&", " and ")
+    s = _CORP_SUFFIX_RE.sub(" ", s)
+    return [w for w in s.split() if w]
+
+
+def load_h1b_sponsors(path=None) -> dict:
+    """{company_key: {name, ca_filings, total_filings, median_wage, titles}}.
+
+    Empty dict when the CSV is absent — the feature simply goes quiet.
+    """
+    path = path or H1B_SPONSORS_CSV
+    try:
+        stamp = (path, os.path.getmtime(path))
+    except OSError:
+        return {}
+    if stamp in _H1B_CACHE:
+        return _H1B_CACHE[stamp]
+    out = {}
+    try:
+        import csv
+        with open(path, newline="", encoding="utf-8") as f:
+            for r in csv.DictReader(f):
+                key = _company_key(r.get("EMPLOYER_NAME"))
+                if len(key) < 3:
+                    continue
+                rec = {"name": r.get("EMPLOYER_NAME", ""),
+                       "ca": int(r.get("ca_worksite_lcas") or 0),
+                       "total": int(r.get("total_matching_lcas") or 0),
+                       "wage": r.get("median_annual_wage") or "",
+                       "titles": r.get("top_job_titles") or "",
+                       "words": _company_words(r.get("EMPLOYER_NAME"))}
+                # Same employer can appear under several legal names; keep the
+                # entry with the most filings.
+                if key not in out or rec["total"] > out[key]["total"]:
+                    out[key] = rec
+    except Exception as e:
+        print(f"  h1b: could not read {path} ({type(e).__name__})",
+              file=sys.stderr)
+        out = {}
+    _H1B_CACHE[stamp] = out
+    return out
+
+
+def h1b_lookup(company: str) -> Optional[dict]:
+    """The sponsor record for `company`, or None. Exact normalized match, then
+    a containment check so "Stantec" matches "STANTEC CONSULTING SERVICES INC".
+    """
+    table = load_h1b_sponsors()
+    if not table:
+        return None
+    key = _company_key(company)
+    # 3 chars is the floor: real employers here include HDR and WSP.
+    if len(key) < 3:
+        return None
+    if key in table:
+        return table[key]
+    # Word-sequence prefix match: the board name's words must be a leading
+    # run of the filing's words (or vice versa). "hdr" matches
+    # "HDR ENGINEERING"; "vast" does NOT match "VASTEK", because word
+    # boundaries are respected rather than raw string prefixes.
+    words = _company_words(company)
+    if not words:
+        return None
+    best, best_len = None, 0
+    for rec in table.values():
+        w = rec.get("words") or []
+        if not w:
+            continue
+        n = min(len(w), len(words))
+        if w[:n] == words[:n] and n > best_len:
+            best, best_len = rec, n
+    return best
+
+
 RESUME_PATH = os.environ.get("BENNXT_RESUME",
                              os.path.join(_HERE, "data", "resume.pdf"))
 RESUME_MAX_CHARS = 6000
@@ -1802,6 +1913,15 @@ async def bennxt_scan(conn, verbose=True, max_details=BENNXT_MAX_DETAILS,
             continue
         # Salary: an ATS pay field wins; otherwise the model's reading of the
         # description, which is more reliable than the money-shaped regex.
+        # Verified DOL H-1B filings beat a posting's silence: an employer that
+        # has actually sponsored is materially different from one that simply
+        # never mentioned it. This never overrides a "no" — an ITAR/clearance
+        # bar applies to the specific role regardless of company history.
+        h1b = h1b_lookup(p.company)
+        if h1b:
+            v["h1b"] = h1b
+            if v.get("sponsorship") == "unknown":
+                v["sponsorship"] = "likely"
         v["salary"] = (d.get("salary") if d.get("salary_certain")
                        else v.get("salary") or d.get("salary"))
         v["description"] = d.get("description")
@@ -1828,7 +1948,10 @@ async def bennxt_scan(conn, verbose=True, max_details=BENNXT_MAX_DETAILS,
     # Unscored (budget ran out before this posting) ranks below scored matches
     # but above known-weak ones, so a truncated scan can't bury real matches.
     fit_rank = {"strong": 0, "possible": 1, None: 2, "weak": 3}
+    # Verified sponsors first within a region — that is the scarcest signal.
+    spon_rank = {"yes": 0, "likely": 1, "unknown": 2, "no": 3}
     out.sort(key=lambda pv: (tier.get(pv[1]["region"], 4),
+                             spon_rank.get(pv[1].get("sponsorship"), 2),
                              fit_rank.get(pv[1].get("fit"), 2),
                              -(pv[0].published or 0)))
     if verbose:

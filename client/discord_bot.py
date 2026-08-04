@@ -101,8 +101,8 @@ DESC_SNIPPET_MAX = 1200     # description excerpt length for `internships info`
 # Public (non-ephemeral) by request, with its own opt-in notify list.
 BENNXT_SWEEP_MINUTES = 180   # Gemini free tier — scan far less often than tech
 BENNXT_MAX_ROLES = 25        # roles listed per command invocation
-SPONSOR_LABEL = {"yes": "✅ sponsors", "unknown": "❔ not stated",
-                 "no": "🚫 no sponsorship"}
+SPONSOR_LABEL = {"yes": "✅ sponsors", "likely": "🟢 sponsored before",
+                 "unknown": "❔ not stated", "no": "🚫 no sponsorship"}
 REGION_LABEL = {"socal": "📍 SoCal", "ca": "CA", "remote": "remote",
                 "unknown": "location TBD"}
 FIT_LABEL = {"strong": "🎯 strong resume fit", "possible": "🤔 possible fit",
@@ -437,7 +437,9 @@ def _split_blocks(blocks: list[str], limit: int = MAX_CHUNK) -> list[str]:
     return _pack(blocks, limit, "\n\n")
 
 
-CATEGORY_NAMES = [name for name, _ in poller.CATEGORIES]
+# poller.classify falls back to "other" when no CATEGORIES regex matches, so
+# it's a real stored value and must be filterable even though it has no regex.
+CATEGORY_NAMES = [name for name, _ in poller.CATEGORIES] + ["other"]
 
 
 def _get_prefs(user_id: int) -> dict | None:
@@ -597,6 +599,11 @@ def _format_bennxt(p, v, show_evidence: bool = False) -> str:
         head += " · " + FIT_LABEL[v["fit"]]
     block = (f"**{p.company}** — {p.title}\n"
              f"{head} · " + " · ".join(bits))
+    h1b = v.get("h1b")
+    if h1b:
+        where = f"{h1b['ca']} in CA" if h1b.get("ca") else "none in CA"
+        block += (f"\n_H-1B: {h1b['total']} certified filing(s) for similar "
+                  f"roles in the last 2 years ({where})._")
     if v.get("fit_reason"):
         block += f"\n_{v['fit_reason'][:200]}_"
     if show_evidence and v.get("evidence"):
@@ -839,6 +846,47 @@ async def internships_ping_slash(
         ephemeral=True)
 
 
+@internships.command(name="help",
+                     description="What the internship tracker does and how to use it.")
+async def internships_help_slash(interaction: discord.Interaction):
+    # Categories and defaults come from the live constants so this text can't
+    # drift as the classifier or the sweep interval change.
+    cats = ", ".join(f"`{c}`" for c in CATEGORY_NAMES)
+    lines = [
+        "**Internship tracker**",
+        f"Sweeps job boards every {SWEEP_MINUTES} min for tech internships and "
+        "DMs you the new ones. Every reply is private — nothing is posted in "
+        "the channel.",
+        "",
+        "**Commands**",
+        "· `/internships recent` — list what's been posted recently. "
+        "Options: `days`, `us_only`, `category` (all optional; they default to "
+        "your saved filters).",
+        "· `/internships ping` — subscribe. Run it again with **no options** to "
+        "unsubscribe. Pass options to subscribe and set filters at once.",
+        "· `/internships myfilters` — show the filters you've set.",
+        "· `/internships filters` — change a filter. Never unsubscribes you; "
+        "with no options it just shows your current settings.",
+        "· `/internships info <role>` — salary and description for one posting. "
+        "Start typing a company or title and pick a suggestion.",
+        "· `/internships pinglist` — who's subscribed, and their filters.",
+        "",
+        "**Filters**",
+        f"· `category` — one of {cats}. Use `all` to clear it.",
+        "· `us_only` — drop roles tagged non-US.",
+        f"· `days` — default look-back for `recent` (default {RECENT_DAYS_DEFAULT}, max 30).",
+        "",
+        "Your filters do double duty: they decide which postings get DM'd to "
+        "you, and they're the defaults for `/internships recent` — where any "
+        "option you pass explicitly wins for that one call.",
+        "",
+        "**Heads up:** DMs from server members must be enabled or the notices "
+        "can't reach you.",
+    ]
+    await interaction.response.send_message("\n".join(lines), ephemeral=True,
+                                            allowed_mentions=NO_MENTIONS)
+
+
 @internships.command(name="myfilters",
                      description="Show the internship filters you've set.")
 async def internships_myfilters_slash(interaction: discord.Interaction):
@@ -1024,7 +1072,7 @@ bennxt = app_commands.Group(
 @app_commands.choices(
     sponsorship=[
         app_commands.Choice(name="Sponsors or not stated (default)", value="open"),
-        app_commands.Choice(name="Only explicitly sponsors", value="yes"),
+        app_commands.Choice(name="Known H-1B sponsors only", value="yes"),
         app_commands.Choice(name="Everything, including no-sponsorship", value="all"),
     ],
     region=[
@@ -1058,8 +1106,9 @@ async def bennxt_roles_slash(
             allowed_mentions=NO_MENTIONS)
         return
 
-    keep = {"open": ("yes", "unknown"), "yes": ("yes",),
-            "all": ("yes", "unknown", "no")}[mode]
+    keep = {"open": ("yes", "likely", "unknown"),
+            "yes": ("yes", "likely"),
+            "all": ("yes", "likely", "unknown", "no")}[mode]
     sel = [(p, v) for p, v in roles if v.get("sponsorship") in keep]
     if region and region.value == "socal":
         sel = [(p, v) for p, v in sel if v.get("region") == "socal"]
@@ -1070,7 +1119,7 @@ async def bennxt_roles_slash(
         # Unscored roles (no resume, or the LLM didn't answer) are kept.
         sel = [(p, v) for p, v in sel if v.get("fit") != "weak"]
     tally = {k: sum(1 for _, v in roles if v.get("sponsorship") == k)
-             for k in ("yes", "unknown", "no")}
+             for k in ("yes", "likely", "unknown", "no")}
     socal_n = sum(1 for _, v in roles if v.get("region") == "socal")
     if not sel:
         await interaction.followup.send(
@@ -1088,6 +1137,7 @@ async def bennxt_roles_slash(
               f"(internships + new grad, posted in the last "
               f"{poller.BENNXT_MAX_AGE_DAYS} days)\n"
               f"Last scan: 📍 {socal_n} SoCal · ✅ {tally['yes']} sponsor · "
+              f"🟢 {tally['likely']} sponsored before · "
               f"❔ {tally['unknown']} not stated · 🚫 {tally['no']} ruled out"
               + ("" if mode == "all" else " (hidden)")
               + (f" · 🎯 {strong_n} strong resume matches" if strong_n else ""))
