@@ -819,6 +819,25 @@ def classify(p: "Posting") -> dict:
 
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")
+# The free-tier daily cap is PER MODEL ("GenerateRequestsPerDayPerProjectPerModel"),
+# so when flash-lite is spent another model still has its own budget. Listed in
+# preference order; the first one not known-exhausted today is used.
+GEMINI_FALLBACK_MODELS = [
+    m.strip() for m in os.environ.get(
+        "GEMINI_FALLBACK_MODELS",
+        # 3.1-flash-lite first: same cheap tier as the primary, its own 500/day.
+        # 3.6-flash last — stronger but only 250/day on the free tier.
+        "gemini-3.1-flash-lite,gemini-3.6-flash").split(",") if m.strip()]
+_MODEL_EXHAUSTED: dict = {}   # model -> date string it ran out
+
+
+def gemini_models():
+    """Preferred model first, then fallbacks, skipping any that already
+    reported a per-day 429 today."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    out = [m for m in [GEMINI_MODEL] + GEMINI_FALLBACK_MODELS
+           if _MODEL_EXHAUSTED.get(m) != today]
+    return out or [GEMINI_MODEL]
 GEMINI_URL = ("https://generativelanguage.googleapis.com/v1beta/models/"
               "{model}:generateContent")
 LLM_BATCH = int(os.environ.get("GEMINI_BATCH", "25"))
@@ -910,6 +929,7 @@ class LlmBudget:
         self.conn, self.rpm, self.rpd, self.tpm = conn, rpm, rpd, tpm
         self.calls = []          # timestamps of recent requests
         self.tokens = []         # (timestamp, est_tokens) of recent requests
+        self.exhausted = False   # set when Google reports a per-day 429
         self.day = datetime.now().strftime("%Y-%m-%d")
         row = conn.execute("SELECT n FROM llm_usage WHERE day=?",
                            (self.day,)).fetchone()
@@ -1670,6 +1690,8 @@ async def classify_sponsorship(conn, items, verbose=True):
     async with aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=90)) as sess:
         for batch in batches:
+            if budget.exhausted:
+                break        # daily quota gone; nothing more will succeed today
             if fails >= 2:
                 if verbose:
                     print("  sponsorship: 2 consecutive failures — stopping",
@@ -1692,32 +1714,62 @@ async def classify_sponsorship(conn, items, verbose=True):
                                          "temperature": 0}}
             res = {}
             est = budget.estimate_tokens(prompt)
-            for attempt in range(3):
-                # Every attempt is a real API call, so every attempt must take
-                # a slot — otherwise retries spend quota invisibly.
-                if not await budget.acquire(est):
+            today = datetime.now().strftime("%Y-%m-%d")
+            # The daily cap is per-model, so a model that is spent does not
+            # stop the run — move to the next one.
+            for model in gemini_models():
+                if res:
                     break
-                try:
-                    async with sess.post(
-                            GEMINI_URL.format(model=GEMINI_MODEL), json=body,
-                            headers={"x-goog-api-key": GEMINI_KEY}) as r:
-                        if r.status == 429:
-                            await asyncio.sleep(2 ** attempt * 10)
-                            continue
-                        if r.status != 200:
-                            print(f"  sponsorship: HTTP {r.status}",
-                                  file=sys.stderr)
-                            break
-                        d = await r.json(content_type=None)
-                    text = d["candidates"][0]["content"]["parts"][0]["text"]
-                    rows = json.loads(
-                        text.strip().strip("`").removeprefix("json"))
-                    res = {x["i"]: x for x in rows
-                           if isinstance(x, dict) and "i" in x}
-                    break
-                except Exception as e:
-                    print(f"  sponsorship: {type(e).__name__}", file=sys.stderr)
-                    break
+                for attempt in range(3):
+                    # Every attempt is a real API call, so every attempt must
+                    # take a slot — otherwise retries spend quota invisibly.
+                    if not await budget.acquire(est):
+                        break
+                    try:
+                        async with sess.post(
+                                GEMINI_URL.format(model=model), json=body,
+                                headers={"x-goog-api-key": GEMINI_KEY}) as r:
+                            if r.status == 429:
+                                # Per-day exhaustion is model-specific and
+                                # permanent until midnight PT; per-minute
+                                # throttling just needs a short wait.
+                                err = (await r.json(content_type=None)).get("error", {})
+                                per_day = any(
+                                    "PerDay" in v.get("quotaId", "")
+                                    for dd in err.get("details", [])
+                                    for v in dd.get("violations", []))
+                                if per_day:
+                                    _MODEL_EXHAUSTED[model] = today
+                                    print(f"  sponsorship: {model} daily quota "
+                                          "exhausted — trying next model",
+                                          file=sys.stderr)
+                                    break
+                                await asyncio.sleep(2 ** attempt * 10)
+                                continue
+                            if r.status in (500, 503):
+                                await asyncio.sleep(2 ** attempt * 5)
+                                continue
+                            if r.status != 200:
+                                print(f"  sponsorship: {model} HTTP {r.status}",
+                                      file=sys.stderr)
+                                break
+                            d = await r.json(content_type=None)
+                        text = d["candidates"][0]["content"]["parts"][0]["text"]
+                        rows = json.loads(
+                            text.strip().strip("`").removeprefix("json"))
+                        res = {x["i"]: x for x in rows
+                               if isinstance(x, dict) and "i" in x}
+                        break
+                    except Exception as e:
+                        print(f"  sponsorship: {model} {type(e).__name__}",
+                              file=sys.stderr)
+                        break
+            if not res and all(_MODEL_EXHAUSTED.get(m) == today
+                               for m in [GEMINI_MODEL] + GEMINI_FALLBACK_MODELS):
+                print("  sponsorship: every model's daily quota is spent — "
+                      "remaining postings stay unscored until midnight Pacific",
+                      file=sys.stderr)
+                budget.exhausted = True
             fails = 0 if res else fails + 1
             for i, (p, _, known) in enumerate(batch):
                 f = res.get(i)

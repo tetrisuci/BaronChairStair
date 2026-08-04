@@ -1155,9 +1155,17 @@ async def bennxt_roles_slash(
                      f"at `{poller.RESUME_PATH}` (and `pip install pypdf`), "
                      "then restart the bot.*")
         else:
+            row = pconn.execute("SELECT n FROM llm_usage WHERE day=date('now')"
+                                ).fetchone()
+            spent = row[0] if row else 0
+            if spent >= poller.LLM_RPD:
+                why = (f"the daily Gemini quota ({poller.LLM_RPD}/day) is used "
+                       "up; it resets at midnight Pacific")
+            else:
+                why = (f"the scan stopped early ({spent}/{poller.LLM_RPD} calls "
+                       "used today) — usually a Gemini timeout or outage")
             note += (f"\n*{unscored} role(s) here have no resume-fit rating "
-                     "yet — the scan did not finish scoring them (usually the "
-                     "daily Gemini budget). They get scored on the next run.*")
+                     f"yet: {why}. They get scored on the next run.*")
     blocks.append(note)
     await interaction.followup.send(header, allowed_mentions=NO_MENTIONS)
     for chunk in _split_blocks(blocks):
