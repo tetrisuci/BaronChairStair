@@ -1286,7 +1286,13 @@ NO_SPONSOR_RE = re.compile(
     r"|authorizations?\s+from\s+the\s+U\.?S\.?\s+Department\s+of\s+State"
     r"|US\s+[Cc]itizenship\s+(?:is\s+)?required"
     r"|\bUS\s+Person\b|\bU\.S\.\s+Person\b|\bITAR\b|export\s+control"
-    r"|security\s+clearance)", re.I)
+    # Clearances imply US citizenship, so they are a categorical bar. Cover the
+    # short forms that appear in TITLES, not just "security clearance".
+    r"|(?:security|active|secret|dod|government)\s+clearance"
+    r"|clearance\s+(?:required|eligible|is\s+required)"
+    r"|\bTS/SCI\b|\bTS\s*-\s*SCI\b|\bSCI\s+eligib"
+    r"|\btop\s+secret\b|\bsecret\s+clearance\b"
+    r"|\bpoly(?:graph)?\s+required\b|\bactive\s+(?:dod\s+)?secret\b)", re.I)
 
 # Phrases that affirm sponsorship. Rarer, but unambiguous when present.
 YES_SPONSOR_RE = re.compile(
@@ -1503,9 +1509,16 @@ async def classify_sponsorship(conn, items, verbose=True):
         if row:
             out[h] = json.loads(row[0])
             continue
-        verdict, ev = sponsorship_from_text(desc)
-        # Only skip the LLM when every field is already certain.
-        if verdict and known.get("complete"):
+        # Check the TITLE as well as the body: "…, Active Clearance" or
+        # "(TS/SCI)" is a categorical bar, and titles are not always echoed in
+        # the description text the excerpt happens to include.
+        verdict, ev = sponsorship_from_text(f"{p.title}\n{desc}")
+        # A regex "no" is a categorical bar (ITAR, citizenship, clearance) and
+        # settles the posting on its own: the role is unusable regardless of
+        # its salary, location, or level, so there is nothing left to ask the
+        # model. This also means such roles stay correctly classified even when
+        # the LLM is unavailable. A "yes" still goes to the LLM for confirmation.
+        if verdict == "no" or (verdict and known.get("complete")):
             rec = {"sponsorship": verdict, "evidence": ev, "source": "regex",
                    "salary": known.get("salary"),
                    "location": known.get("location"),

@@ -435,9 +435,10 @@ def _toggle_ping(user_id: int, channel_id: int) -> str:
     db.execute("INSERT INTO intern_pings VALUES (?, ?)", (user_id, channel_id))
     db.commit()
     return ("Added you to the internship notify list — when new tech "
-            "internships are found, this channel gets one quiet notice with a "
-            "button, and pressing it shows you the list privately (no pings, "
-            "nobody else sees it). Run the command again to unsubscribe.")
+            "internships are found, I'll DM you the list directly (nothing is "
+            "posted in the channel). Make sure DMs from server members are "
+            "enabled, or the notice can't reach you. Run the command again to "
+            "unsubscribe.")
 
 
 def _recent_internships(days: int, us_only: bool):
@@ -649,28 +650,29 @@ async def internship_sweep():
         print(f"internship sweep failed: {type(e).__name__}: {e}", file=sys.stderr)
         return
 
-    by_channel: dict[int, list[int]] = {}
-    for uid, cid in subs:
-        by_channel.setdefault(cid, []).append(uid)
-
     batch.sort(key=lambda pc: -(pc[0].published or 0))
-    _last_batch[:] = batch      # what the button will show, until the next batch
+    _last_batch[:] = batch      # still what `/internships recent` fell back on
     n = len(batch)
-    # One quiet notice per channel, no mentions. Subscribers click the button
-    # to get the listing as an ephemeral ("only you can see this") reply, so
-    # the channel never fills with pings or posting dumps.
-    header = (f"**{n} new tech internship posting{'s' if n != 1 else ''}** — "
-              f"{len(subs)} subscriber{'s' if len(subs) != 1 else ''} notified. "
-              "Press the button for your private list.")
-    for cid in by_channel:
-        # One channel failing (deleted, no send permission) must not stop the
-        # other channels' announcements or kill the loop.
+    # DM'd to each subscriber rather than posted in a channel: a channel message
+    # is visible to everyone who can read the channel, and the ephemeral flag
+    # exists only on interaction replies (which need a click), so a DM is the
+    # only way a background sweep can reach subscribers without public noise.
+    header = f"**{n} new tech internship posting{'s' if n != 1 else ''}**"
+    blocks = [_format_role(p, c) for p, c in batch[:ANNOUNCE_MAX]]
+    if n > ANNOUNCE_MAX:
+        blocks.append(f"...and {n - ANNOUNCE_MAX} more — run "
+                      "`/internships recent` for the full list.")
+    chunks = _split_blocks(blocks)
+    for uid in {uid for uid, _ in subs}:
+        # One subscriber failing (left the server, DMs closed) must not stop the
+        # other subscribers' notices or kill the loop.
         try:
-            channel = bot.get_channel(cid) or await bot.fetch_channel(cid)
-            await channel.send(content=header, view=InternshipDigestView(),
-                               allowed_mentions=NO_MENTIONS)
+            user = bot.get_user(uid) or await bot.fetch_user(uid)
+            await user.send(content=header, allowed_mentions=NO_MENTIONS)
+            for chunk in chunks:
+                await user.send(content=chunk, allowed_mentions=NO_MENTIONS)
         except Exception as e:
-            print(f"internship notice to channel {cid} failed: "
+            print(f"internship notice to user {uid} failed: "
                   f"{type(e).__name__}: {e}", file=sys.stderr)
 
 
