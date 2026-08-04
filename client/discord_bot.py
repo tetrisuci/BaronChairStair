@@ -276,6 +276,17 @@ db.execute("""
         channel_id INTEGER NOT NULL
     )
 """)
+# Filter prefs, added after intern_pings shipped: CREATE TABLE IF NOT EXISTS
+# won't touch an existing table, so add the columns separately. NULL means "no
+# preference" (match everything) for every one of them.
+for _col, _decl in (("categories", "TEXT"),      # CSV of poller.CATEGORIES names
+                    ("us_only", "INTEGER"),      # 1 = drop non-US roles
+                    ("days", "INTEGER")):        # default look-back for `recent`
+    try:
+        db.execute(f"ALTER TABLE intern_pings ADD COLUMN {_col} {_decl}")
+    except sqlite3.OperationalError:
+        pass                                     # already added by a prior boot
+db.commit()
 db.execute("""
     CREATE TABLE IF NOT EXISTS intern_meta (
         key TEXT PRIMARY KEY,
@@ -426,22 +437,89 @@ def _split_blocks(blocks: list[str], limit: int = MAX_CHUNK) -> list[str]:
     return _pack(blocks, limit, "\n\n")
 
 
-def _toggle_ping(user_id: int, channel_id: int) -> str:
-    if db.execute("SELECT 1 FROM intern_pings WHERE user_id=?",
-                  (user_id,)).fetchone():
+CATEGORY_NAMES = [name for name, _ in poller.CATEGORIES]
+
+
+def _get_prefs(user_id: int) -> dict | None:
+    """A subscriber's filters, or None if they aren't subscribed."""
+    row = db.execute("SELECT categories, us_only, days FROM intern_pings "
+                     "WHERE user_id=?", (user_id,)).fetchone()
+    if row is None:
+        return None
+    cats, us_only, days = row
+    return {"categories": [c for c in (cats or "").split(",") if c],
+            "us_only": bool(us_only),
+            "days": days or RECENT_DAYS_DEFAULT}
+
+
+def _describe_prefs(prefs: dict) -> str:
+    bits = [", ".join(prefs["categories"]) if prefs["categories"]
+            else "all categories"]
+    if prefs["us_only"]:
+        bits.append("US/remote only")
+    bits.append(f"{prefs['days']}d look-back")
+    return " · ".join(bits)
+
+
+def _write_prefs(user_id: int, channel_id: int, prefs: dict,
+                 categories: str | None, us_only: bool | None,
+                 days: int | None) -> dict:
+    """Apply the given options over `prefs` and persist. Shared by `ping` and
+    `filters` so the two can't drift apart."""
+    if categories is not None:
+        # "all" is the escape hatch back to unfiltered.
+        prefs["categories"] = [] if categories == "all" else [categories]
+    if us_only is not None:
+        prefs["us_only"] = us_only
+    if days is not None:
+        prefs["days"] = days
+    db.execute("INSERT OR REPLACE INTO intern_pings VALUES (?, ?, ?, ?, ?)",
+               (user_id, channel_id, ",".join(prefs["categories"]),
+                int(prefs["us_only"]), prefs["days"]))
+    db.commit()
+    return prefs
+
+
+def _set_ping(user_id: int, channel_id: int, categories: str | None,
+              us_only: bool | None, days: int | None) -> str:
+    """Subscribe or update filters. A bare call (no filters) toggles off, so
+    unsubscribing still works; passing any filter never unsubscribes, since
+    "change my filters" and "turn this off" are different intents."""
+    prefs = _get_prefs(user_id)
+    given = [v for v in (categories, us_only, days) if v is not None]
+    if prefs is not None and not given:
         db.execute("DELETE FROM intern_pings WHERE user_id=?", (user_id,))
         db.commit()
         return "Removed you from the internship notify list."
-    db.execute("INSERT INTO intern_pings VALUES (?, ?)", (user_id, channel_id))
-    db.commit()
-    return ("Added you to the internship notify list — when new tech "
-            "internships are found, I'll DM you the list directly (nothing is "
-            "posted in the channel). Make sure DMs from server members are "
-            "enabled, or the notice can't reach you. Run the command again to "
-            "unsubscribe.")
+
+    if prefs is None:
+        prefs = {"categories": [], "us_only": False, "days": RECENT_DAYS_DEFAULT}
+    prefs = _write_prefs(user_id, channel_id, prefs, categories, us_only, days)
+    summary = f"Filters: {_describe_prefs(prefs)}."
+    return (f"You're on the internship notify list — I'll DM you new tech "
+            f"internships that match (nothing is posted in the channel). "
+            f"{summary} Make sure DMs from server members are enabled, or the "
+            f"notice can't reach you. Run `/internships ping` with no options "
+            f"to unsubscribe.")
 
 
-def _recent_internships(days: int, us_only: bool):
+def _update_filters(user_id: int, channel_id: int, categories: str | None,
+                    us_only: bool | None, days: int | None) -> str:
+    """`filters` only ever edits prefs — it can never unsubscribe, so a bare
+    call just reports the current settings."""
+    prefs = _get_prefs(user_id)
+    if prefs is None:
+        return ("You're not subscribed yet — run `/internships ping` first, "
+                "then use this to change your filters.")
+    given = [v for v in (categories, us_only, days) if v is not None]
+    if not given:
+        return (f"Your current filters: {_describe_prefs(prefs)}. Pass an "
+                "option to change one.")
+    prefs = _write_prefs(user_id, channel_id, prefs, categories, us_only, days)
+    return f"Updated. Your filters: {_describe_prefs(prefs)}."
+
+
+def _recent_internships(days: int, us_only: bool, categories: list[str] | None = None):
     """Distinct recent roles from the postings DB, newest first.
 
     Workday's unbounded "30+ days ago" rows are excluded — they are at least a
@@ -460,6 +538,8 @@ def _recent_internships(days: int, us_only: bool):
          cat, term, region, pub, seen_at) in rows:
         if us_only and region == "non-us":
             continue
+        if categories and cat not in categories:
+            continue
         # approx_date isn't persisted; only the Workday adapter ever sets it,
         # so infer it from the platform. unbounded is always False here — the
         # WHERE clause already excluded those rows.
@@ -472,16 +552,20 @@ def _recent_internships(days: int, us_only: bool):
     return [(g[0][0], g[0][1], g[0][2], len(g) - 1) for g in grouped]
 
 
-async def _send_recent(send, days: int, us_only: bool) -> None:
+async def _send_recent(send, days: int, us_only: bool,
+                       categories: list[str] | None = None) -> None:
     """`send` must already be bound to ephemeral delivery — see _private."""
     days = max(1, min(days, poller.MAX_AGE_DAYS))
-    roles = _recent_internships(days, us_only)
+    roles = _recent_internships(days, us_only, categories)
     if not roles:
-        await send(content=f"No tech internships on record for the last {days} "
-                           f"day(s). The tracker sweeps every {SWEEP_MINUTES} "
-                           "minutes — check back soon.")
+        extra = (f" matching {', '.join(categories)}" if categories else "")
+        await send(content=f"No tech internships{extra} on record for the last "
+                           f"{days} day(s). The tracker sweeps every "
+                           f"{SWEEP_MINUTES} minutes — check back soon.")
         return
     scope = ", US/remote" if us_only else ""
+    if categories:
+        scope += ", " + "/".join(categories)
     header = f"**{len(roles)} recent tech internship roles** (last {days}d{scope})"
     if len(roles) > RECENT_MAX_ROLES:
         header += f" — showing the newest {RECENT_MAX_ROLES}"
@@ -652,24 +736,34 @@ async def internship_sweep():
 
     batch.sort(key=lambda pc: -(pc[0].published or 0))
     _last_batch[:] = batch      # still what `/internships recent` fell back on
-    n = len(batch)
     # DM'd to each subscriber rather than posted in a channel: a channel message
     # is visible to everyone who can read the channel, and the ephemeral flag
     # exists only on interaction replies (which need a click), so a DM is the
     # only way a background sweep can reach subscribers without public noise.
-    header = f"**{n} new tech internship posting{'s' if n != 1 else ''}**"
-    blocks = [_format_role(p, c) for p, c in batch[:ANNOUNCE_MAX]]
-    if n > ANNOUNCE_MAX:
-        blocks.append(f"...and {n - ANNOUNCE_MAX} more — run "
-                      "`/internships recent` for the full list.")
-    chunks = _split_blocks(blocks)
+    # Each subscriber's `/internships ping` filters are applied to the batch, so
+    # the listing is built per-recipient rather than once.
     for uid in {uid for uid, _ in subs}:
         # One subscriber failing (left the server, DMs closed) must not stop the
         # other subscribers' notices or kill the loop.
         try:
+            prefs = _get_prefs(uid)
+            if prefs is None:
+                continue                    # unsubscribed since `subs` was read
+            mine = [(p, c) for p, c in batch
+                    if (not prefs["categories"]
+                        or c.get("category") in prefs["categories"])
+                    and not (prefs["us_only"] and c.get("region") == "non-us")]
+            if not mine:
+                continue                    # nothing matched their filters
+            n = len(mine)
+            header = f"**{n} new tech internship posting{'s' if n != 1 else ''}**"
+            blocks = [_format_role(p, c) for p, c in mine[:ANNOUNCE_MAX]]
+            if n > ANNOUNCE_MAX:
+                blocks.append(f"...and {n - ANNOUNCE_MAX} more — run "
+                              "`/internships recent` for the full list.")
             user = bot.get_user(uid) or await bot.fetch_user(uid)
             await user.send(content=header, allowed_mentions=NO_MENTIONS)
-            for chunk in chunks:
+            for chunk in _split_blocks(blocks):
                 await user.send(content=chunk, allowed_mentions=NO_MENTIONS)
         except Exception as e:
             print(f"internship notice to user {uid} failed: "
@@ -693,30 +787,103 @@ internships = app_commands.Group(name="internships",
 @internships.command(name="recent",
                      description="List recently posted tech internships.")
 @app_commands.describe(
-    days=f"Look-back window in days (default {RECENT_DAYS_DEFAULT})",
+    days="Look-back window in days (defaults to your /internships ping filters)",
     us_only="Only show US / remote roles",
+    category="Only show one category of role",
 )
+@app_commands.choices(category=[
+    app_commands.Choice(name=c, value=c) for c in CATEGORY_NAMES])
 async def internships_recent_slash(
     interaction: discord.Interaction,
-    days: app_commands.Range[int, 1, 30] = RECENT_DAYS_DEFAULT,
-    us_only: bool = False,
+    days: app_commands.Range[int, 1, 30] | None = None,
+    us_only: bool | None = None,
+    category: app_commands.Choice[str] | None = None,
 ):
     if pconn is None:
         await interaction.response.send_message(_tracker_disabled(), ephemeral=True)
         return
     await interaction.response.defer(thinking=True, ephemeral=True)
-    await _send_recent(_private(interaction), days, us_only)
+    # Saved ping filters are the defaults; an option passed explicitly wins.
+    prefs = _get_prefs(interaction.user.id) or {
+        "categories": [], "us_only": False, "days": RECENT_DAYS_DEFAULT}
+    cats = [category.value] if category else prefs["categories"]
+    await _send_recent(_private(interaction),
+                       prefs["days"] if days is None else days,
+                       prefs["us_only"] if us_only is None else us_only,
+                       cats)
 
 
 @internships.command(
     name="ping",
-    description="Toggle internship pings for yourself in this channel.")
-async def internships_ping_slash(interaction: discord.Interaction):
+    description="Subscribe to internship DMs, or set your filters.")
+@app_commands.describe(
+    category="Only get pinged for this category ('all' clears the filter)",
+    us_only="Only get pinged for US / remote roles",
+    days=f"Default look-back for /internships recent (default {RECENT_DAYS_DEFAULT})",
+)
+@app_commands.choices(category=[
+    app_commands.Choice(name=c, value=c)
+    for c in CATEGORY_NAMES + ["all"]])
+async def internships_ping_slash(
+    interaction: discord.Interaction,
+    category: app_commands.Choice[str] | None = None,
+    us_only: bool | None = None,
+    days: app_commands.Range[int, 1, 30] | None = None,
+):
     if pconn is None:
         await interaction.response.send_message(_tracker_disabled(), ephemeral=True)
         return
     await interaction.response.send_message(
-        _toggle_ping(interaction.user.id, interaction.channel_id), ephemeral=True)
+        _set_ping(interaction.user.id, interaction.channel_id,
+                  category.value if category else None, us_only, days),
+        ephemeral=True)
+
+
+@internships.command(name="myfilters",
+                     description="Show the internship filters you've set.")
+async def internships_myfilters_slash(interaction: discord.Interaction):
+    if pconn is None:
+        await interaction.response.send_message(_tracker_disabled(), ephemeral=True)
+        return
+    prefs = _get_prefs(interaction.user.id)
+    if prefs is None:
+        msg = ("You're not subscribed to internship notices. `/internships "
+               "ping` signs you up; until then `/internships recent` shows "
+               "everything unfiltered.")
+    else:
+        msg = (f"**Your internship filters**\n"
+               f"· Categories: "
+               f"{', '.join(prefs['categories']) if prefs['categories'] else 'all'}\n"
+               f"· US/remote only: {'yes' if prefs['us_only'] else 'no'}\n"
+               f"· Default look-back: {prefs['days']}d\n"
+               f"These filter your DM notices and are the defaults for "
+               f"`/internships recent`. Change them with `/internships filters`.")
+    await interaction.response.send_message(msg, ephemeral=True)
+
+
+@internships.command(name="filters",
+                     description="Update your internship filters.")
+@app_commands.describe(
+    category="Only get pinged for this category ('all' clears the filter)",
+    us_only="Only get pinged for US / remote roles",
+    days=f"Default look-back for /internships recent (default {RECENT_DAYS_DEFAULT})",
+)
+@app_commands.choices(category=[
+    app_commands.Choice(name=c, value=c)
+    for c in CATEGORY_NAMES + ["all"]])
+async def internships_filters_slash(
+    interaction: discord.Interaction,
+    category: app_commands.Choice[str] | None = None,
+    us_only: bool | None = None,
+    days: app_commands.Range[int, 1, 30] | None = None,
+):
+    if pconn is None:
+        await interaction.response.send_message(_tracker_disabled(), ephemeral=True)
+        return
+    await interaction.response.send_message(
+        _update_filters(interaction.user.id, interaction.channel_id,
+                        category.value if category else None, us_only, days),
+        ephemeral=True)
 
 
 _INFO_COLS = ("platform, external_id, company, sector, title, location, url,"
@@ -820,13 +987,13 @@ async def internships_pinglist_slash(interaction: discord.Interaction):
             ephemeral=True)
         return
 
-    by_channel: dict[int, list[int]] = {}
-    for uid, cid in subs:
-        by_channel.setdefault(cid, []).append(uid)
-
+    # Notices are DMs now, so the channel a user subscribed from no longer
+    # affects delivery — list each subscriber with their filters instead.
     lines = [f"**{len(subs)} subscribed to internship notices**"]
-    for cid, uids in sorted(by_channel.items()):
-        lines.append(f"<#{cid}>: " + " ".join(f"<@{u}>" for u in uids))
+    for uid, _cid in subs:
+        prefs = _get_prefs(uid)
+        lines.append(f"<@{uid}> — {_describe_prefs(prefs)}" if prefs
+                     else f"<@{uid}>")
 
     # NO_MENTIONS renders the <@id>/<#id> chips without pinging anyone.
     chunks = _pack(lines, MAX_CHUNK, "\n")
