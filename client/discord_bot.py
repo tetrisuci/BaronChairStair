@@ -629,14 +629,169 @@ def _format_bennxt(p, v, show_evidence: bool = False) -> str:
 _bennxt_cache: dict = {"at": 0.0, "roles": []}
 
 
-async def _bennxt_roles(force: bool = False):
-    """Cached bennxt results, refreshed at most every BENNXT_SWEEP_MINUTES."""
-    age = time.time() - _bennxt_cache["at"]
-    if force or (not _bennxt_cache["roles"] and age > 60) \
-            or age > BENNXT_SWEEP_MINUTES * 60:
-        roles = await poller.bennxt_scan(pconn, verbose=True)
-        _bennxt_cache.update(at=time.time(), roles=roles)
-    return _bennxt_cache["roles"]
+# Single-flight: one scan at a time, process-wide. Without this, two people
+# running /bennxt roles during a cold scan each start their OWN full scan —
+# doubling ~1800 HTTP requests and ~122 Gemini calls for identical results.
+# Late callers await the in-flight scan and watch its progress instead.
+_bennxt_lock = asyncio.Lock()
+# Progress of the scan currently running, so latecomers can render it too.
+# `subs` holds callbacks belonging to each waiting interaction.
+_bennxt_progress: dict = {"phase": None, "done": 0, "total": None,
+                          "started": 0.0, "subs": []}
+
+
+def _bennxt_scan_running() -> bool:
+    return _bennxt_lock.locked()
+
+
+async def _bennxt_roles(force: bool = False, on_progress=None):
+    """Cached bennxt results, refreshed at most every BENNXT_SWEEP_MINUTES.
+
+    on_progress: optional callable(phase, done, total) for live updates. It is
+    registered for the duration of the call, so a caller that arrives while a
+    scan is already running still sees that scan's progress.
+    """
+    def _fresh() -> bool:
+        age = time.time() - _bennxt_cache["at"]
+        return not (force or (not _bennxt_cache["roles"] and age > 60)
+                    or age > BENNXT_SWEEP_MINUTES * 60)
+
+    if _fresh():
+        return _bennxt_cache["roles"]
+
+    if on_progress:
+        _bennxt_progress["subs"].append(on_progress)
+        # A latecomer joins mid-scan, so replay the current state immediately
+        # rather than leaving them on a blank message until the next tick.
+        if _bennxt_scan_running() and _bennxt_progress["phase"]:
+            try:
+                on_progress(_bennxt_progress["phase"], _bennxt_progress["done"],
+                            _bennxt_progress["total"])
+            except Exception:
+                pass
+    try:
+        async with _bennxt_lock:
+            # Re-check inside the lock: while we waited, the scan we were
+            # queued behind may have just filled the cache. Doing the work
+            # again would spend a second scan's quota for nothing.
+            if _fresh():
+                return _bennxt_cache["roles"]
+
+            def _fanout(phase, done, total):
+                _bennxt_progress.update(phase=phase, done=done, total=total)
+                for cb in list(_bennxt_progress["subs"]):
+                    try:
+                        cb(phase, done, total)
+                    except Exception:
+                        pass
+
+            _bennxt_progress.update(phase=None, done=0, total=None,
+                                    started=time.time())
+            roles = await poller.bennxt_scan(pconn, verbose=True,
+                                             on_progress=_fanout)
+            _bennxt_cache.update(at=time.time(), roles=roles)
+        return _bennxt_cache["roles"]
+    finally:
+        if on_progress and on_progress in _bennxt_progress["subs"]:
+            _bennxt_progress["subs"].remove(on_progress)
+
+
+
+# Live progress for long scans. The scan takes minutes on a cold cache, and a
+# silent "thinking..." for that long is indistinguishable from a hung bot.
+BENNXT_PROGRESS_EVERY = 3.0     # seconds between message edits (rate limits)
+# Discord invalidates an interaction token 15 minutes after the command was
+# invoked. Stop editing before that so a cold scan can't die on an expired
+# token; the result is then delivered as a normal channel message instead.
+BENNXT_TOKEN_TTL = 13 * 60
+
+_PHASE_LABEL = {
+    "boards":  "Polling job boards",
+    "details": "Fetching descriptions",
+    "sites":   "Looking up company sites",
+    "llm":     "Checking sponsorship with Gemini",
+    "done":    "Done",
+}
+
+
+def _bar(done: int, total, width: int = 10) -> str:
+    if not total:
+        return "▓" * width if done else "░" * width
+    filled = max(0, min(width, round(width * done / total)))
+    return "▓" * filled + "░" * (width - filled)
+
+
+class _ScanProgress:
+    """Throttled progress display for one interaction.
+
+    The scan calls update() thousands of times; this records state cheaply and
+    lets a background task do the actual editing every few seconds, so message
+    edits never gate the scan and never trip Discord's rate limits.
+    """
+
+    def __init__(self, interaction: discord.Interaction):
+        self.interaction = interaction
+        self.started = time.time()
+        self.state = None            # (phase, done, total)
+        self.dirty = False
+        self._task = None
+        self._stop = asyncio.Event()
+
+    def update(self, phase, done, total):
+        """Called from the scan. Must stay cheap and never block or raise."""
+        self.state = (phase, done, total)
+        self.dirty = True
+
+    def _render(self) -> str:
+        phase, done, total = self.state or ("boards", 0, None)
+        el = int(time.time() - self.started)
+        clock = f"{el // 60}m {el % 60:02d}s" if el >= 60 else f"{el}s"
+        label = _PHASE_LABEL.get(phase, phase)
+        count = f"{done}/{total}" if total else str(done)
+        line = f"{_bar(done, total)} {count}"
+        note = ""
+        if phase == "llm":
+            # The slowest phase by far, and the one people wait on: say why.
+            note = "\n*Gemini is rate-limited to 15 requests/min — this is the slow part.*"
+        return (f"⏳ **Scanning civil/mech California roles…**\n"
+                f"{label} · {line} · {clock} elapsed{note}")
+
+    async def _loop(self):
+        while not self._stop.is_set():
+            try:
+                await asyncio.wait_for(self._stop.wait(),
+                                       timeout=BENNXT_PROGRESS_EVERY)
+                return                      # stopped
+            except asyncio.TimeoutError:
+                pass
+            if not self.dirty:
+                continue
+            if time.time() - self.started > BENNXT_TOKEN_TTL:
+                return                      # token about to expire; stop editing
+            self.dirty = False
+            try:
+                await self.interaction.edit_original_response(
+                    content=self._render())
+            except discord.HTTPException:
+                # A failed progress edit must never affect the scan or the
+                # final reply — the token may have expired or the message
+                # been deleted.
+                return
+
+    def start(self):
+        self._task = asyncio.create_task(self._loop())
+        return self
+
+    async def stop(self):
+        self._stop.set()
+        if self._task:
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+
+    def token_expired(self) -> bool:
+        return time.time() - self.started > BENNXT_TOKEN_TTL
 
 
 def _private(interaction: discord.Interaction):
@@ -1102,14 +1257,46 @@ async def bennxt_roles_slash(
     mode = sponsorship.value if sponsorship else "open"
     # Public by design — bennxt replies are visible to the whole channel.
     await interaction.response.defer(thinking=True)
+    # Only show progress when a scan will actually run; a warm cache returns
+    # instantly and a progress bar would just flicker.
+    progress = None
+    if not _bennxt_cache["roles"] or _bennxt_scan_running():
+        progress = _ScanProgress(interaction).start()
     try:
-        roles = await _bennxt_roles()
+        roles = await _bennxt_roles(
+            on_progress=progress.update if progress else None)
     except Exception as e:
         print(f"bennxt scan failed: {type(e).__name__}: {e}", file=sys.stderr)
         await interaction.followup.send(
             "The bennxt scan failed — try again in a few minutes.",
             allowed_mentions=NO_MENTIONS)
         return
+    finally:
+        if progress:
+            await progress.stop()
+    # A scan can outlive the 15-minute interaction token. If it did, followup
+    # sends would fail, so reply in the channel instead of losing the result.
+    send = interaction.followup.send
+    if progress and progress.token_expired():
+        chan = interaction.channel
+        if chan is not None:
+            async def send(content, **kw):
+                return await chan.send(f"{interaction.user.mention} {content}"
+                                       if content else content, **kw)
+    elif progress:
+        # The deferred message still shows the last progress frame. Overwrite
+        # it with the header rather than leaving "Scanning…" above the results.
+        async def send(content, **kw):
+            nonlocal progress
+            if progress is not None:
+                progress = None
+                try:
+                    return await interaction.edit_original_response(
+                        content=content,
+                        allowed_mentions=kw.get("allowed_mentions"))
+                except discord.HTTPException:
+                    pass
+            return await interaction.followup.send(content, **kw)
 
     keep = {"open": ("yes", "likely", "unknown"),
             "yes": ("yes", "likely"),
@@ -1140,7 +1327,7 @@ async def bennxt_roles_slash(
     if not sel:
         extra = (f" Nothing dated within {days} day(s) — try a larger `days`."
                  if days else "")
-        await interaction.followup.send(
+        await send(
             "No civil/mechanical California roles matched that filter right "
             f"now, among postings from the last {window} "
             f"days (last scan: ✅ {tally['yes']} sponsor · ❔ {tally['unknown']} "
@@ -1198,9 +1385,9 @@ async def bennxt_roles_slash(
             note += (f"\n*{unscored} role(s) here have no resume-fit rating "
                      f"yet: {why}. They get scored on the next run.*")
     blocks.append(note)
-    await interaction.followup.send(header, allowed_mentions=NO_MENTIONS)
+    await send(header, allowed_mentions=NO_MENTIONS)
     for chunk in _split_blocks(blocks):
-        await interaction.followup.send(chunk, allowed_mentions=NO_MENTIONS)
+        await send(chunk, allowed_mentions=NO_MENTIONS)
 
 
 @bennxt.command(name="recent",
