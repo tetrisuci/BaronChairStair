@@ -2039,7 +2039,7 @@ def sponsorship_from_text(desc: str):
     return None, None
 
 
-async def classify_sponsorship(conn, items, verbose=True):
+async def classify_sponsorship(conn, items, verbose=True, on_progress=None):
     """items: [(Posting, description, known)]. Returns {posting_hash: verdict}.
 
     `known` carries what the structured data already told us for certain
@@ -2119,6 +2119,13 @@ async def classify_sponsorship(conn, items, verbose=True):
               f"calls ({GEMINI_MODEL})")
 
     fails = 0
+    n_batches = len(batches)
+    done_batches = 0
+    if on_progress:
+        try:
+            on_progress("llm", 0, n_batches)
+        except Exception:
+            pass
     # 150s, not 90: a batch of SPONSOR_BATCH postings plus the resume is ~13k
     # tokens, and structured-output generation over that can legitimately run
     # past 90s. The old deadline turned slow-but-fine calls into failures.
@@ -2226,6 +2233,15 @@ async def classify_sponsorship(conn, items, verbose=True):
                       file=sys.stderr)
                 budget.exhausted = True
             fails = 0 if res else fails + 1
+            done_batches += 1
+            if on_progress:
+                # Counted whether or not the batch succeeded: this reports
+                # work attempted, so a run hitting failures still advances
+                # instead of appearing frozen.
+                try:
+                    on_progress("llm", done_batches, n_batches)
+                except Exception:
+                    pass
             for i, (p, _, known) in enumerate(batch):
                 f = res.get(i)
                 if not f:
@@ -2294,19 +2310,43 @@ BENNXT_LAST_SCAN: dict = {}
 
 
 async def bennxt_scan(conn, verbose=True, max_details=BENNXT_MAX_DETAILS,
-                      max_age=BENNXT_MAX_AGE_DAYS):
+                      max_age=BENNXT_MAX_AGE_DAYS, on_progress=None):
     """Full bennxt pass: poll AEC boards -> prefilter -> fetch descriptions ->
     classify sponsorship. Returns [(Posting, verdict-dict)], newest first.
 
     verdict: {"sponsorship": yes|no|unknown, "evidence": str|None,
               "source": regex|llm, "field"/"level"/"california" when the LLM
               answered, plus "salary" and "description" from the detail fetch}
+
+    on_progress: optional callable(phase, done, total) invoked as work
+        completes. `total` is None while a phase's size is still unknown.
+        Called synchronously and frequently, so an implementation must be
+        cheap and must not raise — see _emit below, which swallows everything.
+        Defaults to None so the CLI and the background sweep are unaffected.
     """
+    def _emit(phase, done, total=None):
+        # A progress display must never be able to break a scan.
+        if on_progress is None:
+            return
+        try:
+            on_progress(phase, done, total)
+        except Exception:
+            pass
+
     global BOARDS
     _t0 = time.time()
     saved, BOARDS = BOARDS, BENNXT_BOARDS
+    n_boards = len(BENNXT_BOARDS)
+    done_boards = 0
+
+    def _board_done(*_a):
+        nonlocal done_boards
+        done_boards += 1
+        _emit("boards", done_boards, n_boards)
+
+    _emit("boards", 0, n_boards)
     try:
-        posts, stats = await fetch_all()
+        posts, stats = await fetch_all(on_status=_board_done)
     finally:
         BOARDS = saved
 
@@ -2373,13 +2413,19 @@ async def bennxt_scan(conn, verbose=True, max_details=BENNXT_MAX_DETAILS,
         return []
 
     sem = asyncio.Semaphore(BENNXT_DETAIL_CONCURRENCY)
+    n_details = len(cands)
+    done_details = 0
+    _emit("details", 0, n_details)
 
     async def detail(p):
+        nonlocal done_details
         async with sem:
             try:
                 d = await fetch_details(p.platform, p.url, p.external_id)
             except Exception:
                 d = {}
+        done_details += 1
+        _emit("details", done_details, n_details)
         return p, d
 
     fetched = await asyncio.gather(*(detail(p) for p in cands))
@@ -2410,10 +2456,18 @@ async def bennxt_scan(conn, verbose=True, max_details=BENNXT_MAX_DETAILS,
             timeout=aiohttp.ClientTimeout(total=25),
             headers={"User-Agent": "Mozilla/5.0 (compatible; "
                                    "internship-poller/0.4)"}) as csess:
+        n_sites = len(fetched)
+        done_sites = 0
+        _emit("sites", 0, n_sites)
+
         async def site(p):
+            nonlocal done_sites
             async with sem:
-                return await fetch_company_site(csess, p.platform, p.url,
-                                                p.company)
+                r = await fetch_company_site(csess, p.platform, p.url,
+                                             p.company)
+            done_sites += 1
+            _emit("sites", done_sites, n_sites)
+            return r
         sites = await asyncio.gather(*(site(p) for p, _ in fetched))
     for (p, d), s in zip(fetched, sites):
         d["company_site"] = s
@@ -2438,7 +2492,7 @@ async def bennxt_scan(conn, verbose=True, max_details=BENNXT_MAX_DETAILS,
 
     verdicts = await classify_sponsorship(
         conn, [(p, d["description"], certain(p, d)) for p, d in with_desc],
-        verbose=verbose)
+        verbose=verbose, on_progress=on_progress)
 
     _prefix = "sp2:" if load_resume() else "sp:"
     out = []
@@ -2521,6 +2575,7 @@ async def bennxt_scan(conn, verbose=True, max_details=BENNXT_MAX_DETAILS,
         fit_tally[v.get("fit") or "unrated"] += 1
     BENNXT_LAST_SCAN.update(duration=time.time() - _t0, results=len(out),
                             sponsorship=dict(spon_tally), fit=dict(fit_tally))
+    _emit("done", len(out), len(out))
     return out
 
 
