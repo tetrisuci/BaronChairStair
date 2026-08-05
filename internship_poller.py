@@ -1146,6 +1146,15 @@ GEMINI_FALLBACK_MODELS = [
 _MODEL_EXHAUSTED: dict = {}   # model -> date string it ran out
 
 
+def total_rpd():
+    """Combined daily request budget across the whole model chain.
+
+    GEMINI_RPD is per-model and llm_usage counts calls across all models, so
+    this is the number a running total should be compared against.
+    """
+    return LLM_RPD * max(1, len({GEMINI_MODEL} | set(GEMINI_FALLBACK_MODELS)))
+
+
 def gemini_models():
     """Preferred model first, then fallbacks, skipping any that already
     reported a per-day 429 today."""
@@ -1241,7 +1250,16 @@ class LlmBudget:
     """
 
     def __init__(self, conn, rpm=LLM_RPM, rpd=LLM_RPD, tpm=LLM_TPM):
-        self.conn, self.rpm, self.rpd, self.tpm = conn, rpm, rpd, tpm
+        self.conn, self.rpm, self.tpm = conn, rpm, tpm
+        # GEMINI_RPD is a PER-MODEL cap, but llm_usage counts calls across
+        # every model in one number. Comparing that total against a single
+        # model's cap would stop the run at 500 while the fallback models
+        # still had their full budgets — discarding two-thirds of the real
+        # capacity. The ceiling is therefore the whole chain's budget; the
+        # authoritative per-model boundary is the 429 handler, which marks
+        # each model exhausted individually in _MODEL_EXHAUSTED.
+        self.per_model_rpd = rpd
+        self.rpd = rpd * max(1, len({GEMINI_MODEL} | set(GEMINI_FALLBACK_MODELS)))
         self.calls = []          # timestamps of recent requests
         self.tokens = []         # (timestamp, est_tokens) of recent requests
         self.exhausted = False   # set when Google reports a per-day 429
@@ -1790,7 +1808,12 @@ SPONSOR_SCHEMA = {
 # requirements/EEO tail, so we send the head AND the tail rather than a prefix.
 SPONSOR_HEAD = 2500
 SPONSOR_TAIL = 2500
-SPONSOR_BATCH = int(os.environ.get("GEMINI_SPONSOR_BATCH", "4"))
+# 8 postings per call, not 4: worst case (every excerpt maxed) is ~13k tokens,
+# so 15 RPM peaks near 195k against the 250k TPM ceiling — still headroom, and
+# it halves the calls needed to cover the full candidate pool. Measured at 8,
+# every row comes back correctly aligned; larger batches cut TPM margin too
+# thin to be worth it.
+SPONSOR_BATCH = int(os.environ.get("GEMINI_SPONSOR_BATCH", "8"))
 
 # --------------------------------------------------------------------------
 # Resume matching. The candidate's resume is sent once per batch alongside the
@@ -2014,6 +2037,10 @@ async def classify_sponsorship(conn, items, verbose=True):
         return out
 
     budget = LlmBudget(conn)
+    # `todo` preserves caller order. bennxt_scan sorts SoCal- and early-career-
+    # first, so if the budget guard below truncates, it drops the least
+    # relevant tail rather than an arbitrary slice. Keep that ordering if this
+    # is ever called from somewhere new.
     batches = [todo[i:i + SPONSOR_BATCH]
                for i in range(0, len(todo), SPONSOR_BATCH)]
     if len(batches) > budget.remaining():
@@ -2021,10 +2048,14 @@ async def classify_sponsorship(conn, items, verbose=True):
         # Loud: a truncated scan leaves postings unscored, and silence would
         # read as "these roles have no sponsorship/fit answer" rather than
         # "we ran out of quota".
+        others = [m for m in gemini_models() if m != GEMINI_MODEL]
+        extra = (f" {len(others)} fallback model(s) still have quota, so some "
+                 f"of these may still get scored." if others else "")
         print(f"  sponsorship: WARNING daily Gemini budget exhausted — "
-              f"{len(batches)} calls needed, {budget.remaining()} left. "
-              f"~{skipped} postings will stay unscored until tomorrow "
-              f"(raise GEMINI_RPD or wait for the reset).", file=sys.stderr)
+              f"{len(batches)} calls needed, {budget.remaining()} left on "
+              f"{GEMINI_MODEL}. ~{skipped} postings may stay unscored until "
+              f"the quota resets.{extra} Least-relevant postings are dropped "
+              f"first.", file=sys.stderr)
         batches = batches[:budget.remaining()]
     if verbose and batches:
         print(f"  sponsorship: {len(todo)} postings -> {len(batches)} Gemini "
@@ -2156,11 +2187,23 @@ async def classify_sponsorship(conn, items, verbose=True):
 
 
 BENNXT_DETAIL_CONCURRENCY = 16   # description fetches are the slow phase
-# The registry now spans ~88 boards and ~1.8k candidates, so an uncapped pass
-# would take far longer than the sweep interval. Candidates are sorted SoCal-
-# and early-career-first, so the cap trims the least relevant tail; anything
-# dropped is logged loudly rather than silently vanishing.
-BENNXT_MAX_DETAILS = int(os.environ.get("BENNXT_MAX_DETAILS", "400"))
+# 1500 covers the entire candidate pool (measured: ~1350 after the 60-day
+# filter), so nothing relevant goes unchecked. The old cap of 400 was set on
+# the assumption that detail fetches dominated the runtime; measurement showed
+# otherwise — at concurrency 16 they cost ~56ms each, so the full pool takes
+# ~75s, well inside the 180-minute sweep interval.
+#
+# The real constraint is Gemini, not time: ~69% of fetched postings need a
+# call (the rest are settled free by the categorical-bar regex). At
+# SPONSOR_BATCH=8 the full pool is ~115 calls — 23% of one model's 500/day,
+# and the fallback chain carries three models. Cached verdicts make steady-
+# state far cheaper still; only genuinely new postings cost quota.
+#
+# This stays a cap rather than becoming unlimited: it bounds a runaway if the
+# board registry grows or a prefilter regression floods the pool. Candidates
+# are sorted SoCal- and early-career-first, so if it ever binds it trims the
+# least relevant tail, and anything dropped is logged loudly.
+BENNXT_MAX_DETAILS = int(os.environ.get("BENNXT_MAX_DETAILS", "1500"))
 BENNXT_MAX_AGE_DAYS = 60   # older postings are almost always stale/filled
 
 # Shape of the most recent bennxt_scan, for /bennxt debug. These counts are
@@ -2974,7 +3017,8 @@ def cmd_stats(conn):
         today = conn.execute("SELECT n FROM llm_usage WHERE day=?",
                              (datetime.now().strftime("%Y-%m-%d"),)).fetchone()
         print(f"\nllm cache: {cached} classified · {today[0] if today else 0} "
-              f"api calls today (budget {LLM_RPD})")
+              f"api calls today (budget {total_rpd()} across "
+              f"{len({GEMINI_MODEL} | set(GEMINI_FALLBACK_MODELS))} models)")
 
     print("\nrecent sweeps:")
     for s in conn.execute("SELECT * FROM sweeps ORDER BY started DESC LIMIT 10"):
