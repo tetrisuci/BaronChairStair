@@ -717,7 +717,14 @@ _PHASE_LABEL = {
 def _bar(done: int, total, width: int = 10) -> str:
     if not total:
         return "▓" * width if done else "░" * width
+    # Any real progress shows at least one block: round() renders 5/106 as an
+    # empty bar, which reads as "stuck" during the slowest phase of the scan.
+    # Likewise, only a genuinely finished phase gets a full bar.
     filled = max(0, min(width, round(width * done / total)))
+    if done and filled == 0:
+        filled = 1
+    if filled == width and done < total:
+        filled = width - 1
     return "▓" * filled + "░" * (width - filled)
 
 
@@ -742,17 +749,31 @@ class _ScanProgress:
         self.state = (phase, done, total)
         self.dirty = True
 
+    @staticmethod
+    def _mmss(seconds: float) -> str:
+        s = max(0, int(seconds))
+        return f"{s // 60}m {s % 60:02d}s" if s >= 60 else f"{s}s"
+
     def _render(self) -> str:
         phase, done, total = self.state or ("boards", 0, None)
-        el = int(time.time() - self.started)
-        clock = f"{el // 60}m {el % 60:02d}s" if el >= 60 else f"{el}s"
+        clock = self._mmss(time.time() - self.started)
         label = _PHASE_LABEL.get(phase, phase)
         count = f"{done}/{total}" if total else str(done)
-        line = f"{_bar(done, total)} {count}"
+        pct = f" ({100 * done / total:.0f}%)" if total else ""
+        line = f"{_bar(done, total)} {count}{pct}"
         note = ""
-        if phase == "llm":
-            # The slowest phase by far, and the one people wait on: say why.
-            note = "\n*Gemini is rate-limited to 15 requests/min — this is the slow part.*"
+        if phase == "llm" and total:
+            # The slowest phase by far and the one people wait on, so give a
+            # real ETA instead of just a bar. Gemini calls are paced by the
+            # RPM limiter, which makes remaining time genuinely predictable.
+            left = total - done
+            eta = self._mmss(left / max(1, poller.LLM_RPM) * 60)
+            note = (f"\n*Gemini allows {poller.LLM_RPM} requests/min, so this "
+                    f"phase takes a while — about {eta} left.*")
+            if not _bennxt_cache["roles"]:
+                note += ("\n*First scan after a restart or database reset, so "
+                         "every posting is classified from scratch. Later "
+                         "scans reuse these results and finish in seconds.*")
         return (f"⏳ **Scanning civil/mech California roles…**\n"
                 f"{label} · {line} · {clock} elapsed{note}")
 
