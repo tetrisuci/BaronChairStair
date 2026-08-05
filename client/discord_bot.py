@@ -33,7 +33,10 @@ can see this") message, so the channel is never flooded.
 
 bennxt tracker — civil/mechanical internships AND new-grad roles in California,
 screened for visa sponsorship with Gemini (replies are PUBLIC, not ephemeral):
-    /bennxt roles [sponsorship] [evidence]   list matching roles
+    /bennxt roles [sponsorship] [region] [fit] [evidence]
+                                             best matches: SoCal + resume fit
+    /bennxt recent [days] [sponsorship] [region] [level] [company] [evidence]
+                                             newest postings, most recent first
     /bennxt notify                           toggle new-role notices
     /bennxt notifylist                       show who is subscribed
 """
@@ -1170,6 +1173,130 @@ async def bennxt_roles_slash(
     await interaction.followup.send(header, allowed_mentions=NO_MENTIONS)
     for chunk in _split_blocks(blocks):
         await interaction.followup.send(chunk, allowed_mentions=NO_MENTIONS)
+
+
+@bennxt.command(name="recent",
+                description="Newest civil/mech CA postings, most recent first.")
+@app_commands.describe(
+    days=f"Only postings from the last N days (default {RECENT_DAYS_DEFAULT})",
+    sponsorship="Which sponsorship statuses to show (default: hides explicit no)",
+    region="Where the role is (default: anywhere in California)",
+    level="Internships, new-grad roles, or both",
+    company="Only this employer (partial name is fine)",
+    evidence="Show the quoted sponsorship language from each posting")
+@app_commands.choices(
+    sponsorship=[
+        app_commands.Choice(name="Sponsors or not stated (default)", value="open"),
+        app_commands.Choice(name="Known H-1B sponsors only", value="yes"),
+        app_commands.Choice(name="Everything, including no-sponsorship", value="all"),
+    ],
+    region=[
+        app_commands.Choice(name="Anywhere in California (default)", value="all"),
+        app_commands.Choice(name="SoCal only (Irvine / LA / OC / SD)", value="socal"),
+    ],
+    level=[
+        app_commands.Choice(name="Internships and new grad (default)", value="all"),
+        app_commands.Choice(name="Internships only", value="intern"),
+        app_commands.Choice(name="New grad / entry level only", value="newgrad"),
+    ])
+async def bennxt_recent_slash(
+    interaction: discord.Interaction,
+    days: app_commands.Range[int, 1, 60] = RECENT_DAYS_DEFAULT,
+    sponsorship: app_commands.Choice[str] = None,
+    region: app_commands.Choice[str] = None,
+    level: app_commands.Choice[str] = None,
+    company: str = None,
+    evidence: bool = False,
+):
+    """Strictly newest-first, unlike `roles` which ranks SoCal + resume fit."""
+    if pconn is None:
+        await interaction.response.send_message(_tracker_disabled(), ephemeral=True)
+        return
+    await interaction.response.defer(thinking=True)
+    try:
+        roles = await _bennxt_roles()
+    except Exception as e:
+        print(f"bennxt scan failed: {type(e).__name__}: {e}", file=sys.stderr)
+        await interaction.followup.send(
+            "The bennxt scan failed — try again in a few minutes.",
+            allowed_mentions=NO_MENTIONS)
+        return
+
+    cutoff = time.time() - days * 86400
+    keep = {"open": ("yes", "likely", "unknown"),
+            "yes": ("yes", "likely"),
+            "all": ("yes", "likely", "unknown", "no")}[
+                sponsorship.value if sponsorship else "open"]
+
+    sel = [(p, v) for p, v in roles
+           if v.get("sponsorship") in keep
+           and (p.published or 0) >= cutoff]
+    if region and region.value == "socal":
+        sel = [(p, v) for p, v in sel if v.get("region") == "socal"]
+    unrated_level = 0
+    if level and level.value != "all":
+        # The LLM's level verdict when we have one, else the title heuristic.
+        # Most postings have neither (the scan only scores what fits its
+        # budget), so this filter is deliberately strict — and we report how
+        # many were set aside rather than pretending they didn't match.
+        want = level.value
+        def _lvl(p, v):
+            return v.get("level") or (
+                "intern" if poller.bennxt_level_from_title(p.title) == "early"
+                else None)
+        unrated_level = sum(1 for p, v in sel if _lvl(p, v) is None)
+        sel = [(p, v) for p, v in sel if _lvl(p, v) == want]
+    if company:
+        needle = company.lower().strip()
+        sel = [(p, v) for p, v in sel if needle in (p.company or "").lower()]
+
+    # Newest first — the whole point of this command.
+    sel.sort(key=lambda pv: -(pv[0].published or 0))
+
+    if not sel:
+        await interaction.followup.send(
+            f"No civil/mechanical California postings in the last {days} day(s) "
+            "matched those filters. Try a longer window or `/bennxt roles`.",
+            allowed_mentions=NO_MENTIONS)
+        return
+
+    scope = []
+    if region and region.value == "socal":
+        scope.append("SoCal")
+    if level and level.value != "all":
+        scope.append("internships" if level.value == "intern" else "new grad")
+    if company:
+        scope.append(f"company ~ {company}")
+    suffix = f" · {' · '.join(scope)}" if scope else ""
+    header = (f"**{len(sel)} civil/mechanical posting"
+              f"{'s' if len(sel) != 1 else ''} from the last {days} days** "
+              f"(newest first{suffix})")
+    blocks = [_format_bennxt(p, v, evidence) for p, v in sel[:BENNXT_MAX_ROLES]]
+    if len(sel) > BENNXT_MAX_ROLES:
+        blocks.append(f"...and {len(sel) - BENNXT_MAX_ROLES} more — narrow the "
+                      "window with `days:` or filter by `company:`.")
+    note = ("*❔ = the posting never mentions work authorization; verify "
+            "with the employer before applying.*")
+    if unrated_level:
+        note += (f"\n*{unrated_level} posting(s) in this window have no "
+                 "intern/new-grad rating yet and are hidden by the `level` "
+                 "filter — drop it to see them.*")
+    blocks.append(note)
+    await interaction.followup.send(header, allowed_mentions=NO_MENTIONS)
+    for chunk in _split_blocks(blocks):
+        await interaction.followup.send(chunk, allowed_mentions=NO_MENTIONS)
+
+
+@bennxt_recent_slash.autocomplete("company")
+async def bennxt_company_autocomplete(interaction: discord.Interaction,
+                                      current: str):
+    """Suggest employers that actually have postings in the current scan."""
+    if pconn is None or not _bennxt_cache["roles"]:
+        return []
+    cur = current.lower().strip()
+    names = sorted({p.company for p, _ in _bennxt_cache["roles"] if p.company})
+    return [app_commands.Choice(name=n[:100], value=n[:100])
+            for n in names if cur in n.lower()][:25]
 
 
 @bennxt.command(name="notify",
