@@ -1253,6 +1253,32 @@ class LlmBudget:
     def remaining(self):
         return max(0, self.rpd - self.used)
 
+    def record_usage(self, meta):
+        """Persist Gemini's own token counts from a response's usageMetadata.
+
+        estimate_tokens() is a 4-chars/token guess used to stay under the TPM
+        ceiling; these are the real numbers, kept for reporting. Best-effort —
+        a missing or malformed usageMetadata must never fail a classification
+        that already succeeded.
+        """
+        if not isinstance(meta, dict):
+            return
+        try:
+            pt = int(meta.get("promptTokenCount") or 0)
+            ot = int(meta.get("candidatesTokenCount") or 0)
+        except (TypeError, ValueError):
+            return
+        if not (pt or ot):
+            return
+        try:
+            self.conn.execute(
+                "UPDATE llm_usage SET prompt_tokens=COALESCE(prompt_tokens,0)+?,"
+                " output_tokens=COALESCE(output_tokens,0)+? WHERE day=?",
+                (pt, ot, self.day))
+            self.conn.commit()
+        except sqlite3.Error:
+            pass
+
     @staticmethod
     def estimate_tokens(text: str) -> int:
         return len(text or "") // 4 + 64   # +64 for the response/schema overhead
@@ -1283,8 +1309,10 @@ class LlmBudget:
         self.calls.append(now)
         self.tokens.append((now, est_tokens))
         self.used += 1
+        # Name the columns: llm_usage gained token counters, so positional
+        # VALUES(?,?) no longer matches the table width.
         self.conn.execute(
-            "INSERT INTO llm_usage VALUES(?,?) ON CONFLICT(day) "
+            "INSERT INTO llm_usage(day, n) VALUES(?,?) ON CONFLICT(day) "
             "DO UPDATE SET n=excluded.n", (self.day, self.used))
         self.conn.commit()
         return True
@@ -1320,6 +1348,7 @@ async def _llm_call(sess, budget, batch):
                   file=sys.stderr)
             return {}
         try:
+            budget.record_usage(d.get("usageMetadata"))
             text = d["candidates"][0]["content"]["parts"][0]["text"]
             rows = json.loads(text.strip().strip("`").removeprefix("json"))
             return {r["i"]: r for r in rows if isinstance(r, dict) and "i" in r}
@@ -2069,6 +2098,7 @@ async def classify_sponsorship(conn, items, verbose=True):
                                       file=sys.stderr)
                                 break
                             d = await r.json(content_type=None)
+                        budget.record_usage(d.get("usageMetadata"))
                         text = d["candidates"][0]["content"]["parts"][0]["text"]
                         rows = json.loads(
                             text.strip().strip("`").removeprefix("json"))
@@ -2133,6 +2163,13 @@ BENNXT_DETAIL_CONCURRENCY = 16   # description fetches are the slow phase
 BENNXT_MAX_DETAILS = int(os.environ.get("BENNXT_MAX_DETAILS", "400"))
 BENNXT_MAX_AGE_DAYS = 60   # older postings are almost always stale/filled
 
+# Shape of the most recent bennxt_scan, for /bennxt debug. These counts are
+# computed mid-scan and were previously only printed to stderr, where the
+# Discord bot can't reach them. In-memory by design: it describes THIS
+# process's last scan, so a restart correctly shows "no scan yet" rather than
+# stale numbers from before the restart.
+BENNXT_LAST_SCAN: dict = {}
+
 
 async def bennxt_scan(conn, verbose=True, max_details=BENNXT_MAX_DETAILS,
                       max_age=BENNXT_MAX_AGE_DAYS):
@@ -2144,6 +2181,7 @@ async def bennxt_scan(conn, verbose=True, max_details=BENNXT_MAX_DETAILS,
               answered, plus "salary" and "description" from the detail fetch}
     """
     global BOARDS
+    _t0 = time.time()
     saved, BOARDS = BOARDS, BENNXT_BOARDS
     try:
         posts, stats = await fetch_all()
@@ -2151,6 +2189,11 @@ async def bennxt_scan(conn, verbose=True, max_details=BENNXT_MAX_DETAILS,
         BOARDS = saved
 
     cands = [p for p in posts if bennxt_prefilter(p)]
+    BENNXT_LAST_SCAN.clear()
+    BENNXT_LAST_SCAN.update(
+        started=_t0, boards_total=len(BENNXT_BOARDS), boards_ok=stats["ok"],
+        boards_error=stats["error"], boards_unchanged=stats["not_modified"],
+        postings=len(posts), prefiltered=len(cands))
 
     # Drop anything we KNOW is older than max_age, before spending description
     # fetches and Gemini calls on it. Undated postings are kept — we can't
@@ -2179,26 +2222,32 @@ async def bennxt_scan(conn, verbose=True, max_details=BENNXT_MAX_DETAILS,
                               0 if bennxt_level_from_title(p.title) == "early" else 1,
                               0 if h1b_lookup(p.company) else 1,
                               -(p.published or 0)))
+    by_region = defaultdict(int)
+    for p in cands:
+        by_region[bennxt_region(p.location)] += 1
+    BENNXT_LAST_SCAN.update(stale_dropped=stale, max_age=max_age,
+                            by_region=dict(by_region))
     if verbose:
-        by_region = defaultdict(int)
-        for p in cands:
-            by_region[bennxt_region(p.location)] += 1
         note = f" · ignored {stale} older than {max_age}d" if stale else ""
         print(f"  bennxt: {stats['ok']} boards · {len(posts)} postings · "
               f"{len(cands)} pass the civil/mech + CA prefilter "
               f"({', '.join(f'{k}={v}' for k, v in sorted(by_region.items()))})"
               f"{note}")
+    BENNXT_LAST_SCAN.update(max_details=max_details, capped=0, capped_early=0)
     if len(cands) > max_details:
         dropped = cands[max_details:]
         lost_early = sum(1 for p in dropped
                          if bennxt_level_from_title(p.title) == "early")
+        BENNXT_LAST_SCAN.update(capped=len(dropped), capped_early=lost_early)
         # Loudly, because a silent cap reads as "nothing else matched".
         print(f"  bennxt: WARNING capping description fetches at {max_details}"
               f" — {len(dropped)} candidates not checked "
               f"({lost_early} of them explicitly intern/new-grad). "
               f"Raise BENNXT_MAX_DETAILS to see them.", file=sys.stderr)
         cands = cands[:max_details]
+    BENNXT_LAST_SCAN["detailed"] = len(cands)
     if not cands:
+        BENNXT_LAST_SCAN.update(duration=time.time() - _t0, results=0)
         return []
 
     sem = asyncio.Semaphore(BENNXT_DETAIL_CONCURRENCY)
@@ -2227,6 +2276,7 @@ async def bennxt_scan(conn, verbose=True, max_details=BENNXT_MAX_DETAILS,
             continue
         kept.append((p, d))
     fetched = kept
+    BENNXT_LAST_SCAN["yoe_dropped"] = dropped_yoe
     if verbose and dropped_yoe:
         print(f"  bennxt: {dropped_yoe} ambiguous titles dropped on "
               f"years-of-experience (> {BENNXT_MAX_YOE * 2}y)")
@@ -2246,6 +2296,7 @@ async def bennxt_scan(conn, verbose=True, max_details=BENNXT_MAX_DETAILS,
     for (p, d), s in zip(fetched, sites):
         d["company_site"] = s
     with_desc = [(p, d) for p, d in fetched if (d.get("description") or "").strip()]
+    BENNXT_LAST_SCAN["with_description"] = len(with_desc)
     if verbose:
         print(f"  bennxt: {len(with_desc)}/{len(cands)} descriptions retrieved")
 
@@ -2342,6 +2393,12 @@ async def bennxt_scan(conn, verbose=True, max_details=BENNXT_MAX_DETAILS,
                               for k in ("strong", "possible", "weak")
                               if fits[k]))
         print(line)
+    spon_tally, fit_tally = defaultdict(int), defaultdict(int)
+    for _, v in out:
+        spon_tally[v.get("sponsorship") or "unknown"] += 1
+        fit_tally[v.get("fit") or "unrated"] += 1
+    BENNXT_LAST_SCAN.update(duration=time.time() - _t0, results=len(out),
+                            sponsorship=dict(spon_tally), fit=dict(fit_tally))
     return out
 
 
@@ -2782,6 +2839,15 @@ def db_init():
           new_rows INT, pruned INT);
         PRAGMA user_version = {SCHEMA_VERSION};
     """)
+    # Token accounting, added after llm_usage shipped. Additive ALTERs rather
+    # than a SCHEMA_VERSION bump: a bump would force users to delete
+    # postings.db and throw away every cached Gemini verdict, which costs real
+    # quota to rebuild. Old rows keep NULL and read as 0.
+    for _col in ("prompt_tokens", "output_tokens"):
+        try:
+            c.execute(f"ALTER TABLE llm_usage ADD COLUMN {_col} INT DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass          # already migrated
     c.commit()
     return c
 
