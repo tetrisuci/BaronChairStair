@@ -1349,6 +1349,176 @@ async def bennxt_notifylist_slash(interaction: discord.Interaction):
         await interaction.followup.send(chunk, allowed_mentions=NO_MENTIONS)
 
 
+def _human_bytes(n: int) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return f"{n:.0f} {unit}" if unit == "B" else f"{n:,.1f} {unit}"
+        n /= 1024
+
+
+def _db_size(path: Path) -> str:
+    """Size of a sqlite database including its -wal/-shm sidecars, which can
+    hold megabytes of not-yet-checkpointed data."""
+    total = 0
+    for suffix in ("", "-wal", "-shm"):
+        f = Path(str(path) + suffix)
+        if f.exists():
+            total += f.stat().st_size
+    return _human_bytes(total) if total else "missing"
+
+
+def _ago(ts: float) -> str:
+    if not ts:
+        return "never"
+    d = max(0, time.time() - ts)
+    if d < 90:
+        return f"{d:.0f}s ago"
+    if d < 5400:
+        return f"{d / 60:.0f}m ago"
+    if d < 172800:
+        return f"{d / 3600:.1f}h ago"
+    return f"{d / 86400:.1f}d ago"
+
+
+@bennxt.command(name="debug",
+                description="Scan stats, database size, and Gemini quota usage.")
+async def bennxt_debug_slash(interaction: discord.Interaction):
+    """Diagnostics for the bennxt pipeline.
+
+    Deliberately read-only: it never triggers a scan. A debug command that
+    spent 90 seconds and a chunk of the daily Gemini quota just to report
+    quota usage would change the very numbers it exists to report.
+    """
+    if pconn is None:
+        await interaction.response.send_message(_tracker_disabled(), ephemeral=True)
+        return
+    await interaction.response.defer(thinking=True)
+
+    L = []
+
+    # ── Gemini quota. Per-MODEL daily caps, which is why the fallback chain
+    # exists — each model carries its own budget.
+    # The poller keys llm_usage by LOCAL date; SQL date('now') is UTC and
+    # would read the wrong row for part of each day.
+    today = poller.datetime.now().strftime("%Y-%m-%d")
+    row = pconn.execute(
+        "SELECT n, COALESCE(prompt_tokens,0), COALESCE(output_tokens,0) "
+        "FROM llm_usage WHERE day=?", (today,)).fetchone()
+    used, ptok, otok = row if row else (0, 0, 0)
+    pct = 100 * used / poller.LLM_RPD if poller.LLM_RPD else 0
+    bar = "█" * int(pct // 10) + "░" * (10 - int(pct // 10))
+    L.append("**Gemini quota (today)**")
+    L.append(f"`{bar}` {used}/{poller.LLM_RPD} requests ({pct:.0f}%) "
+             f"on `{poller.GEMINI_MODEL}`")
+    if ptok or otok:
+        L.append(f"tokens: {ptok:,} in · {otok:,} out · {ptok + otok:,} total")
+    else:
+        # Distinguishes "no calls yet" from "this build predates the counter".
+        L.append("tokens: not recorded yet (counted from the next Gemini call)")
+    exhausted = [m for m, day in poller._MODEL_EXHAUSTED.items() if day == today]
+    chain = [poller.GEMINI_MODEL] + poller.GEMINI_FALLBACK_MODELS
+    L.append("models: " + " → ".join(
+        f"~~{m}~~" if m in exhausted else m for m in chain))
+    if exhausted:
+        L.append(f"*{len(exhausted)} model(s) hit their daily cap; "
+                 "each resets at midnight Pacific.*")
+    L.append(f"limits: {poller.LLM_RPM} req/min · {poller.LLM_TPM:,} tok/min · "
+             f"{poller.LLM_RPD} req/day, per model")
+
+    # 7-day request history, so a quota surprise has context.
+    hist = pconn.execute(
+        "SELECT day, n FROM llm_usage ORDER BY day DESC LIMIT 7").fetchall()
+    if len(hist) > 1:
+        L.append("last 7 days: " + " · ".join(f"{d[5:]} {n}" for d, n in hist))
+
+    # ── Last scan. In-memory, so it describes THIS process only.
+    s = poller.BENNXT_LAST_SCAN
+    L.append("")
+    L.append("**Last bennxt scan**")
+    if not s:
+        L.append(f"No scan since the bot started. The sweep runs every "
+                 f"{BENNXT_SWEEP_MINUTES}m — run `/bennxt roles` to force one.")
+    else:
+        L.append(f"{_ago(s.get('started'))} · took {s.get('duration', 0):.0f}s "
+                 f"· cached for {BENNXT_SWEEP_MINUTES}m")
+        L.append(f"boards: {s.get('boards_ok', 0)}/{s.get('boards_total', 0)} ok"
+                 f" · {s.get('boards_error', 0)} errored"
+                 f" · {s.get('boards_unchanged', 0)} unchanged (304)")
+        # The funnel — where postings are actually lost.
+        L.append("```")
+        L.append(f"{s.get('postings', 0):>6}  scanned from all boards")
+        L.append(f"{s.get('prefiltered', 0):>6}  pass civil/mech + CA prefilter")
+        if s.get("stale_dropped"):
+            L.append(f"{-s['stale_dropped']:>6}  older than {s.get('max_age')}d")
+        if s.get("capped"):
+            L.append(f"{-s['capped']:>6}  over the {s.get('max_details')} "
+                     f"detail-fetch cap")
+        L.append(f"{s.get('detailed', 0):>6}  descriptions fetched")
+        if s.get("yoe_dropped"):
+            L.append(f"{-s['yoe_dropped']:>6}  demand too many years experience")
+        L.append(f"{s.get('with_description', 0):>6}  had usable text "
+                 f"(-> sent to Gemini)")
+        L.append(f"{s.get('results', 0):>6}  final roles")
+        L.append("```")
+        if s.get("by_region"):
+            L.append("candidates by region: " + " · ".join(
+                f"{k}={v}" for k, v in sorted(s["by_region"].items())))
+        if s.get("sponsorship"):
+            L.append("sponsorship: " + " · ".join(
+                f"{SPONSOR_LABEL.get(k, k)} {v}"
+                for k, v in sorted(s["sponsorship"].items())))
+        if s.get("fit"):
+            L.append("resume fit: " + " · ".join(
+                f"{k}={v}" for k, v in sorted(s["fit"].items())))
+        # The single most useful number for "why am I missing roles?".
+        if s.get("capped"):
+            L.append(f"⚠️ **{s['capped']} candidates went unchecked** "
+                     f"({s.get('capped_early', 0)} explicitly intern/new-grad). "
+                     f"Raise `BENNXT_MAX_DETAILS` (now {s.get('max_details')}) "
+                     "to cover more.")
+
+    # ── Databases.
+    L.append("")
+    L.append("**Databases**")
+    seen_n = pconn.execute("SELECT COUNT(*) FROM seen").fetchone()[0]
+    post_n = pconn.execute("SELECT COUNT(*) FROM postings").fetchone()[0]
+    cache_n = pconn.execute("SELECT COUNT(*) FROM llm_cache").fetchone()[0]
+    L.append(f"`postings.db` {_db_size(poller.DB_PATH)} — {post_n:,} postings · "
+             f"{seen_n:,} seen (dedup ledger) · {cache_n:,} cached verdicts")
+    pings = db.execute("SELECT COUNT(*) FROM intern_pings").fetchone()[0]
+    bpings = db.execute("SELECT COUNT(*) FROM bennxt_pings").fetchone()[0]
+    L.append(f"`stats.db` {_db_size(ROOT / 'stats.db')} — {pings} internship "
+             f"subscriber(s) · {bpings} bennxt subscriber(s)")
+
+    # Sweep health from the tech poller, which shares the same database.
+    sw = pconn.execute("SELECT started, duration, errors, new_rows FROM sweeps "
+                       "ORDER BY started DESC LIMIT 1").fetchone()
+    if sw:
+        L.append(f"last tech sweep: {_ago(sw[0])} · {sw[1]:.0f}s · "
+                 f"{sw[2]} errors · {sw[3]} new")
+
+    # ── Config that changes what gets found.
+    L.append("")
+    L.append("**Config**")
+    resume = poller.load_resume()
+    L.append(f"resume: " + (f"loaded, {len(resume):,} chars" if resume else
+                            f"**not loaded** — no fit ratings "
+                            f"(`{poller.RESUME_PATH}`, needs `pypdf`)"))
+    try:
+        sponsors = poller.load_h1b_sponsors()
+        L.append(f"H-1B sponsor list: {len(sponsors):,} companies")
+    except Exception:
+        L.append("H-1B sponsor list: unavailable")
+    L.append(f"boards: {len(poller.BENNXT_BOARDS)} · "
+             f"max age {poller.BENNXT_MAX_AGE_DAYS}d · "
+             f"detail cap {poller.BENNXT_MAX_DETAILS} · "
+             f"cache {len(_bennxt_cache['roles'])} roles "
+             f"({_ago(_bennxt_cache['at'])})")
+
+    for chunk in _pack(L, MAX_CHUNK, "\n"):
+        await interaction.followup.send(chunk, allowed_mentions=NO_MENTIONS)
+
+
 bot.tree.add_command(bennxt)
 
 
