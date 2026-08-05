@@ -65,6 +65,68 @@ except ImportError:
 
 DB_PATH = os.path.join(_HERE, "postings.db")
 CONCURRENCY = 20
+
+# --------------------------------------------------------------------------
+# Politeness. These are public endpoints belonging to other people, and a
+# burst of ~80 req/s to one host is exactly what gets an IP blocked — the
+# global semaphores above bound total in-flight work, not per-HOST load. This
+# gate caps concurrent requests AND enforces a minimum gap per host, so a
+# sweep looks like steady background traffic instead of a scrape.
+# --------------------------------------------------------------------------
+
+HOST_CONCURRENCY = int(os.environ.get("POLL_HOST_CONCURRENCY", "4"))
+HOST_MIN_INTERVAL = float(os.environ.get("POLL_HOST_MIN_INTERVAL", "0.12"))
+_host_sems: dict = {}
+_host_last: dict = {}
+_host_locks: dict = {}
+
+
+def _host_of(url) -> str:
+    m = re.match(r"https?://([^/]+)", str(url))
+    return (m.group(1) if m else str(url)).lower()
+
+
+class _HostGate:
+    """Async context manager: bounded concurrency + min spacing per host."""
+
+    def __init__(self, url):
+        self.host = _host_of(url)
+
+    async def __aenter__(self):
+        sem = _host_sems.setdefault(
+            self.host, asyncio.Semaphore(HOST_CONCURRENCY))
+        await sem.acquire()
+        lock = _host_locks.setdefault(self.host, asyncio.Lock())
+        async with lock:
+            wait = HOST_MIN_INTERVAL - (time.time() - _host_last.get(self.host, 0))
+            if wait > 0:
+                await asyncio.sleep(wait)
+            _host_last[self.host] = time.time()
+        return self
+
+    async def __aexit__(self, *exc):
+        _host_sems[self.host].release()
+        return False
+
+
+def polite_session(**kw):
+    """aiohttp session whose every request passes through the host gate.
+
+    Wrapping _request covers all adapters at once — no adapter has to
+    remember to be polite, and new ones inherit it for free. The Gemini API
+    is exempt: it has its own quota accounting in LlmBudget.
+    """
+    sess = aiohttp.ClientSession(**kw)
+    inner = sess._request
+
+    async def gated(method, url, **rkw):
+        if "generativelanguage" in str(url):
+            return await inner(method, url, **rkw)
+        async with _HostGate(url):
+            return await inner(method, url, **rkw)
+
+    sess._request = gated
+    return sess
 TIMEOUT = aiohttp.ClientTimeout(total=30)
 UA = "internship-poller/0.4 (personal project; contact: you@example.com)"
 MAX_AGE_DAYS = 30   # postings older than this are ignored; override with --max-age
@@ -237,6 +299,25 @@ BENNXT_BOARDS = [
     ("greenhouse", "rondoenergy",                      "Rondo Energy",       "aec"),
     ("greenhouse", "latitude",                         "Latitude AI",        "aec"),
     ("lever",      "intersect",                        "Intersect ENT",      "aec"),
+    # ---- iCIMS tenants (slug = the careers host; listings come from its
+    # sitemap because iCIMS renders client-side). Every one below was probed
+    # live. Add more with: python resolve_boards.py --file urls.txt --emit
+    ("icims", "careers-kimley-horn.icims.com",   "Kimley-Horn",          "aec"),
+    ("icims", "careers-nv5.icims.com",           "NV5",                  "aec"),
+    ("icims", "careers-kleinfelder.icims.com",   "Kleinfelder",          "aec"),
+    ("icims", "careers-geosyntec.icims.com",     "Geosyntec",            "aec"),
+    ("icims", "careers-walterpmoore.icims.com",  "Walter P Moore",       "aec"),
+    ("icims", "careers-exponent.icims.com",      "Exponent",             "aec"),
+    ("icims", "careers-southcoast.icims.com",    "South Coast AQMD",     "aec"),
+    ("icims", "careers-fdcorp.icims.com",        "Flatiron Construction", "aec"),
+    ("icims", "careers-aurora.icims.com",        "Aurora Operations",    "aec"),
+    ("icims", "https://careers.rivian.com",      "Rivian",               "aec"),
+    # Workday "myworkdaysite.com" form: 'wdN/tenant/Site@site'
+    ("workday", "wd1/imeg/Imeg_Careers@site",    "IMEG",                 "aec"),
+    # Eightfold ('subdomain|domain') and Taleo ('tenant|portalId'). Both
+    # endpoints were captured from a real browser session; see resolve_boards.
+    ("eightfold", "arcadis|arcadis.com",         "Arcadis",              "aec"),
+    ("taleo",     "hdr|101430233",               "HDR",                  "aec"),
 ]
 
 # Discovered boards live in boards.json (written by `discover`). The seed list
@@ -465,19 +546,31 @@ async def fetch_ashby(sess, slug, company, sector, etag):
 
 
 async def fetch_workday(sess, slug, company, sector, etag):
-    """slug = 'tenant/wdN/SitePath'. POST-based, paginated, no ETag support."""
-    try:
-        tenant, wd, site = slug.split("/")
-    except ValueError:
+    """slug = 'tenant/wdN/SitePath'  (host <tenant>.<wdN>.myworkdayjobs.com)
+          or 'wdN/tenant/SitePath@site' (host <wdN>.myworkdaysite.com)
+
+    Workday serves career sites from two different host shapes. The second
+    form ("myworkdaysite.com") is common for mid-size firms and is what makes
+    tenants like IMEG reachable — guessing the myworkdayjobs.com form for them
+    just returns 422.
+    """
+    parts = slug.split("/")
+    if len(parts) != 3:
         return 400, [], None
-    base = f"https://{tenant}.{wd}.myworkdayjobs.com"
-    api = f"{base}/wday/cxs/{tenant}/{site}/jobs"
-    out, offset = [], 0
-    # searchText is fuzzy (matches "internal", "international"); the classifier
-    # filters client-side. It just cuts the payload down.
-    while offset < 200:
+    if slug.endswith("@site"):
+        wd, tenant, site = parts[0], parts[1], parts[2][:-5]
+        base = f"https://{wd}.myworkdaysite.com/recruiting/{tenant}/{site}"
+        api = f"https://{wd}.myworkdaysite.com/wday/cxs/{tenant}/{site}/jobs"
+    else:
+        tenant, wd, site = parts
+        base = f"https://{tenant}.{wd}.myworkdayjobs.com"
+        api = f"{base}/wday/cxs/{tenant}/{site}/jobs"
+    out, offset, total = [], 0, None
+    # No searchText: bennxt wants new-grad/EIT/"Engineer I" titles too, and
+    # an "intern" query hides them. The classifier filters client-side.
+    while offset < 1000:
         body = {"appliedFacets": {}, "limit": 20, "offset": offset,
-                "searchText": "intern"}
+                "searchText": ""}
         async with sess.post(api, json=body,
                              headers={"Accept": "application/json"}) as r:
             if r.status != 200:
@@ -493,14 +586,227 @@ async def fetch_workday(sess, slug, company, sector, etag):
                 "workday", f"{tenant}:{path}", company, sector,
                 j.get("title", ""), j.get("locationsText", "") or "",
                 f"{base}/{site}{path}", pub, approx, unb))
+        # `total` is only populated on the first page; later pages report 0,
+        # so capture it once and page against that.
+        if total is None:
+            total = d.get("total") or 0
         offset += 20
-        if offset >= (d.get("total") or 0):
+        if len(posts) < 20 or (total and offset >= total):
+            break
+    return 200, out, None
+
+
+ICIMS_JOB_URL_RE = re.compile(
+    r"<loc>(https://[^<]+?/jobs/(\d+)/([^/]+)/job[^<]*)</loc>", re.I)
+
+
+async def fetch_icims(sess, slug, company, sector, etag):
+    """slug = an iCIMS careers host, e.g. 'careers-kimley-horn.icims.com',
+    or a company careers origin that proxies one.
+
+    iCIMS renders everything client-side, so there is no listings API and no
+    JSON-LD to scrape. What IS public is the sitemap: it enumerates every job
+    URL, and each URL carries the requisition id and a slugified title. That
+    is enough for the title/level/field prefilter; `fetch_details` then pulls
+    the description from the job page's iframe view.
+
+    Locations are not in the sitemap, so postings come back with an empty
+    location — bennxt treats that as "unknown" and lets the LLM read the real
+    work site out of the description, which is exactly what it does for
+    Parsons' blank-location Workday postings.
+    """
+    host = slug.strip().rstrip("/")
+    host = re.sub(r"^https?://", "", host)
+
+    # Some employers front iCIMS with their own careers site that exposes a
+    # real JSON API (Rivian). Prefer it — it carries locations and dates.
+    try:
+        async with sess.get(f"https://{host}/api/jobs?page=1&limit=100",
+                            headers={"Accept": "application/json"}) as r:
+            if r.status == 200 and "json" in r.headers.get("content-type", ""):
+                d = await r.json(content_type=None)
+                rows = d.get("jobs") or []
+                if rows:
+                    out = []
+                    for page in range(1, 11):
+                        if page > 1:
+                            async with sess.get(
+                                    f"https://{host}/api/jobs?page={page}&limit=100",
+                                    headers={"Accept": "application/json"}) as r2:
+                                if r2.status != 200:
+                                    break
+                                rows = (await r2.json(content_type=None)).get("jobs") or []
+                        if not rows:
+                            break
+                        for row in rows:
+                            j = row.get("data", row)
+                            out.append(Posting(
+                                "icims",
+                                f"https://{host}|{j.get('req_id') or j.get('slug')}",
+                                company, sector, j.get("title", ""),
+                                (j.get("location_name") or j.get("full_location")
+                                 or ""), j.get("apply_url") or "",
+                                _ts(j.get("posted_date")) or _ts(j.get("create_date"))))
+                        if len(rows) < 100:
+                            break
+                    return 200, out, None
+    except Exception:
+        pass
+
+    async with sess.get(f"https://{host}/sitemap.xml") as r:
+        if r.status != 200:
+            return r.status, [], None
+        sm = await r.text()
+    out, seen = [], set()
+    for url, jid, title_slug in ICIMS_JOB_URL_RE.findall(sm):
+        if jid in seen:
+            continue
+        seen.add(jid)
+        title = re.sub(r"[-_]+", " ", title_slug).strip().title()
+        out.append(Posting("icims", f"{host}|{jid}", company, sector,
+                           title, "", url, None))
+    return 200, out, None
+
+
+async def fetch_eightfold(sess, slug, company, sector, etag):
+    """slug = 'subdomain|domain', e.g. 'arcadis|arcadis.com'.
+
+    Eightfold's public career sites call /api/pcsx/search — plain GET, no auth.
+    Locations arrive as a list; postedTs is epoch milliseconds.
+    """
+    try:
+        sub, domain = slug.split("|")
+    except ValueError:
+        return 400, [], None
+    base = f"https://{sub}.eightfold.ai/api/pcsx/search"
+    # The API caps each response at 10 regardless of `num`, so a big board is
+    # 100+ requests. Fetch page 1 to learn the total, then pull the rest
+    # concurrently — sequentially this took ~90s and stalled the sweep.
+    PAGE, MAX_JOBS, CONC = 10, 1200, 8
+
+    async def page(start):
+        url = f"{base}?domain={domain}&query=&location=&start={start}&num={PAGE}"
+        try:
+            async with sess.get(url,
+                                headers={"Accept": "application/json"}) as r:
+                if r.status != 200:
+                    return None
+                d = await r.json(content_type=None)
+        except Exception:
+            return None
+        return (d.get("data") or {})
+
+    first = await page(0)
+    if first is None:
+        return 502, [], None
+    total = min(first.get("count") or 0, MAX_JOBS)
+    batches = list(range(PAGE, total, PAGE))
+    results = [first]
+    sem = asyncio.Semaphore(CONC)
+
+    async def guarded(s):
+        async with sem:
+            return await page(s)
+
+    if batches:
+        results += [d for d in await asyncio.gather(
+            *(guarded(s) for s in batches)) if d]
+
+    out = []
+    for data in results:
+        for j in data.get("positions") or []:
+            locs = j.get("locations") or j.get("standardizedLocations") or []
+            loc = "; ".join(str(x) for x in locs if x)[:120]
+            pid = j.get("id") or j.get("displayJobId")
+            out.append(Posting(
+                "eightfold", f"{sub}|{domain}|{pid}", company, sector,
+                j.get("name", ""), loc,
+                j.get("positionUrl") or
+                f"https://{sub}.eightfold.ai/careers/job/{pid}",
+                _ts(j.get("postedTs") or j.get("creationTs"))))
+    return 200, out, None
+
+
+async def fetch_taleo(sess, slug, company, sector, etag):
+    """slug = 'tenant|portalId', e.g. 'hdr|101430233'.
+
+    Taleo's career sections expose a JSON search under
+    /careersection/rest/jobboard/searchjobs. The payload shape is fussy and
+    varies by tenant, so a 500 here simply yields no postings rather than
+    failing the sweep.
+    """
+    try:
+        tenant, portal = slug.split("|")
+    except ValueError:
+        return 400, [], None
+    url = (f"https://{tenant}.taleo.net/careersection/rest/jobboard/searchjobs"
+           f"?lang=en&portal={portal}")
+    # Taleo 500s unless the payload matches what its own UI sends, filter
+    # arrays included — captured from a real career-section session.
+    await sess.get(f"https://{tenant}.taleo.net/careersection/ex/jobsearch.ftl"
+                   f"?lang=en&portal={portal}")     # sets the session cookie
+    out = []
+    for page in range(1, 21):
+        body = {"multilineEnabled": False,
+                "sortingSelection": {"sortBySelectionParam": "1",
+                                     "ascendingSortingOrder": "false"},
+                "fieldData": {"fields": {"KEYWORD": "", "LOCATION": "",
+                                         "CATEGORY": ""}, "valid": True},
+                "filterSelectionParam": {"searchFilterSelections": [
+                    {"id": "LOCATION", "selectedValues": []},
+                    {"id": "JOB_FIELD", "selectedValues": []},
+                    {"id": "JOB_SCHEDULE", "selectedValues": []},
+                    {"id": "POSTING_DATE", "selectedValues": []}]},
+                "advancedSearchFiltersSelectionParam": {
+                    "searchFilterSelections": [
+                        {"id": "LOCATION", "selectedValues": []},
+                        {"id": "JOB_FIELD", "selectedValues": []},
+                        {"id": "EMPLOYEE_STATUS", "selectedValues": []},
+                        {"id": "JOB_SCHEDULE", "selectedValues": []}]},
+                "pageNo": page}
+        # Taleo rejects the call without these — its UI always sends them.
+        async with sess.post(url, json=body, headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/javascript, */*; q=0.01",
+                "X-Requested-With": "XMLHttpRequest",
+                "tz": "GMT-08:00", "tzname": "America/Los_Angeles",
+                "Referer": (f"https://{tenant}.taleo.net/careersection/ex/"
+                            f"jobsearch.ftl?lang=en&portal={portal}")}) as r:
+            if r.status != 200:
+                return (200, out, None) if out else (r.status, [], None)
+            d = await r.json(content_type=None)
+        reqs = d.get("requisitionList") or []
+        if not reqs:
+            break
+        for j in reqs:
+            # column = [title, '["United States-Arizona-Phoenix"]', posted]
+            cols = j.get("column") or []
+            title = cols[0] if cols else (j.get("title") or "")
+            loc = ""
+            if len(cols) > 1 and cols[1]:
+                try:
+                    places = json.loads(cols[1])
+                    # "United States-California-Irvine" -> "Irvine, California"
+                    loc = "; ".join(
+                        ", ".join(reversed(str(x).split("-")[1:])) or str(x)
+                        for x in places)[:120]
+                except Exception:
+                    loc = str(cols[1])[:120]
+            jid = j.get("jobId") or j.get("contestNo") or title
+            out.append(Posting(
+                "taleo", f"{tenant}|{portal}|{jid}", company, sector,
+                str(title), str(loc),
+                f"https://{tenant}.taleo.net/careersection/ex/jobdetail.ftl"
+                f"?job={jid}", None))
+        if len(reqs) < 25:
             break
     return 200, out, None
 
 
 ADAPTERS = {"greenhouse": fetch_greenhouse, "lever": fetch_lever,
-            "ashby": fetch_ashby, "workday": fetch_workday}
+            "ashby": fetch_ashby, "workday": fetch_workday,
+            "icims": fetch_icims, "eightfold": fetch_eightfold,
+            "taleo": fetch_taleo}
 
 # --------------------------------------------------------------------------
 # Detail fetch — salary + full description for ONE posting, on demand. The
@@ -613,8 +919,8 @@ async def fetch_details(platform, url, external_id) -> dict:
     field just leaves the value None — callers treat both as optional.
     """
     out = {"salary": None, "description": None}
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20),
-                                     headers={"User-Agent": UA}) as sess:
+    async with polite_session(timeout=aiohttp.ClientTimeout(total=20),
+                              headers={"User-Agent": UA}) as sess:
         if platform == "greenhouse":
             m = GH_JOB_URL_RE.search(url or "")
             if not m:
@@ -682,6 +988,15 @@ async def fetch_details(platform, url, external_id) -> dict:
             out["salary"] = (job.get("compensationTierSummary")
                              or comp.get("compensationTierSummary")
                              or comp.get("scrapeableCompensationSalarySummary"))
+
+        elif platform == "icims":
+            # The plain job page is a 4KB JS shell; the ?in_iframe=1 view is
+            # server-rendered and carries the full posting text.
+            sep = "&" if "?" in (url or "") else "?"
+            async with sess.get(f"{url}{sep}in_iframe=1") as r:
+                if r.status != 200:
+                    return out
+                out["description"] = strip_html(await r.text())
 
         elif platform == "workday":
             m = WD_JOB_URL_RE.match(url or "")
@@ -1810,11 +2125,12 @@ async def classify_sponsorship(conn, items, verbose=True):
     return out
 
 
-BENNXT_DETAIL_CONCURRENCY = 6
-# High enough to cover every candidate a normal scan produces (~360), so no
-# qualifying role is silently dropped. Description fetches are cheap HTTP;
-# only the postings the regex can't settle reach Gemini.
-BENNXT_MAX_DETAILS = int(os.environ.get("BENNXT_MAX_DETAILS", "600"))
+BENNXT_DETAIL_CONCURRENCY = 16   # description fetches are the slow phase
+# The registry now spans ~88 boards and ~1.8k candidates, so an uncapped pass
+# would take far longer than the sweep interval. Candidates are sorted SoCal-
+# and early-career-first, so the cap trims the least relevant tail; anything
+# dropped is logged loudly rather than silently vanishing.
+BENNXT_MAX_DETAILS = int(os.environ.get("BENNXT_MAX_DETAILS", "400"))
 BENNXT_MAX_AGE_DAYS = 60   # older postings are almost always stale/filled
 
 
@@ -1856,8 +2172,12 @@ async def bennxt_scan(conn, verbose=True, max_details=BENNXT_MAX_DETAILS,
     # newest first inside that. The detail-fetch cap therefore spends its
     # budget on the most relevant postings.
     tier = {"socal": 0, "ca": 1, "remote": 2, "unknown": 3, "other": 4}
+    # Within the location-unknown tier (iCIMS sitemaps carry no location at
+    # all), prefer postings from VERIFIED H-1B SPONSORS — those are the ones
+    # worth spending a detail fetch on when we can't yet tell where they are.
     cands.sort(key=lambda p: (tier.get(bennxt_region(p.location), 4),
                               0 if bennxt_level_from_title(p.title) == "early" else 1,
+                              0 if h1b_lookup(p.company) else 1,
                               -(p.published or 0)))
     if verbose:
         by_region = defaultdict(int)
@@ -1914,7 +2234,7 @@ async def bennxt_scan(conn, verbose=True, max_details=BENNXT_MAX_DETAILS,
     # The employer's own website, so the user can research the company (and
     # apply on its careers page where one exists) rather than only via the ATS.
     # One request per COMPANY, not per posting — the cache collapses repeats.
-    async with aiohttp.ClientSession(
+    async with polite_session(
             timeout=aiohttp.ClientTimeout(total=25),
             headers={"User-Agent": "Mozilla/5.0 (compatible; "
                                    "internship-poller/0.4)"}) as csess:
@@ -2092,7 +2412,7 @@ async def fetch_all(etags=None, on_status=None, sector=None):
         if on_status:
             on_status(plat, slug, company, "ok", len(posts))
 
-    async with aiohttp.ClientSession(timeout=TIMEOUT, headers={"User-Agent": UA}) as s:
+    async with polite_session(timeout=TIMEOUT, headers={"User-Agent": UA}) as s:
         await asyncio.gather(*(one(s, *b) for b in boards))
     return out, stats
 
@@ -2308,7 +2628,7 @@ async def mine_yc(sess, limit=None, concurrency=6, recheck=False):
 
 async def cmd_discover(min_interns, include_workday, use_cc, use_yc,
                        yc_limit=None, yc_recheck=False):
-    async with aiohttp.ClientSession(
+    async with polite_session(
             timeout=aiohttp.ClientTimeout(total=90),
             connector=aiohttp.TCPConnector(limit=25),
             headers={"User-Agent": UA}) as sess:
