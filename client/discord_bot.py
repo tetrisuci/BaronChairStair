@@ -1158,14 +1158,18 @@ async def bennxt_roles_slash(
                      f"at `{poller.RESUME_PATH}` (and `pip install pypdf`), "
                      "then restart the bot.*")
         else:
-            row = pconn.execute("SELECT n FROM llm_usage WHERE day=date('now')"
-                                ).fetchone()
+            # Local date, matching how the poller keys llm_usage; SQL
+            # date('now') is UTC and reads the wrong row for part of each day.
+            row = pconn.execute(
+                "SELECT n FROM llm_usage WHERE day=?",
+                (poller.datetime.now().strftime("%Y-%m-%d"),)).fetchone()
             spent = row[0] if row else 0
-            if spent >= poller.LLM_RPD:
-                why = (f"the daily Gemini quota ({poller.LLM_RPD}/day) is used "
-                       "up; it resets at midnight Pacific")
+            cap = poller.total_rpd()   # whole chain, not one model's cap
+            if spent >= cap:
+                why = (f"the daily Gemini quota ({cap}/day across "
+                       "all models) is used up; it resets at midnight Pacific")
             else:
-                why = (f"the scan stopped early ({spent}/{poller.LLM_RPD} calls "
+                why = (f"the scan stopped early ({spent}/{cap} calls "
                        "used today) — usually a Gemini timeout or outage")
             note += (f"\n*{unscored} role(s) here have no resume-fit rating "
                      f"yet: {why}. They get scored on the next run.*")
@@ -1405,11 +1409,14 @@ async def bennxt_debug_slash(interaction: discord.Interaction):
         "SELECT n, COALESCE(prompt_tokens,0), COALESCE(output_tokens,0) "
         "FROM llm_usage WHERE day=?", (today,)).fetchone()
     used, ptok, otok = row if row else (0, 0, 0)
-    pct = 100 * used / poller.LLM_RPD if poller.LLM_RPD else 0
+    # llm_usage counts calls across every model, so compare against the whole
+    # chain's budget, not one model's per-model cap.
+    cap = poller.total_rpd()
+    pct = 100 * used / cap if cap else 0
     bar = "█" * int(pct // 10) + "░" * (10 - int(pct // 10))
     L.append("**Gemini quota (today)**")
-    L.append(f"`{bar}` {used}/{poller.LLM_RPD} requests ({pct:.0f}%) "
-             f"on `{poller.GEMINI_MODEL}`")
+    L.append(f"`{bar}` {used}/{cap} requests ({pct:.0f}%) across the model "
+             f"chain · currently on `{poller.GEMINI_MODEL}`")
     if ptok or otok:
         L.append(f"tokens: {ptok:,} in · {otok:,} out · {ptok + otok:,} total")
     else:
@@ -1423,7 +1430,8 @@ async def bennxt_debug_slash(interaction: discord.Interaction):
         L.append(f"*{len(exhausted)} model(s) hit their daily cap; "
                  "each resets at midnight Pacific.*")
     L.append(f"limits: {poller.LLM_RPM} req/min · {poller.LLM_TPM:,} tok/min · "
-             f"{poller.LLM_RPD} req/day, per model")
+             f"{poller.LLM_RPD} req/day per model "
+             f"({len(chain)} models = {cap} total)")
 
     # 7-day request history, so a quota surprise has context.
     hist = pconn.execute(
