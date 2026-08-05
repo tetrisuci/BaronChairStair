@@ -1155,6 +1155,41 @@ def total_rpd():
     return LLM_RPD * max(1, len({GEMINI_MODEL} | set(GEMINI_FALLBACK_MODELS)))
 
 
+# How many times one Gemini request may be attempted before the batch moves on
+# to the next model. 3 = the initial call plus 2 retries.
+LLM_MAX_ATTEMPTS = int(os.environ.get("GEMINI_MAX_ATTEMPTS", "3"))
+
+# Per-request client deadline for Gemini calls.
+LLM_HTTP_TIMEOUT = float(os.environ.get("GEMINI_HTTP_TIMEOUT", "150"))
+
+# Circuit breaker: consecutive BATCHES that fail every attempt on every model
+# before the run gives up and leaves the rest to the regex classifier. Each
+# unit here is now a fully exhausted retry chain, so 3 is a much stronger
+# signal of a real outage than it was when one timeout counted as a failure.
+LLM_MAX_BATCH_FAILURES = int(os.environ.get("GEMINI_MAX_BATCH_FAILURES", "3"))
+
+# Failures worth retrying: the request never produced an answer, and the same
+# request may well succeed moments later. Timeouts dominate here — a batch of 8
+# postings is ~13k tokens, so a slow generation can exceed the client deadline
+# even though nothing is wrong. Connection resets and aiohttp's generic
+# ClientError cover transport-level flakiness.
+#
+# Deliberately NOT retried: an unparseable 200 response (deterministic — the
+# model returned malformed JSON and will again), and non-retryable HTTP codes
+# like 400/403, which are handled by status before ever reaching the handler.
+TRANSIENT_LLM_ERRORS = (asyncio.TimeoutError, aiohttp.ClientError,
+                        ConnectionError)
+
+
+def llm_backoff(attempt: int) -> float:
+    """Seconds to wait before re-attempting a failed Gemini call.
+
+    Exponential from 5s (5, 10, 20…), matching the 500/503 path so a run
+    can't stall for minutes on retries alone.
+    """
+    return 2 ** attempt * 5
+
+
 def gemini_models():
     """Preferred model first, then fallbacks, skipping any that already
     reported a per-day 429 today."""
@@ -1349,18 +1384,38 @@ async def _llm_call(sess, budget, batch):
                              "temperature": 0},
     }
     url = GEMINI_URL.format(model=GEMINI_MODEL)
-    for attempt in range(3):
+    for attempt in range(LLM_MAX_ATTEMPTS):
+        # The first attempt's slot was taken above; every RETRY is another
+        # real API call and must take its own, or retries spend quota
+        # invisibly and overrun the daily budget.
+        if attempt and not await budget.acquire(
+                budget.estimate_tokens(LLM_PROMPT + lines)):
+            return {}
         try:
             async with sess.post(url, json=body,
                                  headers={"x-goog-api-key": GEMINI_KEY}) as r:
                 if r.status == 429:
-                    await asyncio.sleep(2 ** attempt * 5)
+                    await asyncio.sleep(llm_backoff(attempt))
+                    continue
+                if r.status in (500, 503):
+                    await asyncio.sleep(llm_backoff(attempt))
                     continue
                 if r.status != 200:
                     print(f"  llm: HTTP {r.status} — falling back to regex",
                           file=sys.stderr)
                     return {}
                 d = await r.json(content_type=None)
+        except TRANSIENT_LLM_ERRORS as e:
+            last = attempt == LLM_MAX_ATTEMPTS - 1
+            print(f"  llm: {type(e).__name__} "
+                  f"(attempt {attempt + 1}/{LLM_MAX_ATTEMPTS})"
+                  + (" — falling back to regex" if last else
+                     f" — retrying in {llm_backoff(attempt):.0f}s"),
+                  file=sys.stderr)
+            if last:
+                return {}
+            await asyncio.sleep(llm_backoff(attempt))
+            continue
         except Exception as e:
             print(f"  llm: {type(e).__name__} — falling back to regex",
                   file=sys.stderr)
@@ -1415,14 +1470,16 @@ async def llm_classify(conn, postings, verbose=True):
 
     fails = 0
     async with aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=60)) as sess:
+            timeout=aiohttp.ClientTimeout(total=LLM_HTTP_TIMEOUT)) as sess:
         for batch in batches:
             # Circuit breaker: a bad key or a dead endpoint would otherwise
-            # burn one daily-quota slot per batch before giving up.
-            if fails >= 2:
+            # burn one daily-quota slot per batch before giving up. Each
+            # "failure" is now an exhausted retry chain, not a single blip.
+            if fails >= LLM_MAX_BATCH_FAILURES:
                 if verbose:
-                    print("  llm: 2 consecutive failures — aborting, regex for "
-                          "the rest", file=sys.stderr)
+                    print(f"  llm: {LLM_MAX_BATCH_FAILURES} consecutive failed "
+                          "batches — aborting, regex for the rest",
+                          file=sys.stderr)
                 break
             indexed = list(enumerate(batch))
             res = await _llm_call(sess, budget, indexed)
@@ -2062,15 +2119,19 @@ async def classify_sponsorship(conn, items, verbose=True):
               f"calls ({GEMINI_MODEL})")
 
     fails = 0
+    # 150s, not 90: a batch of SPONSOR_BATCH postings plus the resume is ~13k
+    # tokens, and structured-output generation over that can legitimately run
+    # past 90s. The old deadline turned slow-but-fine calls into failures.
     async with aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=90)) as sess:
+            timeout=aiohttp.ClientTimeout(total=LLM_HTTP_TIMEOUT)) as sess:
         for batch in batches:
             if budget.exhausted:
                 break        # daily quota gone; nothing more will succeed today
-            if fails >= 2:
+            if fails >= LLM_MAX_BATCH_FAILURES:
                 if verbose:
-                    print("  sponsorship: 2 consecutive failures — stopping",
-                          file=sys.stderr)
+                    print(f"  sponsorship: {LLM_MAX_BATCH_FAILURES} consecutive "
+                          "failed batches — stopping; the rest stay unscored "
+                          "and are retried next sweep", file=sys.stderr)
                 break
             parts = []
             for i, (p, desc, known) in enumerate(batch):
@@ -2095,7 +2156,7 @@ async def classify_sponsorship(conn, items, verbose=True):
             for model in gemini_models():
                 if res:
                     break
-                for attempt in range(3):
+                for attempt in range(LLM_MAX_ATTEMPTS):
                     # Every attempt is a real API call, so every attempt must
                     # take a slot — otherwise retries spend quota invisibly.
                     if not await budget.acquire(est):
@@ -2136,9 +2197,27 @@ async def classify_sponsorship(conn, items, verbose=True):
                         res = {x["i"]: x for x in rows
                                if isinstance(x, dict) and "i" in x}
                         break
-                    except Exception as e:
-                        print(f"  sponsorship: {model} {type(e).__name__}",
+                    except TRANSIENT_LLM_ERRORS as e:
+                        # Retryable: the request produced no answer and the
+                        # same call may succeed shortly. Previously these
+                        # broke immediately, so a single slow generation cost
+                        # the whole batch.
+                        last = attempt == LLM_MAX_ATTEMPTS - 1
+                        print(f"  sponsorship: {model} {type(e).__name__} "
+                              f"(attempt {attempt + 1}/{LLM_MAX_ATTEMPTS})"
+                              + ("" if last else
+                                 f" — retrying in {llm_backoff(attempt):.0f}s"),
                               file=sys.stderr)
+                        if last:
+                            break        # fall through to the next model
+                        await asyncio.sleep(llm_backoff(attempt))
+                        continue
+                    except Exception as e:
+                        # Deterministic failure (malformed JSON, unexpected
+                        # shape): retrying the identical request would fail
+                        # the same way, so move to the next model instead.
+                        print(f"  sponsorship: {model} {type(e).__name__} "
+                              f"— not retryable", file=sys.stderr)
                         break
             if not res and all(_MODEL_EXHAUSTED.get(m) == today
                                for m in [GEMINI_MODEL] + GEMINI_FALLBACK_MODELS):
