@@ -1071,6 +1071,7 @@ bennxt = app_commands.Group(
     sponsorship="Which sponsorship statuses to show (default: hides explicit no)",
     region="Where the role is (default: SoCal first, then rest of California)",
     fit="How well the role matches the resume (default: hides weak matches)",
+    days="Only roles posted in the last N days (undated ones are still shown)",
     evidence="Show the quoted sponsorship language from each posting")
 @app_commands.choices(
     sponsorship=[
@@ -1092,6 +1093,7 @@ async def bennxt_roles_slash(
     sponsorship: app_commands.Choice[str] = None,
     region: app_commands.Choice[str] = None,
     fit: app_commands.Choice[str] = None,
+    days: app_commands.Range[int, 1, 60] = None,
     evidence: bool = False,
 ):
     if pconn is None:
@@ -1113,6 +1115,16 @@ async def bennxt_roles_slash(
             "yes": ("yes", "likely"),
             "all": ("yes", "likely", "unknown", "no")}[mode]
     sel = [(p, v) for p, v in roles if v.get("sponsorship") in keep]
+    if days:
+        # Undated postings are KEPT, unlike in `recent`. 68% of the candidate
+        # pool has no date at all (iCIMS sitemaps and some Workday feeds carry
+        # none), so dropping them would silently hide most of the results and
+        # read as "nothing was posted recently". They're counted and disclosed
+        # below instead. Anything older than BENNXT_MAX_AGE_DAYS was already
+        # excluded during the scan, so an undated role is at worst that old.
+        cutoff = time.time() - days * 86400
+        sel = [(p, v) for p, v in sel
+               if not p.published or p.published >= cutoff]
     if region and region.value == "socal":
         sel = [(p, v) for p, v in sel if v.get("region") == "socal"]
     fit_mode = fit.value if fit else "ok"
@@ -1124,12 +1136,15 @@ async def bennxt_roles_slash(
     tally = {k: sum(1 for _, v in roles if v.get("sponsorship") == k)
              for k in ("yes", "likely", "unknown", "no")}
     socal_n = sum(1 for _, v in roles if v.get("region") == "socal")
+    window = days or poller.BENNXT_MAX_AGE_DAYS
     if not sel:
+        extra = (f" Nothing dated within {days} day(s) — try a larger `days`."
+                 if days else "")
         await interaction.followup.send(
             "No civil/mechanical California roles matched that filter right "
-            f"now, among postings from the last {poller.BENNXT_MAX_AGE_DAYS} "
+            f"now, among postings from the last {window} "
             f"days (last scan: ✅ {tally['yes']} sponsor · ❔ {tally['unknown']} "
-            f"not stated · 🚫 {tally['no']} ruled out).",
+            f"not stated · 🚫 {tally['no']} ruled out).{extra}",
             allowed_mentions=NO_MENTIONS)
         return
 
@@ -1138,7 +1153,7 @@ async def bennxt_roles_slash(
     strong_n = sum(1 for _, v in roles if v.get("fit") == "strong")
     header = (f"**{len(sel)} civil/mechanical roles {scope}** "
               f"(internships + new grad, posted in the last "
-              f"{poller.BENNXT_MAX_AGE_DAYS} days)\n"
+              f"{window} days)\n"
               f"Last scan: 📍 {socal_n} SoCal · ✅ {tally['yes']} sponsor · "
               f"🟢 {tally['likely']} sponsored before · "
               f"❔ {tally['unknown']} not stated · 🚫 {tally['no']} ruled out"
@@ -1149,6 +1164,15 @@ async def bennxt_roles_slash(
         blocks.append(f"...and {len(sel) - BENNXT_MAX_ROLES} more.")
     note = ("*❔ = the posting never mentions work authorization; verify "
             "with the employer before applying.*")
+    # Counted from the final selection, so the number matches what's shown.
+    undated_kept = sum(1 for p, _ in sel if not p.published) if days else 0
+    if undated_kept:
+        # Say so plainly: these passed the filter by not having a date, not by
+        # being recent. Silence here would overstate how fresh the list is.
+        note += (f"\n*{undated_kept} of these carry no posting date (their "
+                 f"job board doesn't publish one) and are shown regardless of "
+                 f"`days`. They're at most {poller.BENNXT_MAX_AGE_DAYS} days "
+                 f"old — use `/bennxt recent` for dated postings only.*")
     unscored = sum(1 for _, v in sel if not v.get("fit"))
     if unscored:
         # Two very different causes, two very different fixes — don't guess.
