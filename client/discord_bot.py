@@ -1925,10 +1925,19 @@ async def activity_graph(
     await interaction.response.defer(thinking=True)
     guild = interaction.guild
     series = presence_tracker.fetch_series(db, guild.id, days)
-    if not series:
+    # A line needs at least two points to be a line. One sample renders as an
+    # empty chart (and used to blow up the axis locator), so report the reading
+    # as text instead of sending a blank image.
+    if len(series) < presence_tracker.MIN_GRAPH_SAMPLES:
+        counts = _count_presences(guild)
+        active = sum(counts[s] for s in ("online", "idle", "dnd"))
         await interaction.followup.send(
-            "No activity recorded yet. Samples are taken every "
-            f"{PRESENCE_SAMPLE_MINUTES} minutes — check back shortly.")
+            f"Not enough history to graph yet — **{len(series)}** sample"
+            f"{'' if len(series) == 1 else 's'} so far, need at least "
+            f"{presence_tracker.MIN_GRAPH_SAMPLES}.\n"
+            f"Right now: **{active}** members active. Samples are taken every "
+            f"{PRESENCE_SAMPLE_MINUTES} minutes — check back shortly.",
+            allowed_mentions=NO_MENTIONS)
         return
 
     # Rendering is CPU-bound matplotlib work; keep it off the event loop.

@@ -45,7 +45,14 @@ SAMPLE_MINUTES = 10       # how often the bot records a presence sample
 RETENTION_DAYS = 90       # samples older than this are pruned on write
 GRAPH_DAYS_DEFAULT = 7    # default look-back for the graph command
 GRAPH_DAYS_MAX = 90       # capped at retention -- older data does not exist
+MIN_GRAPH_SAMPLES = 2     # a line needs two points; one renders blank
 SECONDS_PER_DAY = 86400
+
+# Tolerance for a sample timestamp landing ahead of our clock. Samples are
+# stamped from the local clock, so anything meaningfully in the future means
+# a bad clock or a corrupt row -- never a real reading. Kept at one interval
+# so ordinary NTP drift and bucket rounding stay acceptable.
+FUTURE_TOLERANCE = SAMPLE_MINUTES * 60
 
 # Statuses recorded per sample. "offline" is stored too so the series carries
 # the guild's total size for free (sum of all four), which makes a later
@@ -124,18 +131,36 @@ def record_sample(
 
     Returns:
         The bucket timestamp the sample was written to.
+
+    Raises:
+        ValueError: If `ts` is implausible -- more than FUTURE_TOLERANCE ahead
+                    of now, or older than the retention window. Such a value
+                    can only come from a bad clock or a corrupt caller, and
+                    storing it used to be catastrophic: the retention sweep
+                    below derives its cutoff from this sample, so a single
+                    future-dated row would delete the entire real history.
     """
-    slot = bucket(time.time() if ts is None else ts)
+    now = time.time()
+    slot = bucket(now if ts is None else ts)
+    if slot > now + FUTURE_TOLERANCE:
+        raise ValueError(
+            f"refusing future-dated sample: {slot} is "
+            f"{(slot - now) / SECONDS_PER_DAY:.1f} days ahead of now")
+    if slot < now - RETENTION_DAYS * SECONDS_PER_DAY:
+        raise ValueError(
+            f"refusing stale sample: {slot} is older than the "
+            f"{RETENTION_DAYS}-day retention window")
     db.execute(
         "INSERT OR REPLACE INTO presence_samples "
         "(guild_id, ts, online, idle, dnd, offline) VALUES (?, ?, ?, ?, ?, ?)",
         (guild_id, slot, *(int(counts.get(s, 0)) for s in STATUSES)),
     )
-    # Scoped to this guild: the cutoff is derived from *this* sample's clock,
-    # so an unscoped delete would let one guild's timestamps prune every other
-    # guild's history.
+    # Cutoff comes from `now`, never from `slot`: deriving it from the sample
+    # being written made the delete only as trustworthy as that timestamp, so
+    # one future-dated row would wipe the guild's entire real history. Scoped
+    # per guild so one guild's data can never prune another's.
     db.execute("DELETE FROM presence_samples WHERE guild_id = ? AND ts < ?",
-               (guild_id, slot - RETENTION_DAYS * SECONDS_PER_DAY))
+               (guild_id, bucket(now) - RETENTION_DAYS * SECONDS_PER_DAY))
     db.commit()
     return slot
 
@@ -149,11 +174,17 @@ def fetch_series(
     # Bucket the cutoff too: stored timestamps are floored to the sample
     # interval, so a raw wall-clock cutoff would drop the oldest bucket and
     # make repeated calls disagree on the sample count.
-    cutoff = bucket(time.time() - days * SECONDS_PER_DAY)
+    now = time.time()
+    cutoff = bucket(now - days * SECONDS_PER_DAY)
+    # Bounded at BOTH ends. The write path now rejects implausible timestamps,
+    # but a lower bound alone would let any future-dated row (a clock skew, a
+    # hand-edited table) match every window forever and stretch the graph
+    # across years, so the read stays defensive rather than trusting the table.
+    horizon = bucket(now) + FUTURE_TOLERANCE
     rows = db.execute(
         "SELECT ts, online, idle, dnd, offline FROM presence_samples "
-        "WHERE guild_id = ? AND ts >= ? ORDER BY ts",
-        (guild_id, cutoff),
+        "WHERE guild_id = ? AND ts >= ? AND ts <= ? ORDER BY ts",
+        (guild_id, cutoff, horizon),
     ).fetchall()
     return [Sample(*row) for row in rows]
 
@@ -255,12 +286,46 @@ def _style_axes(ax, days: int) -> None:
     ax.yaxis.set_major_locator(MaxNLocator(integer=True, nbins=6))
     ax.set_ylim(bottom=0)
 
-    # Under two days the interesting axis is time of day; past that it's date.
-    if days <= 2:
-        ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M", tz=None))
-        ax.xaxis.set_major_locator(mdates.HourLocator(interval=max(1, days * 3)))
+    # Tick density is driven by AutoDateLocator, which picks its own interval
+    # from the axis range and therefore cannot exceed the tick ceiling. This
+    # used to be a fixed HourLocator sized from `days`, which assumed the axis
+    # actually spanned the requested window. It does not when the series has a
+    # single distinct timestamp: matplotlib then pads the axis to ~2275 days,
+    # and ticking that every 3 hours emitted ~18k ticks, flooding the logs with
+    # MAXTICKS warnings on every render. Only the *label format* keys off
+    # `days` now -- spacing always follows the real axis range.
+    _widen_degenerate_axis(ax, days)
+    span_days = _span_days(ax)
+    if span_days <= 2:
+        fmt = "%H:%M"        # a day or less: time of day is what matters
+    elif span_days <= 90:
+        fmt = "%b %d"        # weeks/months: calendar date
     else:
-        ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %d"))
-        ax.xaxis.set_major_locator(mdates.AutoDateLocator(maxticks=8))
+        fmt = "%b %Y"        # anything longer is unexpected, but stays legible
+    ax.xaxis.set_major_locator(mdates.AutoDateLocator(maxticks=8))
+    ax.xaxis.set_major_formatter(mdates.DateFormatter(fmt))
     for label in ax.get_xticklabels():
         label.set_rotation(0)
+
+
+def _span_days(ax) -> float:
+    """Width of the x-axis in days, as currently limited by the plotted data."""
+    lo, hi = ax.get_xlim()
+    return abs(hi - lo)
+
+
+def _widen_degenerate_axis(ax, days: int) -> None:
+    """Give a single-point (or all-same-timestamp) series a sane x range.
+
+    With one distinct x value matplotlib cannot infer a scale, so it pads the
+    axis to a default +/-1137 days -- a 2275-day span centred on the sample.
+    That is what produced the ~18k-tick MAXTICKS floods: the axis was synthetic
+    padding, not real data. AutoDateLocator no longer chokes on it, but the
+    chart would still be unreadable, so clamp the range to the requested window
+    ending at the sample.
+    """
+    lo, hi = ax.get_xlim()
+    if abs(hi - lo) <= days * 1.5:
+        return                      # a normal, data-driven range -- leave it
+    centre = (lo + hi) / 2
+    ax.set_xlim(centre - days, centre)
