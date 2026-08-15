@@ -39,6 +39,15 @@ screened for visa sponsorship with Gemini (replies are PUBLIC, not ephemeral):
                                              newest postings, most recent first
     /bennxt notify                           toggle new-role notices
     /bennxt notifylist                       show who is subscribed
+
+Activity tracker (backed by presence_tracker.py; samples every 10 minutes):
+    /activity graph [days] [breakdown]     PNG graph of online users
+                                           (defaults to the last 7 days)
+    /activity now                          current online/idle/dnd counts
+
+Requires the privileged Server Members and Presence intents to be enabled in
+the Discord Developer Portal (Bot > Privileged Gateway Intents); without them
+login fails with PrivilegedIntentsRequired.
 """
 
 import os
@@ -62,6 +71,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from teto_client import TetoClient, TetoError
 from build_snapshots import build_rounds
 from render import top_attack_bursts
+import presence_tracker
 
 ROOT = Path(__file__).parent.parent
 
@@ -110,6 +120,11 @@ REGION_LABEL = {"socal": "📍 SoCal", "ca": "CA", "remote": "remote",
                 "unknown": "location TBD"}
 FIT_LABEL = {"strong": "🎯 strong resume fit", "possible": "🤔 possible fit",
              "weak": "⚠️ weak fit"}
+
+# Presence tracker (/activity) — see client/presence_tracker.py.
+PRESENCE_SAMPLE_MINUTES = presence_tracker.SAMPLE_MINUTES
+PRESENCE_DAYS_DEFAULT   = presence_tracker.GRAPH_DAYS_DEFAULT
+PRESENCE_DAYS_MAX       = presence_tracker.GRAPH_DAYS_MAX
 
 # Posting titles/locations come from external APIs and could contain <@id>
 # text, and announcements are deliberately silent — nothing this bot sends
@@ -235,6 +250,11 @@ async def _parse_and_respond(
 
 intents = discord.Intents.default()
 intents.message_content = True  # required for prefix commands and attachment access
+# Presence tracking (/activity). Both are PRIVILEGED: they must also be
+# toggled on under Bot > Privileged Gateway Intents in the Developer
+# Portal, or login fails outright with a PrivilegedIntentsRequired error.
+intents.members = True    # member list, so offline members are countable
+intents.presences = True  # online/idle/dnd status per member
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
@@ -303,6 +323,16 @@ db.execute("""
     )
 """)
 db.commit()
+
+# presence_samples, owned by client/presence_tracker.py. A schema mismatch
+# disables presence tracking instead of taking the whole bot down with it --
+# same policy as the internship tracker below.
+try:
+    presence_tracker.init_db(db)
+    presence_error = None
+except sqlite3.Error as e:
+    presence_error = f"{type(e).__name__}: {e}"
+    print(f"presence tracking disabled: {presence_error}", file=sys.stderr)
 
 # Postings DB shared with the CLI poller (schema owned by
 # internship_poller.db_init). A schema mismatch disables the internship
@@ -373,6 +403,8 @@ async def on_ready():
             internship_sweep.start()
         if not bennxt_sweep.is_running():
             bennxt_sweep.start()
+    if presence_error is None and not presence_sample.is_running():
+        presence_sample.start()
     print(f"Logged in as {bot.user} (id: {bot.user.id})")
 
 
@@ -1812,6 +1844,137 @@ async def bennxt_sweep():
 @bennxt_sweep.before_loop
 async def _bennxt_wait_ready():
     await bot.wait_until_ready()
+
+
+
+# ── Presence tracker ──────────────────────────────────────────────────────────
+# Samples how many members are online in each guild on a fixed interval and
+# graphs the history. Storage and rendering live in presence_tracker.py; this
+# section is only the Discord surface (sampling loop + /activity commands).
+
+
+def _count_presences(guild: discord.Guild) -> dict[str, int]:
+    """Tally members by presence status for one guild."""
+    counts = {status: 0 for status in presence_tracker.STATUSES}
+    for member in guild.members:
+        if member.bot:
+            continue           # bots are always "online"; they'd flatten the graph
+        status = member.status.name
+        if status not in counts:
+            # An untracked discord.Status (or a new one upstream): bucket it as
+            # offline, but say so rather than silently deflating the active count.
+            print(f"presence: unknown status {status!r} in guild {guild.id}",
+                  file=sys.stderr)
+            status = "offline"
+        counts[status] += 1
+    return counts
+
+
+@tasks.loop(minutes=PRESENCE_SAMPLE_MINUTES)
+async def presence_sample():
+    """Record one presence sample per guild.
+
+    Each guild gets its own try: an unhandled exception would permanently stop
+    the tasks.loop and silently end all tracking, and a guild that fails
+    persistently must not starve the guilds after it in iteration order.
+    record_sample commits per guild, so a failure here leaves earlier guilds'
+    samples written -- there is nothing to roll back.
+    """
+    for guild in bot.guilds:
+        try:
+            presence_tracker.record_sample(db, guild.id, _count_presences(guild))
+        except Exception as e:
+            print(f"presence sample failed for guild {guild.id}: "
+                  f"{type(e).__name__}: {e}", file=sys.stderr)
+
+
+@presence_sample.before_loop
+async def _presence_wait_ready():
+    await bot.wait_until_ready()
+
+
+activity = app_commands.Group(name="activity",
+                              description="Server online-activity tracker")
+
+
+@activity.command(name="graph",
+                  description="Graph online users over time (default: 7 days).")
+@app_commands.describe(
+    days=f"Look-back window in days (default {PRESENCE_DAYS_DEFAULT})",
+    breakdown="Split the line into online / idle / do-not-disturb",
+)
+async def activity_graph(
+    interaction: discord.Interaction,
+    days: app_commands.Range[int, 1, PRESENCE_DAYS_MAX] = PRESENCE_DAYS_DEFAULT,
+    breakdown: bool = False,
+):
+    if interaction.guild is None:
+        await interaction.response.send_message(
+            "Run this in a server — there's no activity history for DMs.",
+            ephemeral=True)
+        return
+
+    # /activity now still works without the table (it reads live guild state),
+    # so only the history path has to bail out.
+    if presence_error is not None:
+        await interaction.response.send_message(
+            "Activity history is unavailable — presence tracking failed to "
+            "start. Try `/activity now` for a live count.", ephemeral=True)
+        return
+
+    await interaction.response.defer(thinking=True)
+    guild = interaction.guild
+    series = presence_tracker.fetch_series(db, guild.id, days)
+    if not series:
+        await interaction.followup.send(
+            "No activity recorded yet. Samples are taken every "
+            f"{PRESENCE_SAMPLE_MINUTES} minutes — check back shortly.")
+        return
+
+    # Rendering is CPU-bound matplotlib work; keep it off the event loop.
+    loop = asyncio.get_running_loop()
+    try:
+        png = await loop.run_in_executor(
+            None, presence_tracker.render_graph,
+            series, days, guild.name, breakdown)
+    except Exception as e:
+        print(f"activity graph render failed: {type(e).__name__}: {e}",
+              file=sys.stderr)
+        await interaction.followup.send("Could not render the graph — try again.")
+        return
+
+    stats = presence_tracker.summarize(series)
+    span = f"{days} day{'s' if days != 1 else ''}"
+    header = (f"**Online users — last {span}**\n"
+              f"now **{stats['current']}** · peak **{stats['peak']}** · "
+              f"avg **{stats['average']:.1f}** · {stats['samples']:,} samples")
+    await interaction.followup.send(
+        header,
+        file=discord.File(io.BytesIO(png), filename="activity.png"),
+        allowed_mentions=NO_MENTIONS)
+
+
+@activity.command(name="now",
+                  description="Show the current online / idle / dnd counts.")
+async def activity_now(interaction: discord.Interaction):
+    if interaction.guild is None:
+        await interaction.response.send_message(
+            "Run this in a server — there's no activity history for DMs.",
+            ephemeral=True)
+        return
+
+    counts = _count_presences(interaction.guild)
+    active = sum(counts[s] for s in ("online", "idle", "dnd"))
+    total = active + counts["offline"]
+    pct = (active / total * 100) if total else 0.0
+    await interaction.response.send_message(
+        f"**{active}** of {total} members active ({pct:.0f}%)\n"
+        f"🟢 {counts['online']} online · 🟡 {counts['idle']} idle · "
+        f"🔴 {counts['dnd']} dnd · ⚫ {counts['offline']} offline",
+        allowed_mentions=NO_MENTIONS)
+
+
+bot.tree.add_command(activity)
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

@@ -1,0 +1,266 @@
+"""
+presence_tracker.py
+~~~~~~~~~~~~~~~~~~~
+Tracks how many guild members are online over time and renders the history
+as a PNG line chart.
+
+Two halves, deliberately kept apart from the bot so both are testable without
+a Discord connection:
+
+    record_sample(db, guild_id, counts, ts)   persist one presence sample
+    fetch_series(db, guild_id, days)          read samples back as a series
+    render_graph(series, ...)                 series -> PNG bytes (blocking)
+
+A "sample" is a single count of members per presence status, taken on a fixed
+interval by the bot's background loop. Samples are bucketed to SAMPLE_MINUTES
+so an unlucky restart can't write two rows for the same slot -- the primary
+key is (guild_id, bucket_ts), so a re-sample overwrites rather than
+double-counts.
+
+Rendering needs matplotlib and is CPU-bound; render_graph is synchronous by
+design and must be called from a thread executor so the event loop stays free.
+"""
+
+from __future__ import annotations
+
+import io
+import sqlite3
+import time
+from dataclasses import dataclass
+
+import matplotlib
+
+# Must be selected before pyplot is imported: the bot is headless and any
+# GUI backend would fail outright (or, on macOS, demand the main thread).
+matplotlib.use("Agg")
+
+import matplotlib.dates as mdates          # noqa: E402  (after backend select)
+import matplotlib.pyplot as plt            # noqa: E402
+from matplotlib.ticker import MaxNLocator  # noqa: E402
+
+
+# ── Config ────────────────────────────────────────────────────────────────────
+
+SAMPLE_MINUTES = 10       # how often the bot records a presence sample
+RETENTION_DAYS = 90       # samples older than this are pruned on write
+GRAPH_DAYS_DEFAULT = 7    # default look-back for the graph command
+GRAPH_DAYS_MAX = 90       # capped at retention -- older data does not exist
+SECONDS_PER_DAY = 86400
+
+# Statuses recorded per sample. "offline" is stored too so the series carries
+# the guild's total size for free (sum of all four), which makes a later
+# "percent online" view possible without a schema change.
+STATUSES = ("online", "idle", "dnd", "offline")
+
+# Plot styling. Colors match Discord's own status dots so the chart reads
+# without a legend lookup.
+STATUS_COLOR = {"online": "#23a55a", "idle": "#f0b232", "dnd": "#f23f43"}
+STATUS_LABEL = {"online": "Online", "idle": "Idle", "dnd": "Do not disturb"}
+FIG_SIZE = (10, 4.5)
+FIG_DPI = 110
+BG_COLOR = "#313338"      # Discord dark-theme surface, so the PNG blends in
+FG_COLOR = "#dbdee1"
+GRID_COLOR = "#3f4147"
+
+
+@dataclass(frozen=True)
+class Sample:
+    """One presence reading: a UTC epoch timestamp and a count per status."""
+    ts: float
+    online: int
+    idle: int
+    dnd: int
+    offline: int
+
+    @property
+    def active(self) -> int:
+        """Members not offline -- online + idle + dnd."""
+        return self.online + self.idle + self.dnd
+
+
+# ── Storage ───────────────────────────────────────────────────────────────────
+
+def init_db(db: sqlite3.Connection) -> None:
+    """Create the presence table. Safe to call on every boot."""
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS presence_samples (
+            guild_id INTEGER NOT NULL,
+            ts       INTEGER NOT NULL,
+            online   INTEGER NOT NULL,
+            idle     INTEGER NOT NULL,
+            dnd      INTEGER NOT NULL,
+            offline  INTEGER NOT NULL,
+            PRIMARY KEY (guild_id, ts)
+        )
+    """)
+    # The only read pattern is "one guild, recent window, in time order".
+    db.execute("""
+        CREATE INDEX IF NOT EXISTS presence_guild_ts
+        ON presence_samples (guild_id, ts)
+    """)
+    db.commit()
+
+
+def bucket(ts: float, minutes: int = SAMPLE_MINUTES) -> int:
+    """Floor a timestamp to the sampling interval, so slots are stable."""
+    step = minutes * 60
+    return int(ts // step * step)
+
+
+def record_sample(
+    db: sqlite3.Connection,
+    guild_id: int,
+    counts: dict[str, int],
+    ts: float | None = None,
+) -> int:
+    """
+    Persist one presence sample and prune anything past RETENTION_DAYS.
+
+    Args:
+        db:       Open sqlite connection (the bot's stats.db).
+        guild_id: Guild the counts belong to.
+        counts:   Mapping of status name -> member count. Missing keys are 0.
+        ts:       Sample time as a UTC epoch; defaults to now.
+
+    Returns:
+        The bucket timestamp the sample was written to.
+    """
+    slot = bucket(time.time() if ts is None else ts)
+    db.execute(
+        "INSERT OR REPLACE INTO presence_samples "
+        "(guild_id, ts, online, idle, dnd, offline) VALUES (?, ?, ?, ?, ?, ?)",
+        (guild_id, slot, *(int(counts.get(s, 0)) for s in STATUSES)),
+    )
+    # Scoped to this guild: the cutoff is derived from *this* sample's clock,
+    # so an unscoped delete would let one guild's timestamps prune every other
+    # guild's history.
+    db.execute("DELETE FROM presence_samples WHERE guild_id = ? AND ts < ?",
+               (guild_id, slot - RETENTION_DAYS * SECONDS_PER_DAY))
+    db.commit()
+    return slot
+
+
+def fetch_series(
+    db: sqlite3.Connection,
+    guild_id: int,
+    days: int = GRAPH_DAYS_DEFAULT,
+) -> list[Sample]:
+    """Return samples for one guild over the last `days`, oldest first."""
+    # Bucket the cutoff too: stored timestamps are floored to the sample
+    # interval, so a raw wall-clock cutoff would drop the oldest bucket and
+    # make repeated calls disagree on the sample count.
+    cutoff = bucket(time.time() - days * SECONDS_PER_DAY)
+    rows = db.execute(
+        "SELECT ts, online, idle, dnd, offline FROM presence_samples "
+        "WHERE guild_id = ? AND ts >= ? ORDER BY ts",
+        (guild_id, cutoff),
+    ).fetchall()
+    return [Sample(*row) for row in rows]
+
+
+def summarize(series: list[Sample]) -> dict[str, float]:
+    """Peak / average / latest active counts, for the message accompanying
+    the graph. Returns zeros for an empty series rather than raising."""
+    if not series:
+        return {"peak": 0, "average": 0.0, "current": 0, "samples": 0}
+    active = [s.active for s in series]
+    return {
+        "peak": max(active),
+        "average": sum(active) / len(active),
+        "current": active[-1],
+        "samples": len(series),
+    }
+
+
+# ── Rendering ─────────────────────────────────────────────────────────────────
+
+def render_graph(
+    series: list[Sample],
+    days: int = GRAPH_DAYS_DEFAULT,
+    guild_name: str = "",
+    breakdown: bool = False,
+) -> bytes:
+    """
+    Render the series as a PNG line chart and return the raw bytes.
+
+    Blocking and CPU-bound -- call via loop.run_in_executor.
+
+    Args:
+        series:     Samples, oldest first (as returned by fetch_series).
+        days:       Window length, used for the title and x-axis formatting.
+        guild_name: Shown in the title when provided.
+        breakdown:  Plot online/idle/dnd as separate lines instead of one
+                    combined "active" line.
+
+    Raises:
+        ValueError: If `series` is empty -- callers should special-case the
+                    "no data yet" path with a text reply instead of an image.
+    """
+    if not series:
+        raise ValueError("cannot render a graph from an empty series")
+
+    times = [mdates.date2num(_utc_datetime(s.ts)) for s in series]
+
+    fig, ax = plt.subplots(figsize=FIG_SIZE, dpi=FIG_DPI)
+    fig.patch.set_facecolor(BG_COLOR)
+    ax.set_facecolor(BG_COLOR)
+
+    if breakdown:
+        for status in ("online", "idle", "dnd"):
+            ax.plot(times, [getattr(s, status) for s in series],
+                    color=STATUS_COLOR[status], linewidth=1.6,
+                    label=STATUS_LABEL[status])
+        legend = ax.legend(loc="upper left", frameon=False)
+        for text in legend.get_texts():
+            text.set_color(FG_COLOR)
+    else:
+        active = [s.active for s in series]
+        ax.plot(times, active, color=STATUS_COLOR["online"], linewidth=1.8)
+        ax.fill_between(times, active, color=STATUS_COLOR["online"], alpha=0.18)
+
+    _style_axes(ax, days)
+    title = f"Online users — last {days} day{'s' if days != 1 else ''}"
+    ax.set_title(f"{title}\n{guild_name}" if guild_name else title,
+                 color=FG_COLOR, fontsize=13, pad=12)
+
+    buf = io.BytesIO()
+    fig.tight_layout()
+    # Always close the figure, even if savefig throws: pyplot keeps a global
+    # reference to every open figure, so a leak here grows without bound in a
+    # long-running bot.
+    try:
+        fig.savefig(buf, format="png", facecolor=BG_COLOR)
+    finally:
+        plt.close(fig)
+    return buf.getvalue()
+
+
+def _utc_datetime(ts: float):
+    """Epoch seconds -> aware UTC datetime (imported lazily to keep the
+    module's import cost to matplotlib alone)."""
+    from datetime import datetime, timezone
+    return datetime.fromtimestamp(ts, tz=timezone.utc)
+
+
+def _style_axes(ax, days: int) -> None:
+    """Apply the dark theme and pick date ticks that suit the window."""
+    ax.set_ylabel("Members", color=FG_COLOR, fontsize=10)
+    ax.tick_params(colors=FG_COLOR, labelsize=9)
+    ax.grid(True, color=GRID_COLOR, linewidth=0.6, alpha=0.8)
+    ax.set_axisbelow(True)
+    for spine in ax.spines.values():
+        spine.set_color(GRID_COLOR)
+
+    # Member counts are whole people; never label the axis 12.5.
+    ax.yaxis.set_major_locator(MaxNLocator(integer=True, nbins=6))
+    ax.set_ylim(bottom=0)
+
+    # Under two days the interesting axis is time of day; past that it's date.
+    if days <= 2:
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M", tz=None))
+        ax.xaxis.set_major_locator(mdates.HourLocator(interval=max(1, days * 3)))
+    else:
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %d"))
+        ax.xaxis.set_major_locator(mdates.AutoDateLocator(maxticks=8))
+    for label in ax.get_xticklabels():
+        label.set_rotation(0)
