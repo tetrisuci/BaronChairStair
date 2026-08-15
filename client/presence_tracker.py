@@ -296,10 +296,13 @@ def _style_axes(ax, days: int) -> None:
     # `days` now -- spacing always follows the real axis range.
     _widen_degenerate_axis(ax, days)
     span_days = _span_days(ax)
-    if span_days <= 2:
-        fmt = "%H:%M"        # a day or less: time of day is what matters
-    elif span_days <= 90:
-        fmt = "%b %d"        # weeks/months: calendar date
+    # Date and time both, stacked on two lines: "Aug 12\n14:00". A single-line
+    # "Aug 12 14:00" is ~12 characters and neighbouring labels collide at the
+    # tick counts the locator picks, so the newline buys the time-of-day for
+    # free. Past 90 days ticks land on month boundaries and a clock reading is
+    # noise, so that band stays date-only.
+    if span_days <= 90:
+        fmt = "%b %d\n%H:%M"
     else:
         fmt = "%b %Y"        # anything longer is unexpected, but stays legible
     ax.xaxis.set_major_locator(mdates.AutoDateLocator(maxticks=8))
