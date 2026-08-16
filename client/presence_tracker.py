@@ -27,6 +27,8 @@ import io
 import sqlite3
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 import matplotlib
 
@@ -53,6 +55,11 @@ SECONDS_PER_DAY = 86400
 # a bad clock or a corrupt row -- never a real reading. Kept at one interval
 # so ordinary NTP drift and bucket rounding stay acceptable.
 FUTURE_TOLERANCE = SAMPLE_MINUTES * 60
+
+# Graphs are labelled in Pacific time. The zone (not a fixed -8 offset) is
+# what handles PST/PDT, so clock readings stay correct year-round; the axis
+# legend prints whichever abbreviation is actually in effect for the window.
+DISPLAY_TZ = ZoneInfo("America/Los_Angeles")
 
 # Statuses recorded per sample. "offline" is stored too so the series carries
 # the guild's total size for free (sum of all four), which makes a later
@@ -230,7 +237,9 @@ def render_graph(
     if not series:
         raise ValueError("cannot render a graph from an empty series")
 
-    times = [mdates.date2num(_utc_datetime(s.ts)) for s in series]
+    # Plotted in Pacific time so the x-axis reads in the viewer's local hours;
+    # stored timestamps stay UTC epochs and are untouched.
+    times = [mdates.date2num(_local_datetime(s.ts)) for s in series]
 
     fig, ax = plt.subplots(figsize=FIG_SIZE, dpi=FIG_DPI)
     fig.patch.set_facecolor(BG_COLOR)
@@ -249,7 +258,7 @@ def render_graph(
         ax.plot(times, active, color=STATUS_COLOR["online"], linewidth=1.8)
         ax.fill_between(times, active, color=STATUS_COLOR["online"], alpha=0.18)
 
-    _style_axes(ax, days)
+    _style_axes(ax, days, tz_label(series))
     title = f"Online users — last {days} day{'s' if days != 1 else ''}"
     ax.set_title(f"{title}\n{guild_name}" if guild_name else title,
                  color=FG_COLOR, fontsize=13, pad=12)
@@ -266,14 +275,28 @@ def render_graph(
     return buf.getvalue()
 
 
-def _utc_datetime(ts: float):
-    """Epoch seconds -> aware UTC datetime (imported lazily to keep the
-    module's import cost to matplotlib alone)."""
-    from datetime import datetime, timezone
+def _utc_datetime(ts: float) -> datetime:
+    """Epoch seconds -> aware UTC datetime."""
     return datetime.fromtimestamp(ts, tz=timezone.utc)
 
 
-def _style_axes(ax, days: int) -> None:
+def _local_datetime(ts: float) -> datetime:
+    """Epoch seconds -> aware datetime in DISPLAY_TZ (Pacific)."""
+    return datetime.fromtimestamp(ts, tz=DISPLAY_TZ)
+
+
+def tz_label(series: list[Sample]) -> str:
+    """Abbreviation actually in effect over the series -- "PST", "PDT", or
+    "PST/PDT" when the window straddles a daylight-saving transition, so a
+    winter graph is never mislabelled as summer time."""
+    if not series:
+        return _local_datetime(time.time()).strftime("%Z")
+    first = _local_datetime(series[0].ts).strftime("%Z")
+    last = _local_datetime(series[-1].ts).strftime("%Z")
+    return first if first == last else f"{first}/{last}"
+
+
+def _style_axes(ax, days: int, tz_name: str = "") -> None:
     """Apply the dark theme and pick date ticks that suit the window."""
     ax.set_ylabel("Members", color=FG_COLOR, fontsize=10)
     ax.tick_params(colors=FG_COLOR, labelsize=9)
@@ -302,11 +325,18 @@ def _style_axes(ax, days: int) -> None:
     # free. Past 90 days ticks land on month boundaries and a clock reading is
     # noise, so that band stays date-only.
     if span_days <= 90:
-        fmt = "%b %d\n%H:%M"
+        # %-I is the no-zero-pad hour ("2 PM", not "02 PM"); it is a glibc/BSD
+        # extension but macOS and Linux both honour it, which covers dev and
+        # the deployment box.
+        fmt = "%b %d\n%-I:%M %p"
     else:
         fmt = "%b %Y"        # anything longer is unexpected, but stays legible
-    ax.xaxis.set_major_locator(mdates.AutoDateLocator(maxticks=8))
-    ax.xaxis.set_major_formatter(mdates.DateFormatter(fmt))
+    ax.xaxis.set_major_locator(mdates.AutoDateLocator(maxticks=8, tz=DISPLAY_TZ))
+    ax.xaxis.set_major_formatter(mdates.DateFormatter(fmt, tz=DISPLAY_TZ))
+    if tz_name:
+        # Say which clock these hours are on -- an unlabelled time axis is
+        # ambiguous to anyone not in the bot's timezone.
+        ax.set_xlabel(f"Time of day ({tz_name})", color=FG_COLOR, fontsize=10)
     for label in ax.get_xticklabels():
         label.set_rotation(0)
 

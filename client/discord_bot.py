@@ -41,9 +41,13 @@ screened for visa sponsorship with Gemini (replies are PUBLIC, not ephemeral):
     /bennxt notifylist                       show who is subscribed
 
 Activity tracker (backed by presence_tracker.py; samples every 10 minutes):
-    /activity graph [days] [breakdown]     PNG graph of online users
+    /activity graph [days] [breakdown] [guild_id]
+                                           PNG graph of online users
                                            (defaults to the last 7 days)
-    /activity now                          current online/idle/dnd counts
+    /activity now [guild_id]               current online/idle/dnd counts
+
+Both accept an optional guild_id to inspect any server the bot is in; the
+x-axis is labelled in Pacific time (PST/PDT).
 
 Requires the privileged Server Members and Presence intents to be enabled in
 the Discord Developer Portal (Bot > Privileged Gateway Intents); without them
@@ -1870,6 +1874,25 @@ def _count_presences(guild: discord.Guild) -> dict[str, int]:
     return counts
 
 
+def _resolve_guild(raw: str) -> "discord.Guild | str":
+    """Parse a guild-ID option into a Guild, or return an error message.
+
+    Returns the message as a plain string rather than raising so the caller can
+    reply with it directly -- every failure here is user input, not a fault.
+    """
+    text = raw.strip()
+    if not text.isdigit():
+        return (f"`{text[:32]}` is not a valid server ID. Right-click a server "
+                "→ Copy Server ID (Developer Mode must be on).")
+    guild = bot.get_guild(int(text))
+    if guild is None:
+        # Either a real server this bot was never added to, or a typo. The bot
+        # cannot tell them apart, so the wording covers both.
+        return (f"I'm not in a server with ID `{text}`, so I have no activity "
+                "history for it.")
+    return guild
+
+
 @tasks.loop(minutes=PRESENCE_SAMPLE_MINUTES)
 async def presence_sample():
     """Record one presence sample per guild.
@@ -1902,17 +1925,28 @@ activity = app_commands.Group(name="activity",
 @app_commands.describe(
     days=f"Look-back window in days (default {PRESENCE_DAYS_DEFAULT})",
     breakdown="Split the line into online / idle / do-not-disturb",
+    guild_id="Another server's ID (defaults to this server)",
 )
 async def activity_graph(
     interaction: discord.Interaction,
     days: app_commands.Range[int, 1, PRESENCE_DAYS_MAX] = PRESENCE_DAYS_DEFAULT,
     breakdown: bool = False,
+    guild_id: str | None = None,
 ):
-    if interaction.guild is None:
+    # Snowflakes exceed the float53 range Discord's client uses for integer
+    # options, so the ID arrives as a string and is parsed here.
+    if guild_id is not None:
+        target = _resolve_guild(guild_id)
+        if isinstance(target, str):          # error message rather than a guild
+            await interaction.response.send_message(target, ephemeral=True)
+            return
+    elif interaction.guild is None:
         await interaction.response.send_message(
-            "Run this in a server — there's no activity history for DMs.",
+            "Run this in a server, or pass `guild_id` to graph a specific one.",
             ephemeral=True)
         return
+    else:
+        target = interaction.guild
 
     # /activity now still works without the table (it reads live guild state),
     # so only the history path has to bail out.
@@ -1923,7 +1957,7 @@ async def activity_graph(
         return
 
     await interaction.response.defer(thinking=True)
-    guild = interaction.guild
+    guild = target
     series = presence_tracker.fetch_series(db, guild.id, days)
     # A line needs at least two points to be a line. One sample renders as an
     # empty chart (and used to blow up the axis locator), so report the reading
@@ -1932,7 +1966,8 @@ async def activity_graph(
         counts = _count_presences(guild)
         active = sum(counts[s] for s in ("online", "idle", "dnd"))
         await interaction.followup.send(
-            f"Not enough history to graph yet — **{len(series)}** sample"
+            f"**{guild.name}** — not enough history to graph yet: "
+            f"**{len(series)}** sample"
             f"{'' if len(series) == 1 else 's'} so far, need at least "
             f"{presence_tracker.MIN_GRAPH_SAMPLES}.\n"
             f"Right now: **{active}** members active. Samples are taken every "
@@ -1954,7 +1989,7 @@ async def activity_graph(
 
     stats = presence_tracker.summarize(series)
     span = f"{days} day{'s' if days != 1 else ''}"
-    header = (f"**Online users — last {span}**\n"
+    header = (f"**{guild.name} — online users, last {span}**\n"
               f"now **{stats['current']}** · peak **{stats['peak']}** · "
               f"avg **{stats['average']:.1f}** · {stats['samples']:,} samples")
     await interaction.followup.send(
@@ -1965,19 +2000,28 @@ async def activity_graph(
 
 @activity.command(name="now",
                   description="Show the current online / idle / dnd counts.")
-async def activity_now(interaction: discord.Interaction):
-    if interaction.guild is None:
+@app_commands.describe(guild_id="Another server's ID (defaults to this server)")
+async def activity_now(interaction: discord.Interaction,
+                       guild_id: str | None = None):
+    if guild_id is not None:
+        target = _resolve_guild(guild_id)
+        if isinstance(target, str):
+            await interaction.response.send_message(target, ephemeral=True)
+            return
+    elif interaction.guild is None:
         await interaction.response.send_message(
-            "Run this in a server — there's no activity history for DMs.",
+            "Run this in a server, or pass `guild_id` to check a specific one.",
             ephemeral=True)
         return
+    else:
+        target = interaction.guild
 
-    counts = _count_presences(interaction.guild)
+    counts = _count_presences(target)
     active = sum(counts[s] for s in ("online", "idle", "dnd"))
     total = active + counts["offline"]
     pct = (active / total * 100) if total else 0.0
     await interaction.response.send_message(
-        f"**{active}** of {total} members active ({pct:.0f}%)\n"
+        f"**{target.name}** — **{active}** of {total} members active ({pct:.0f}%)\n"
         f"🟢 {counts['online']} online · 🟡 {counts['idle']} idle · "
         f"🔴 {counts['dnd']} dnd · ⚫ {counts['offline']} offline",
         allowed_mentions=NO_MENTIONS)
