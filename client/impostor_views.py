@@ -21,8 +21,10 @@ import discord
 
 import impostor
 from impostor import RoundError, WordPackError
+from impostor_vote import VoteView, _retire_vote_view
 from impostor_game import (
     DELIVERY_BUTTON, GUESS_TIMEOUT_SECONDS, LOBBY_TIMEOUT_SECONDS,
+    PLAY_AGAIN_TIMEOUT_SECONDS,
     MAX_SELECT_OPTIONS, NO_MENTIONS, ROUND_TIMEOUT_SECONDS,
     VOTE_TIMEOUT_SECONDS, Game, _clear, _dm_role, _games, _lobby_text,
     _may_manage_game, _mentions, _resolve_members, _round_text, _store,
@@ -58,7 +60,7 @@ async def _deal(interaction: discord.Interaction, game: Game) -> None:
 
     try:
         picked = word_packs().pick(
-            game.pack, decoy=game.decoy,
+            ref=game.pack, decoy=game.decoy,
             min_group=impostor.MIN_GUESS_GROUP if game.guessing else 1)
         # One list serves both the public board and the guess menu, so they
         # can never disagree about what the possible words are.
@@ -69,7 +71,7 @@ async def _deal(interaction: discord.Interaction, game: Game) -> None:
                 pool=word_packs().words(picked.pack),
                 limit=impostor.BOARD_SIZE)
         rnd = impostor.assign_roles(
-            game.players, pack=picked.pack, word=picked.word,
+            game.players, pack=picked.pack.name, word=picked.word,
             impostors=game.impostors, show_category=game.show_category,
             decoy=picked.decoy, blind=game.blind, candidates=candidates,
             show_words=game.wordlist, allow_guess=game.guessing)
@@ -89,22 +91,7 @@ async def _deal(interaction: discord.Interaction, game: Game) -> None:
             allowed_mentions=NO_MENTIONS)
         return
 
-    failed_ids = await asyncio.gather(*(
-        _dm_role(members[uid], impostor.role_message(rnd, uid))
-        for uid in rnd.player_ids))
-    failed = tuple(uid for uid in failed_ids if uid is not None)
-
-    if failed:
-        # Some players already hold a word. Void the round loudly rather than
-        # play on with a half-dealt table; the next Deal draws a fresh word, so
-        # the DMs already sent are worthless to whoever has them.
-        await interaction.followup.send(
-            f"⚠️ Could not DM {_mentions(failed)} — this round is **void**.\n"
-            "Everyone: ignore the DM you just got. Fix it under "
-            "**Privacy Settings → Direct Messages → allow DMs from server "
-            "members**, then the host presses **Deal** again — or start the "
-            "next round without `delivery:dm`, which needs no DMs at all.",
-            allowed_mentions=NO_MENTIONS)
+    if not await _deliver_dms(interaction, members, rnd):
         return
 
     running = _store(dataclasses.replace(game, round=rnd))
@@ -114,6 +101,32 @@ async def _deal(interaction: discord.Interaction, game: Game) -> None:
         f"{len(rnd.impostor_ids)} impostor"
         f"{'s' if len(rnd.impostor_ids) != 1 else ''}.",
         allowed_mentions=NO_MENTIONS)
+
+
+async def _deliver_dms(interaction: discord.Interaction,
+                       members: dict[int, discord.Member],
+                       rnd: impostor.Round) -> bool:
+    """DM every player their role. False if the round has to be voided.
+
+    Unlike the button path this can fail for some players and not others, so
+    a partial deal has to be called off loudly: the next Deal draws a fresh
+    word, which makes the DMs already sent worthless to whoever holds them.
+    """
+    failed_ids = await asyncio.gather(*(
+        _dm_role(members[uid], impostor.role_message(rnd, uid))
+        for uid in rnd.player_ids))
+    failed = tuple(uid for uid in failed_ids if uid is not None)
+    if not failed:
+        return True
+
+    await interaction.followup.send(
+        f"⚠️ Could not DM {_mentions(failed)} — this round is **void**.\n"
+        "Everyone: ignore the DM you just got. Fix it under "
+        "**Privacy Settings → Direct Messages → allow DMs from server "
+        "members**, then the host presses **Deal** again — or start the "
+        "next round without `delivery:dm`, which needs no DMs at all.",
+        allowed_mentions=NO_MENTIONS)
+    return False
 
 
 async def _refresh_lobby(interaction: discord.Interaction,
@@ -393,7 +406,9 @@ class GuessSelect(discord.ui.Select):
                     f"**Crew win:** {_mentions(rnd.crew_ids)}\n"
                     f"Impostor{'s' if len(rnd.impostor_ids) != 1 else ''}: "
                     f"{_mentions(rnd.impostor_ids)}")
-        await _announce(interaction, body)
+        await _announce(interaction, body,
+                        view=_play_again(dataclasses.replace(
+                            game, round=None, vote=None)))
 
 
 class GuessView(discord.ui.View):
@@ -509,179 +524,105 @@ class RoundView(discord.ui.View):
             view=GuessView(self.channel_id, rnd.candidates), ephemeral=True)
 
 
-class BallotSelect(discord.ui.Select):
-    """One player's private ballot."""
-
-    def __init__(self, channel_id: int, names: dict[int, str],
-                 candidates: tuple[int, ...]):
-        super().__init__(
-            placeholder="Who is the impostor?", min_values=1, max_values=1,
-            options=[discord.SelectOption(label=names.get(uid, str(uid)),
-                                          value=str(uid))
-                     for uid in candidates[:MAX_SELECT_OPTIONS]])
-        self.channel_id = channel_id
-
-    async def callback(self, interaction: discord.Interaction):
-        game = _games.get(self.channel_id)
-        if game is None or game.round is None or game.vote is None:
-            await interaction.response.edit_message(
-                content="That vote is already closed.", view=None)
-            return
-        try:
-            vote = game.vote.cast(game.round, interaction.user.id,
-                                  int(self.values[0]))
-        except RoundError as e:
-            await interaction.response.edit_message(content=str(e), view=None)
-            return
-
-        game = _store(dataclasses.replace(game, vote=vote))
-        await interaction.response.edit_message(
-            content=f"Vote recorded: <@{self.values[0]}>. You can change it "
-                    "until the vote closes.", view=None)
-        await _refresh_vote(self.channel_id)
-        if vote.is_complete(game.round):
-            await _close_vote(self.channel_id)
+async def open_lobby(interaction: discord.Interaction, game: Game) -> None:
+    """Store `game` and put its lobby on screen. Shared by /start and Play again."""
+    _store(game)
+    view = LobbyView(interaction.channel_id)
+    await interaction.response.send_message(_lobby_text(game), view=view,
+                                            allowed_mentions=NO_MENTIONS)
+    view.message = await interaction.original_response()
+    LobbyView.active[interaction.channel_id] = view
 
 
-class BallotView(discord.ui.View):
-    """Ephemeral wrapper around one BallotSelect."""
+class PlayAgainView(discord.ui.View):
+    """The button on a finished round, carrying that round's setup forward.
 
-    def __init__(self, channel_id: int, names: dict[int, str],
-                 candidates: tuple[int, ...]):
-        super().__init__(timeout=VOTE_TIMEOUT_SECONDS)
-        self.add_item(BallotSelect(channel_id, names, candidates))
+    The settings live on the view rather than in a module-level "last game"
+    map: a finished round is only worth replaying while its result message is
+    still on screen, and a dropped view should take the offer with it.
+    """
 
-
-class VoteView(discord.ui.View):
-    """The public vote message: a button each player presses to cast."""
-
-    active: dict[int, "VoteView"] = {}
-
-    def __init__(self, channel_id: int):
-        super().__init__(timeout=VOTE_TIMEOUT_SECONDS)
-        self.channel_id = channel_id
+    def __init__(self, template: Game):
+        super().__init__(timeout=PLAY_AGAIN_TIMEOUT_SECONDS)
+        self.template = template
         self.message: discord.Message | None = None
 
     async def on_timeout(self) -> None:
-        # Close on whatever came in; an AFK player must not stall the round
-        # forever. Too few votes simply tallies as inconclusive.
-        await _close_vote(self.channel_id, timed_out=True)
-
-    @discord.ui.button(label="Cast my vote", emoji="🗳️",
-                       style=discord.ButtonStyle.primary)
-    async def cast(self, interaction: discord.Interaction,
-                   button: discord.ui.Button):
-        game = _games.get(self.channel_id)
-        if game is None or game.round is None or game.vote is None:
-            await interaction.response.send_message("That vote is closed.",
-                                                    ephemeral=True)
+        # Otherwise the button stays rendered but undispatched, and pressing
+        # it just shows Discord's "This interaction failed".
+        if self.message is None:
             return
-        rnd = game.round
-        if interaction.user.id not in rnd.player_ids:
+        try:
+            await self.message.edit(view=None)
+        except discord.HTTPException:
+            pass                  # message gone; nothing left to tidy
+
+    @discord.ui.button(label="Play again", emoji="🔁",
+                       style=discord.ButtonStyle.success)
+    async def again(self, interaction: discord.Interaction,
+                    button: discord.ui.Button):
+        channel_id = self.template.channel_id
+        existing = _games.get(channel_id)
+        if existing is not None:
+            what = "round" if existing.is_running else "lobby"
             await interaction.response.send_message(
-                "You are not in this round.", ephemeral=True)
+                f"There is already an Impostor {what} in this channel.",
+                ephemeral=True)
+            return
+        if interaction.user.id not in self.template.players:
+            await interaction.response.send_message(
+                "Only someone from that round can start the rematch.",
+                ephemeral=True)
+            return
+        pack = self.template.pack
+        if pack is not None and not pack.owned_by(interaction.user.id):
+            # pick() takes a ref and asks no questions, so without this the
+            # rematch would re-host somebody else's personal pack under a new
+            # owner -- the one thing a personal pack is supposed to prevent.
+            await interaction.response.send_message(
+                f"`{pack.name}` is <@{pack.owner_id}>'s personal pack — only "
+                "they can start a round with it.",
+                ephemeral=True, allowed_mentions=NO_MENTIONS)
             return
 
-        candidates = impostor.vote_candidates(rnd, interaction.user.id)
-        names = await _display_names(interaction.guild, candidates)
-        await interaction.response.send_message(
-            "Pick who you think has the odd word out.",
-            view=BallotView(self.channel_id, names, candidates),
-            ephemeral=True)
+        # Words may have changed since the last deal, so re-check that the
+        # pack can still support these settings before opening a lobby on it.
+        try:
+            word_packs().pick(
+                self.template.pack, decoy=self.template.decoy,
+                min_group=(impostor.MIN_GUESS_GROUP
+                           if self.template.guessing else 1))
+        except WordPackError as e:
+            await interaction.response.send_message(
+                f"Cannot replay those settings: {e}", ephemeral=True)
+            return
+
+        self.stop()
+        # Whoever pressed it runs this one; same roster, same settings.
+        await open_lobby(interaction, dataclasses.replace(
+            self.template, host_id=interaction.user.id, round=None, vote=None))
+        try:
+            await interaction.message.edit(view=None)
+        except (discord.HTTPException, AttributeError):
+            pass                  # result message gone; the lobby is up anyway
 
 
-async def _display_names(guild: discord.Guild | None,
-                         user_ids: tuple[int, ...]) -> dict[int, str]:
-    """Names for a select menu, which cannot render a <@id> mention."""
-    names: dict[int, str] = {}
-    for uid in user_ids:
-        member = guild.get_member(uid) if guild else None
-        names[uid] = member.display_name if member else f"User {uid}"
-    return names
+def _play_again(game: Game) -> PlayAgainView:
+    """A fresh Play again button for the round `game` just finished."""
+    return PlayAgainView(game)
 
 
-async def _refresh_vote(channel_id: int) -> None:
-    """Rewrite the public vote message with the current turnout."""
-    view = VoteView.active.get(channel_id)
-    game = _games.get(channel_id)
-    if view is None or view.message is None or game is None:
-        return
-    try:
-        await view.message.edit(content=_vote_text(game), view=view,
-                                allowed_mentions=NO_MENTIONS)
-    except discord.HTTPException as e:
-        print(f"impostor: vote refresh failed: {type(e).__name__}: {e}",
-              file=sys.stderr)
-
-
-async def _close_vote(channel_id: int, timed_out: bool = False) -> None:
-    """Tally the ballots and end the round, or reopen play if inconclusive."""
-    view = VoteView.active.pop(channel_id, None)
-    game = _games.get(channel_id)
-    if view is not None:
-        view.stop()
-    if game is None or game.round is None or game.vote is None:
-        return
-
-    rnd, outcome = game.round, game.vote.outcome(game.round)
-    closing = "⏱️ Vote timed out." if timed_out else "🗳️ Vote closed."
-
-    if not outcome.is_conclusive:
-        # Nobody ejected: put the round back the way it was so the crew can
-        # talk it over and call another vote.
-        _store(dataclasses.replace(game, vote=None))
-        reason = (f"tie between {_mentions(outcome.tied)}"
-                  if outcome.tied else "nobody voted")
-        body = (f"{closing} **No ejection** — {reason}. The round carries on; "
-                "call another vote when you are ready.")
-        await _edit_vote_message(view, body)
-        return
-
-    _clear(channel_id)
-    await _retire_round_view(channel_id)
-    tally = ", ".join(f"<@{uid}> ×{n}" for uid, n in
-                      sorted(game.vote.counts().items(), key=lambda kv: -kv[1]))
-    if outcome.crew_won:
-        body = (f"{closing} **<@{outcome.ejected}> was the impostor — crew "
-                f"win.**\nThe word was **{rnd.word}** (`{rnd.pack}`).\n"
-                f"Crew: {_mentions(rnd.crew_ids)}\nVotes: {tally}")
-    else:
-        body = (f"{closing} **<@{outcome.ejected}> was innocent — impostor"
-                f"{'s' if len(rnd.impostor_ids) != 1 else ''} win.**\n"
-                f"The word was **{rnd.word}** (`{rnd.pack}`) and the "
-                f"impostor{'s' if len(rnd.impostor_ids) != 1 else ''} "
-                f"{'were' if len(rnd.impostor_ids) != 1 else 'was'} "
-                f"{_mentions(rnd.impostor_ids)}.\nVotes: {tally}")
-    await _edit_vote_message(view, body)
-
-
-async def _retire_vote_view(channel_id: int, text: str) -> None:
-    """Kill an open vote because the round ended some other way."""
-    view = VoteView.active.pop(channel_id, None)
-    if view is None:
-        return
-    view.stop()
-    await _edit_vote_message(view, text)
-
-
-async def _edit_vote_message(view: "VoteView | None", body: str) -> None:
-    if view is None or view.message is None:
-        return
-    try:
-        await view.message.edit(content=body, view=None,
-                                allowed_mentions=NO_MENTIONS)
-    except discord.HTTPException as e:
-        print(f"impostor: vote close failed: {type(e).__name__}: {e}",
-              file=sys.stderr)
-
-
-async def _announce(interaction: discord.Interaction, body: str) -> None:
+async def _announce(interaction: discord.Interaction, body: str,
+                    view: discord.ui.View | None = None) -> None:
     """Post a public result for a round that ended from an ephemeral menu."""
     channel = interaction.channel
     if channel is None:                    # cached-out channel; nothing to do
         return
     try:
-        await channel.send(body, allowed_mentions=NO_MENTIONS)
+        message = await channel.send(body, view=view,
+                                     allowed_mentions=NO_MENTIONS)
+        if isinstance(view, PlayAgainView):
+            view.message = message      # so its timeout can clear the button
     except discord.HTTPException as e:
         print(f"impostor: result announce failed: {type(e).__name__}: {e}",
               file=sys.stderr)
