@@ -47,6 +47,45 @@ class ParsingTests(unittest.TestCase):
             impostor.normalize_pack_name("")
 
 
+class RosterParsingTests(unittest.TestCase):
+    """Turning a typed "@ana @ben" option into player IDs."""
+
+    ANA = 123456789012345678
+    BEN = 223456789012345678
+
+    def test_reads_plain_and_nickname_mentions(self):
+        self.assertEqual(
+            impostor.parse_user_ids(f"<@{self.ANA}> <@!{self.BEN}>"),
+            (self.ANA, self.BEN))
+
+    def test_reads_bare_snowflakes(self):
+        self.assertEqual(impostor.parse_user_ids(f"{self.ANA}, {self.BEN}"),
+                         (self.ANA, self.BEN))
+
+    def test_keeps_the_order_they_were_written_in(self):
+        self.assertEqual(impostor.parse_user_ids(f"<@{self.BEN}> <@{self.ANA}>"),
+                         (self.BEN, self.ANA))
+
+    def test_naming_someone_twice_collapses(self):
+        self.assertEqual(
+            impostor.parse_user_ids(f"<@{self.ANA}> <@{self.ANA}>"),
+            (self.ANA,))
+
+    def test_ignores_numbers_too_short_to_be_a_user(self):
+        self.assertEqual(impostor.parse_user_ids("play with 5 people at 12pm"),
+                         ())
+
+    def test_ignores_role_and_channel_mentions(self):
+        # <@&...> is a role and <#...> a channel; neither can hold a word.
+        self.assertEqual(
+            impostor.parse_user_ids(f"<@&{self.ANA}> <#{self.BEN}>"), ())
+
+    def test_survives_surrounding_prose(self):
+        self.assertEqual(
+            impostor.parse_user_ids(f"me and <@{self.ANA}> plus <@{self.BEN}>!"),
+            (self.ANA, self.BEN))
+
+
 class WordPackFileTests(unittest.TestCase):
 
     def setUp(self):
@@ -353,13 +392,15 @@ class GuessTests(unittest.TestCase):
 
     GROUP = ("T-spin single", "T-spin double", "T-spin triple")
 
-    def make_round(self, candidates=None, blind=False, decoy="T-spin triple"):
+    def make_round(self, candidates=None, blind=False, decoy="T-spin triple",
+                   allow_guess=True):
         if candidates is None:
             candidates = self.GROUP
         return impostor.Round(pack="tetris terms", word="T-spin double",
                               player_ids=(1, 2, 3), impostor_ids=(2,),
                               show_category=True, decoy=decoy, blind=blind,
-                              candidates=tuple(candidates))
+                              candidates=tuple(candidates),
+                              allow_guess=allow_guess)
 
     def test_the_menu_always_contains_the_answer(self):
         rng = random.Random(2)
@@ -424,12 +465,79 @@ class GuessTests(unittest.TestCase):
         with self.assertRaises(RoundError):
             impostor.assign_roles((1, 2, 3), pack="terms", word="quad",
                                   decoy="tetris", blind=True,
-                                  candidates=("quad", "tetris"))
+                                  candidates=("quad", "tetris"),
+                                  allow_guess=True)
+
+    def test_a_blind_round_may_still_show_the_board(self):
+        # Reading a public list tells the impostor nothing about their role.
+        rnd = impostor.assign_roles((1, 2, 3), pack="terms", word="quad",
+                                    decoy="tetris", blind=True,
+                                    candidates=("quad", "tetris", "triple"),
+                                    show_words=True)
+
+        self.assertTrue(impostor.word_board(rnd))
+        self.assertFalse(rnd.guessing_allowed)
+
+    def test_showing_the_board_does_not_switch_guessing_back_on(self):
+        # Board and guess menu are the same list, so this is the trap.
+        rnd = impostor.assign_roles((1, 2, 3), pack="terms", word="quad",
+                                    candidates=("quad", "tetris", "triple"),
+                                    show_words=True, allow_guess=False)
+
+        self.assertFalse(rnd.guessing_allowed)
+        with self.assertRaises(RoundError):
+            impostor.resolve_guess(rnd, "quad")
+
+    def test_guessing_without_a_list_is_refused(self):
+        with self.assertRaises(RoundError):
+            impostor.assign_roles((1, 2, 3), pack="terms", word="quad",
+                                  allow_guess=True)
 
     def test_the_impostor_dm_mentions_guessing_only_when_offered(self):
         self.assertIn("Guess", impostor.role_message(self.make_round(), 2))
-        self.assertNotIn(
-            "Guess", impostor.role_message(self.make_round(candidates=()), 2))
+        self.assertNotIn("Guess", impostor.role_message(
+            self.make_round(allow_guess=False), 2))
+
+
+class WordBoardTests(unittest.TestCase):
+    """The public list of possible words, shown at the start of the round."""
+
+    def make_round(self, show_words=True, candidates=("quad", "DAS", "tetris")):
+        return impostor.Round(pack="tetris terms", word="quad",
+                              player_ids=(1, 2, 3), impostor_ids=(2,),
+                              show_category=True, decoy="tetris",
+                              candidates=tuple(candidates),
+                              show_words=show_words)
+
+    def test_the_board_lists_every_candidate(self):
+        board = impostor.word_board(self.make_round())
+
+        for word in ("quad", "DAS", "tetris"):
+            self.assertIn(word, board)
+
+    def test_the_board_is_sorted_not_left_in_dealt_order(self):
+        # Dealt order is random, so sorting leaks nothing and scans better.
+        board = impostor.word_board(self.make_round())
+
+        self.assertLess(board.index("DAS"), board.index("quad"))
+
+    def test_the_board_is_empty_when_switched_off(self):
+        self.assertEqual(impostor.word_board(self.make_round(show_words=False)),
+                         "")
+
+    def test_the_board_is_empty_when_there_are_no_candidates(self):
+        self.assertEqual(
+            impostor.word_board(self.make_round(candidates=())), "")
+
+    def test_the_board_always_contains_the_crew_word(self):
+        rnd = self.make_round()
+
+        self.assertIn(rnd.word, impostor.word_board(rnd))
+
+    def test_a_board_round_refuses_to_deal_with_nothing_to_show(self):
+        with self.assertRaises(RoundError):
+            impostor.assign_roles((1, 2, 3), pack="terms", word="quad",
+                                  show_words=True)
 
 
 class GuessGroupSizeTests(unittest.TestCase):
@@ -474,6 +582,129 @@ class GuessGroupSizeTests(unittest.TestCase):
             stats = impostor.group_stats(groups)
             self.assertEqual(stats.guess_groups, stats.groups,
                              f"{name} has groups too small for guessing")
+
+
+class VotingTests(unittest.TestCase):
+
+    PLAYERS = (1, 2, 3, 4, 5)          # 2 is the impostor throughout
+
+    def make_round(self, blind=False):
+        return impostor.Round(pack="tetris terms", word="quad",
+                              player_ids=self.PLAYERS, impostor_ids=(2,),
+                              show_category=True, decoy="tetris", blind=blind)
+
+    def ballots(self, rnd, *pairs):
+        vote = impostor.Vote()
+        for voter, target in pairs:
+            vote = vote.cast(rnd, voter, target)
+        return vote
+
+    def test_voting_out_the_impostor_wins_it_for_the_crew(self):
+        rnd = self.make_round()
+
+        vote = self.ballots(rnd, (1, 2), (3, 2), (4, 2), (5, 2), (2, 1))
+
+        outcome = vote.outcome(rnd)
+        self.assertEqual(outcome.ejected, 2)
+        self.assertTrue(outcome.crew_won)
+
+    def test_voting_out_a_crewmate_loses_it(self):
+        rnd = self.make_round()
+
+        vote = self.ballots(rnd, (1, 3), (2, 3), (4, 3), (5, 3), (3, 1))
+
+        outcome = vote.outcome(rnd)
+        self.assertEqual(outcome.ejected, 3)
+        self.assertFalse(outcome.crew_won)
+
+    def test_a_plurality_is_enough(self):
+        rnd = self.make_round()
+
+        vote = self.ballots(rnd, (1, 2), (3, 2), (4, 5), (5, 4))
+
+        self.assertEqual(vote.outcome(rnd).ejected, 2)
+
+    def test_a_tie_ejects_nobody_and_settles_nothing(self):
+        rnd = self.make_round()
+
+        vote = self.ballots(rnd, (1, 2), (3, 4))
+
+        outcome = vote.outcome(rnd)
+        self.assertIsNone(outcome.ejected)
+        self.assertEqual(outcome.tied, (2, 4))
+        self.assertIsNone(outcome.crew_won)
+        self.assertFalse(outcome.is_conclusive)
+
+    def test_an_empty_vote_settles_nothing(self):
+        outcome = impostor.Vote().outcome(self.make_round())
+
+        self.assertIsNone(outcome.ejected)
+        self.assertIsNone(outcome.crew_won)
+
+    def test_the_impostor_votes_too(self):
+        rnd = self.make_round()
+
+        vote = self.ballots(rnd, (2, 3))
+
+        self.assertTrue(vote.has_voted(2))
+        self.assertEqual(vote.counts(), {3: 1})
+
+    def test_changing_your_mind_replaces_your_ballot(self):
+        rnd = self.make_round()
+
+        vote = self.ballots(rnd, (1, 2), (1, 3))
+
+        self.assertEqual(vote.counts(), {3: 1})
+        self.assertEqual(len(vote.ballots), 1)
+
+    def test_casting_returns_a_new_vote_and_leaves_the_old_one_alone(self):
+        rnd = self.make_round()
+        first = self.ballots(rnd, (1, 2))
+
+        second = first.cast(rnd, 3, 2)
+
+        self.assertEqual(len(first.ballots), 1)
+        self.assertEqual(len(second.ballots), 2)
+
+    def test_you_cannot_vote_for_yourself(self):
+        rnd = self.make_round()
+
+        with self.assertRaises(RoundError):
+            impostor.Vote().cast(rnd, 1, 1)
+
+    def test_outsiders_cannot_vote_or_be_voted_for(self):
+        rnd = self.make_round()
+
+        with self.assertRaises(RoundError):
+            impostor.Vote().cast(rnd, 99, 1)
+        with self.assertRaises(RoundError):
+            impostor.Vote().cast(rnd, 1, 99)
+
+    def test_a_vote_is_complete_once_everyone_has_cast(self):
+        rnd = self.make_round()
+        vote = self.ballots(rnd, (1, 2), (2, 1), (3, 2), (4, 2))
+
+        self.assertFalse(vote.is_complete(rnd))
+
+        self.assertTrue(vote.cast(rnd, 5, 2).is_complete(rnd))
+
+    def test_only_the_crew_may_open_a_vote(self):
+        rnd = self.make_round()
+
+        self.assertTrue(impostor.may_call_vote(rnd, 1))
+        self.assertFalse(impostor.may_call_vote(rnd, 2))
+        self.assertFalse(impostor.may_call_vote(rnd, 99))
+
+    def test_a_blind_round_lets_anyone_open_a_vote(self):
+        # Refusing the impostor would tell them they are the impostor.
+        rnd = self.make_round(blind=True)
+
+        self.assertTrue(impostor.may_call_vote(rnd, 2))
+
+    def test_you_are_never_offered_yourself_as_a_target(self):
+        rnd = self.make_round()
+
+        self.assertEqual(impostor.vote_candidates(rnd, 1), (2, 3, 4, 5))
 
 
 class RoleMessageTests(unittest.TestCase):

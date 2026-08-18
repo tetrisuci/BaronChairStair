@@ -51,10 +51,24 @@ x-axis is labelled in Pacific time (PST/PDT).
 
 Tetris Impostor party game (backed by impostor.py, impostor_game.py,
 impostor_views.py and impostor_commands.py).
-Everyone is DM'd a word; the impostor is DM'd a SIMILAR word from the same
-group ("T-spin double" vs "T-spin triple") so they can bluff:
-    /impostor start [pack] [impostors] [category] [decoy] [blind] [guessing]
+Everyone gets a word; the impostor gets a SIMILAR word from the same group
+("T-spin double" vs "T-spin triple") so they can bluff:
+    /impostor start [players] [delivery] [pack] [impostors] [category]
+                    [decoy] [blind] [guessing] [voting] [wordlist]
                                            open a lobby, then Join / Deal.
+                                           players @mentions the roster up
+                                           front, skipping the Join step;
+                                           delivery defaults to an in-channel
+                                           "See my word" button (ephemeral,
+                                           needs no open DMs), delivery:dm
+                                           pushes a DM instead;
+                                           voting gives the crew a "Call a
+                                           vote" button — eject the impostor
+                                           to win, eject a crewmate to lose;
+                                           wordlist (on by default) posts the
+                                           board of possible words to the
+                                           channel — the same list the
+                                           impostor guesses from;
                                            pack picks the category (tetris
                                            terms, openers, players, ...);
                                            decoy:false falls back to giving

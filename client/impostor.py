@@ -7,6 +7,10 @@ Deliberately free of any `discord` import so the rules can be unit-tested on
 their own (see test_impostor.py); the command/DM layer lives in
 client/impostor_commands.py.
 
+A round can post a *board* of possible words for the whole table to read
+(Round.show_words). It is the same frozen list the impostor guesses from, so
+the board and the guess menu cannot disagree about what is in play.
+
 Words are stored in *groups* of confusable terms, because the impostor gets a
 near-miss word rather than nothing: the crew get "T-spin double" and the
 impostor gets "T-spin triple", so they can talk without immediately outing
@@ -64,6 +68,12 @@ MIN_GUESS_GROUP = 3
 
 # Discord caps a select menu at 25 options.
 MAX_GUESS_OPTIONS = 25
+
+# How many words go on the public board. Also the size of the impostor's guess
+# menu -- they are deliberately the SAME list, so the board cannot offer a word
+# the guess menu lacks or the other way round. 16 reads at a glance in chat;
+# 25 is a wall of text.
+BOARD_SIZE = 16
 
 # Impostor counts that keep the game playable: always at least two players who
 # share the word, so the impostors can never outnumber or tie the crew.
@@ -144,6 +154,41 @@ def parse_groups(text: str) -> tuple[tuple[str, ...], ...]:
 def parse_words(text: str) -> tuple[str, ...]:
     """Every word in `text`, flattened -- used by /impostor words remove."""
     return tuple(word for group in parse_groups(text) for word in group)
+
+
+# Discord renders a picked user as "<@123>"; a pasted one is a bare snowflake.
+# Snowflakes are 17-20 digits -- shorter runs are someone typing a number.
+#
+# The role and channel branches come first and capture nothing: alternation is
+# tried left to right, so they swallow "<@&123>" and "<#123>" before the bare
+# -snowflake branch can mistake the digits inside for a player. A role mention
+# read as a user ID would silently put a nonexistent member on the roster.
+_MENTION_RE = re.compile(
+    r"<@&\d{17,20}>"                      # role mention: consume, ignore
+    r"|<#\d{17,20}>"                      # channel mention: consume, ignore
+    r"|<@!?(\d{17,20})>"                  # user mention: capture
+    r"|(?<![\d<@#&!])(\d{17,20})(?!\d)"   # bare snowflake: capture
+)
+
+
+def parse_user_ids(text: str) -> tuple[int, ...]:
+    """Pull user IDs out of a mention string, in the order they were written.
+
+    Lives here rather than in the Discord layer because it is pure string
+    work, and the whole point of this module is that such things are testable
+    without an event loop. Duplicates collapse: naming someone twice is a
+    typo, not a request for two roles.
+    """
+    seen: set[int] = set()
+    ids: list[int] = []
+    for mention, bare in _MENTION_RE.findall(text):
+        if not (mention or bare):
+            continue                       # a role or channel mention
+        user_id = int(mention or bare)
+        if user_id not in seen:
+            seen.add(user_id)
+            ids.append(user_id)
+    return tuple(ids)
 
 
 def normalize_word(word: str) -> str | None:
@@ -569,11 +614,16 @@ class Round:
     show_category: bool
     decoy: str | None = None     # the impostor's near-miss word, if any
     blind: bool = False          # impostors are not told that they are it
-    candidates: tuple[str, ...] = ()   # the early-guess menu, frozen at deal
+    candidates: tuple[str, ...] = ()   # the word board, frozen at deal time
+    show_words: bool = False     # ...and shown to the table
+    allow_guess: bool = False    # ...and open to an early guess
 
     @property
     def guessing_allowed(self) -> bool:
-        return bool(self.candidates)
+        # Both halves matter: the board and the guess menu are the same list,
+        # so a round can hold candidates purely to display them. Without the
+        # explicit flag, turning the board on would switch guessing back on.
+        return self.allow_guess and bool(self.candidates)
 
     def is_impostor(self, user_id: int) -> bool:
         return user_id in self.impostor_ids
@@ -656,6 +706,8 @@ def assign_roles(player_ids: Sequence[int], pack: str, word: str,
                  decoy: str | None = None,
                  blind: bool = False,
                  candidates: Sequence[str] = (),
+                 show_words: bool = False,
+                 allow_guess: bool = False,
                  rng: random.Random | None = None) -> Round:
     """Deal a round, raising RoundError if the table cannot support it."""
     players = tuple(player_ids)
@@ -677,9 +729,14 @@ def assign_roles(player_ids: Sequence[int], pack: str, word: str,
                               for c in candidates):
         # An unwinnable guess menu is worse than no menu at all.
         raise RoundError("The guess list must contain the crew's word.")
-    if candidates and blind:
-        # The guess button would out the impostor to themselves.
+    if allow_guess and blind:
+        # The guess button would out the impostor to themselves. A board with
+        # no guessing is fine in a blind round: it is just public reading.
         raise RoundError("A blind round cannot offer early guessing.")
+    if allow_guess and not candidates:
+        raise RoundError("Early guessing needs a list to guess from.")
+    if show_words and not candidates:
+        raise RoundError("There is no word board to show.")
 
     count = (default_impostor_count(len(players)) if impostors is None
              else int(impostors))
@@ -697,7 +754,116 @@ def assign_roles(player_ids: Sequence[int], pack: str, word: str,
                  # Keep join order so the reveal reads consistently.
                  impostor_ids=tuple(p for p in players if p in chosen),
                  show_category=show_category, decoy=decoy, blind=blind,
-                 candidates=tuple(candidates))
+                 candidates=tuple(candidates), show_words=show_words,
+                 allow_guess=allow_guess)
+
+
+# ── Voting ────────────────────────────────────────────────────────────────────
+
+@dataclasses.dataclass(frozen=True)
+class Ballot:
+    voter_id: int
+    target_id: int
+
+
+@dataclasses.dataclass(frozen=True)
+class VoteOutcome:
+    """How a closed vote ended.
+
+    `crew_won` is None for an inconclusive vote -- a tie, or nobody voting at
+    all. Those eject no one and leave the round running, rather than handing
+    the win to a side that did not earn it.
+    """
+
+    ejected: int | None
+    tied: tuple[int, ...]
+    crew_won: bool | None
+
+    @property
+    def is_conclusive(self) -> bool:
+        return self.crew_won is not None
+
+
+@dataclasses.dataclass(frozen=True)
+class Vote:
+    """One round of balloting. Immutable: casting returns a new Vote."""
+
+    ballots: tuple[Ballot, ...] = ()
+
+    @property
+    def voter_ids(self) -> tuple[int, ...]:
+        return tuple(b.voter_id for b in self.ballots)
+
+    def has_voted(self, user_id: int) -> bool:
+        return any(b.voter_id == user_id for b in self.ballots)
+
+    def cast(self, rnd: Round, voter_id: int, target_id: int) -> "Vote":
+        """Record a ballot, replacing this voter's previous one if any."""
+        if voter_id not in rnd.player_ids:
+            raise RoundError("You are not in this round.")
+        if target_id not in rnd.player_ids:
+            raise RoundError("That player is not in this round.")
+        if target_id == voter_id:
+            raise RoundError("You cannot vote for yourself.")
+        kept = tuple(b for b in self.ballots if b.voter_id != voter_id)
+        return Vote(ballots=(*kept, Ballot(voter_id, target_id)))
+
+    def counts(self) -> dict[int, int]:
+        tally: dict[int, int] = {}
+        for ballot in self.ballots:
+            tally[ballot.target_id] = tally.get(ballot.target_id, 0) + 1
+        return tally
+
+    def is_complete(self, rnd: Round) -> bool:
+        """True once every player in the round has a ballot in."""
+        return set(self.voter_ids) >= set(rnd.player_ids)
+
+    def outcome(self, rnd: Round) -> VoteOutcome:
+        """Tally by plurality; a tie ejects nobody.
+
+        Ejecting any impostor wins it for the crew -- with more than one
+        impostor that is generous, but it matches "vote out the impostor and
+        you win" rather than quietly moving the goalposts.
+        """
+        tally = self.counts()
+        if not tally:
+            return VoteOutcome(ejected=None, tied=(), crew_won=None)
+        top = max(tally.values())
+        leaders = tuple(sorted(uid for uid, n in tally.items() if n == top))
+        if len(leaders) > 1:
+            return VoteOutcome(ejected=None, tied=leaders, crew_won=None)
+        ejected = leaders[0]
+        return VoteOutcome(ejected=ejected, tied=(),
+                           crew_won=rnd.is_impostor(ejected))
+
+
+def word_board(rnd: Round) -> str:
+    """The public list of possible words, or "" when the board is off.
+
+    Sorted rather than left in the dealt order: the order was random, so
+    sorting leaks nothing and a scannable list is the whole point.
+    """
+    if not rnd.show_words or not rnd.candidates:
+        return ""
+    return " · ".join(f"`{w}`" for w in sorted(rnd.candidates,
+                                               key=str.casefold))
+
+
+def may_call_vote(rnd: Round, user_id: int) -> bool:
+    """Who may *open* a vote: the crew, so an impostor cannot force one early.
+
+    A blind round is the exception -- there the impostor does not know they
+    are the impostor, so refusing them would tell them. Everybody in the round
+    may call one, which costs nothing: they were going to play along anyway.
+    """
+    if user_id not in rnd.player_ids:
+        return False
+    return rnd.blind or not rnd.is_impostor(user_id)
+
+
+def vote_candidates(rnd: Round, voter_id: int) -> tuple[int, ...]:
+    """Who `voter_id` may vote for: everyone else still in the round."""
+    return tuple(p for p in rnd.player_ids if p != voter_id)
 
 
 def role_message(rnd: Round, user_id: int) -> str:

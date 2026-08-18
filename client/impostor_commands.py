@@ -10,9 +10,35 @@ The game is split four ways so no one file carries all of it:
     impostor_commands.py (this file) the slash commands themselves
 
 Playing:
-    /impostor start [pack] [impostors] [category] [decoy] [blind] [guessing]
+    /impostor start [players] [delivery] [pack] [impostors] [category]
+                    [decoy] [blind] [guessing] [voting] [wordlist]
                                    open a lobby; players press Join, host
                                    presses Deal and everyone is DM'd.
+                                   players: @mention the roster up front
+                                     instead of waiting for Join. Bots and
+                                     non-members are dropped with a note, and
+                                     the list is taken verbatim -- a host who
+                                     leaves themselves out runs the game
+                                     without playing. Join/Leave still work.
+                                   delivery (default in-channel): each
+                                     player presses **See my word** for an
+                                     ephemeral copy. A bot cannot push an
+                                     ephemeral message at anybody -- it only
+                                     exists as a reply to that person's own
+                                     interaction -- so the button is how it is
+                                     done. delivery:dm pushes instead, but
+                                     only reaches players who accept DMs.
+                                   voting (default on): the crew get a **Call
+                                     a vote** button. Everyone votes, impostor
+                                     included; eject the impostor and the crew
+                                     win, eject a crewmate and they lose. A
+                                     tie or an empty vote ejects nobody and
+                                     the round carries on.
+                                   wordlist (default on): post the board of
+                                     possible words for everyone to read. It
+                                     is the SAME list the impostor guesses
+                                     from, so the two can never disagree; see
+                                     impostor.BOARD_SIZE.
                                    pack: which word pack to draw from
                                    decoy (default on): the impostor gets a
                                      word from the SAME group as the crew's --
@@ -61,11 +87,12 @@ from discord import app_commands
 import impostor
 from impostor import WordPackError
 from impostor_game import (
-    AUTOCOMPLETE_LIMIT, MESSAGE_LIMIT, NO_MENTIONS, Game, _clear, _games,
-    _lobby_text, _may_edit_words, _may_manage_game, _mentions, _round_text,
-    _store, word_packs,
+    AUTOCOMPLETE_LIMIT, DELIVERY_BUTTON, DELIVERY_DM, MESSAGE_LIMIT,
+    NO_MENTIONS, Game, _clear, _games,
+    _lobby_text, _may_edit_words, _may_manage_game, _mentions,
+    _resolve_members, _round_text, _store, word_packs,
 )
-from impostor_views import LobbyView, _retire_round_view
+from impostor_views import LobbyView, _retire_round_view, _retire_vote_view
 
 # ── Command group ─────────────────────────────────────────────────────────────
 
@@ -91,23 +118,37 @@ async def _pack_autocomplete(interaction: discord.Interaction, current: str
 @impostor_group.command(
     name="start",
     description="Open an Impostor lobby; everyone is DM'd a word except the impostor.")
+@app_commands.choices(delivery=[
+    app_commands.Choice(name="In channel — press a button, only you see it",
+                        value=DELIVERY_BUTTON),
+    app_commands.Choice(name="Direct message — pushed, needs DMs open",
+                        value=DELIVERY_DM),
+])
 @app_commands.describe(
+    players="@mention everyone playing (default: an open lobby people join)",
+    delivery="How each player receives their word (default: in channel)",
     pack="Word pack to draw from (default: any pack)",
     impostors="How many impostors (default: scales with player count)",
     category="Tell everyone which pack the word came from (default: yes)",
     decoy="Give the impostor a similar word instead of nothing (default: yes)",
     blind="Do not tell the impostor they are it — they must work it out",
     guessing="Let the impostor guess the crew's word early to win (default: yes)",
+    voting="Let the crew call a vote to eject someone (default: yes)",
+    wordlist="Show everyone the list of possible words (default: yes)",
 )
 @app_commands.autocomplete(pack=_pack_autocomplete)
 async def impostor_start(
     interaction: discord.Interaction,
+    players: str | None = None,
+    delivery: str = DELIVERY_BUTTON,
     pack: str | None = None,
     impostors: app_commands.Range[int, 1, 5] | None = None,
     category: bool = True,
     decoy: bool = True,
     blind: bool = False,
     guessing: bool = True,
+    voting: bool = True,
+    wordlist: bool = True,
 ):
     if interaction.guild is None:
         await interaction.response.send_message(
@@ -150,21 +191,71 @@ async def impostor_start(
             ephemeral=True)
         return
 
+    roster, complaint = ((interaction.user.id,), None) if players is None \
+        else await _resolve_roster(interaction, players)
+    if complaint is not None and not roster:
+        await interaction.response.send_message(complaint, ephemeral=True,
+                                                allowed_mentions=NO_MENTIONS)
+        return
+
     game = _store(Game(channel_id=interaction.channel_id,
                        host_id=interaction.user.id,
                        pack=impostor.normalize_pack_name(pack) if pack else None,
                        impostors=impostors,
                        show_category=category,
-                       players=(interaction.user.id,),
+                       players=roster,
                        decoy=decoy,
                        blind=blind,
-                       guessing=guessing))
+                       guessing=guessing,
+                       delivery=delivery,
+                       voting=voting,
+                       wordlist=wordlist))
 
     view = LobbyView(interaction.channel_id)
     await interaction.response.send_message(_lobby_text(game), view=view,
                                             allowed_mentions=NO_MENTIONS)
     view.message = await interaction.original_response()
     LobbyView.active[interaction.channel_id] = view
+    if complaint is not None:
+        # The lobby stands; this only says who did not make it into it.
+        await interaction.followup.send(complaint, ephemeral=True,
+                                        allowed_mentions=NO_MENTIONS)
+
+
+async def _resolve_roster(interaction: discord.Interaction, players: str
+                          ) -> tuple[tuple[int, ...], str | None]:
+    """Turn a mention string into a player list, plus a note on who was cut.
+
+    Returns the roster verbatim -- the host is not added silently. Someone
+    running the game for other people is a real case, and the lobby message
+    shows the roster before anyone deals, so an omission is visible rather
+    than surprising.
+    """
+    wanted = impostor.parse_user_ids(players)
+    if not wanted:
+        return (), ("No players found in that — @mention them, e.g. "
+                    "`players: @ana @ben @cleo`.")
+
+    notes: list[str] = []
+    if len(wanted) > impostor.MAX_PLAYERS:
+        notes.append(f"⚠️ Only the first {impostor.MAX_PLAYERS} were taken — "
+                     f"that is the round limit.")
+        wanted = wanted[:impostor.MAX_PLAYERS]
+
+    found, gone = await _resolve_members(interaction.guild, wanted)
+    if gone:
+        notes.append(f"⚠️ Not in this server: {_mentions(gone)}")
+
+    # Bots cannot receive a DM from another bot, so they can never get a word.
+    bots = tuple(uid for uid in wanted
+                 if uid in found and found[uid].bot)
+    if bots:
+        notes.append(f"⚠️ Skipped bots (they cannot be DM'd): {_mentions(bots)}")
+
+    roster = tuple(uid for uid in wanted if uid in found and uid not in bots)
+    if not roster:
+        notes.append("Nobody playable was left, so no lobby was opened.")
+    return roster, ("\n".join(notes) if notes else None)
 
 
 @impostor_group.command(
@@ -218,6 +309,8 @@ async def impostor_reveal(interaction: discord.Interaction):
     rnd = game.round
     _clear(interaction.channel_id)
     await _retire_round_view(interaction.channel_id)
+    await _retire_vote_view(interaction.channel_id,
+                            "🗳️ Vote abandoned — the round was revealed.")
     plural = "s" if len(rnd.impostor_ids) != 1 else ""
     was = "were" if len(rnd.impostor_ids) != 1 else "was"
     decoy = (f"The impostor{plural} had **{rnd.decoy}** instead.\n"
@@ -247,6 +340,7 @@ async def impostor_cancel(interaction: discord.Interaction):
     _clear(interaction.channel_id)
     await _retire_round_view(interaction.channel_id,
                              "🕵️ **Impostor** — cancelled.")
+    await _retire_vote_view(interaction.channel_id, "🗳️ Vote cancelled.")
     view = LobbyView.active.pop(interaction.channel_id, None)
     if view is not None:
         view.stop()
