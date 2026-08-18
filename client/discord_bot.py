@@ -49,6 +49,31 @@ Activity tracker (backed by presence_tracker.py; samples every 10 minutes):
 Both accept an optional guild_id to inspect any server the bot is in; the
 x-axis is labelled in Pacific time (PST/PDT).
 
+Tetris Impostor party game (backed by impostor.py, impostor_game.py,
+impostor_views.py and impostor_commands.py).
+Everyone is DM'd a word; the impostor is DM'd a SIMILAR word from the same
+group ("T-spin double" vs "T-spin triple") so they can bluff:
+    /impostor start [pack] [impostors] [category] [decoy] [blind] [guessing]
+                                           open a lobby, then Join / Deal.
+                                           pack picks the category (tetris
+                                           terms, openers, players, ...);
+                                           decoy:false falls back to giving
+                                           the impostor no word at all;
+                                           blind:true does not tell them;
+                                           guessing:true (default) puts a
+                                           Guess button on the round message —
+                                           the impostor picks the crew's word
+                                           from a dropdown and wins outright
+                                           if right, loses if wrong
+    /impostor myword                       re-read your own role privately
+    /impostor status                       who is in / is a round running
+    /impostor reveal                       end the round, show word + impostors
+    /impostor cancel                       scrap it without revealing
+    /impostor words list|add|remove|deletepack
+                                           maintain data/impostor_words.json
+                                           (Manage Server; hand edits to the
+                                           JSON are picked up automatically)
+
 Requires the privileged Server Members and Presence intents to be enabled in
 the Discord Developer Portal (Bot > Privileged Gateway Intents); without them
 login fails with PrivilegedIntentsRequired.
@@ -76,6 +101,7 @@ from teto_client import TetoClient, TetoError
 from build_snapshots import build_rounds
 from render import top_attack_bursts
 import presence_tracker
+from impostor_commands import impostor_group
 
 ROOT = Path(__file__).parent.parent
 
@@ -2028,6 +2054,7 @@ async def activity_now(interaction: discord.Interaction,
 
 
 bot.tree.add_command(activity)
+bot.tree.add_command(impostor_group)
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
