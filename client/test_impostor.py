@@ -15,6 +15,7 @@ import unittest
 from pathlib import Path
 
 import impostor
+import impostor_help
 from impostor import RoundError, WordPackError
 
 
@@ -97,111 +98,118 @@ class WordPackFileTests(unittest.TestCase):
     def read_file(self):
         return json.loads(self.path.read_text(encoding="utf-8"))
 
+    @staticmethod
+    def ref(name, owner=None):
+        return impostor.PackRef(name, owner)
+
+    def names(self):
+        return tuple(r.name for r in self.packs.shared_refs())
+
     def test_seeds_defaults_when_the_file_is_missing(self):
         # Arrange: nothing on disk.
         # Act
-        names = self.packs.packs()
+        names = self.names()
         # Assert
         self.assertEqual(names, tuple(sorted(impostor.DEFAULT_PACKS)))
         self.assertTrue(self.path.exists())
 
     def test_add_creates_a_pack_and_persists_it(self):
-        result = self.packs.add("Terms", [["T-spin", "S-spin"]])
+        result = self.packs.add(self.ref("Terms"), [["T-spin", "S-spin"]])
 
-        self.assertEqual(result.pack, "terms")
+        self.assertEqual(result.pack, self.ref("terms"))
         self.assertEqual(result.added, ("T-spin", "S-spin"))
         self.assertTrue(result.pack_created)
         self.assertEqual(self.read_file()["terms"], [["T-spin", "S-spin"]])
 
     def test_add_stores_each_line_as_its_own_group(self):
-        self.packs.add("terms", impostor.parse_groups("DAS, ARR\nquad, tetris"))
+        self.packs.add(self.ref("terms"), impostor.parse_groups("DAS, ARR\nquad, tetris"))
 
-        self.assertEqual(self.packs.groups("terms"),
+        self.assertEqual(self.packs.groups(self.ref("terms")),
                          (("DAS", "ARR"), ("quad", "tetris")))
 
     def test_add_reports_duplicates_case_insensitively(self):
-        self.packs.add("terms", [["quad"]])
+        self.packs.add(self.ref("terms"), [["quad"]])
 
-        result = self.packs.add("terms", [["QUAD", "tetris"]])
+        result = self.packs.add(self.ref("terms"), [["QUAD", "tetris"]])
 
         self.assertEqual(result.added, ("tetris",))
         self.assertEqual(result.duplicates, ("QUAD",))
-        self.assertEqual(self.packs.words("terms"), ("quad", "tetris"))
+        self.assertEqual(self.packs.words(self.ref("terms")), ("quad", "tetris"))
 
     def test_a_shared_word_merges_into_the_existing_group(self):
-        self.packs.add("terms", [["T-spin double", "T-spin triple"]])
+        self.packs.add(self.ref("terms"), [["T-spin double", "T-spin triple"]])
 
-        result = self.packs.add("terms", [["T-spin triple", "T-spin single"]])
+        result = self.packs.add(self.ref("terms"), [["T-spin triple", "T-spin single"]])
 
         # One group, not two: the shared word joined them up.
         self.assertEqual(
-            self.packs.groups("terms"),
+            self.packs.groups(self.ref("terms")),
             (("T-spin double", "T-spin triple", "T-spin single"),))
         self.assertEqual(len(result.merged), 1)
 
     def test_an_add_can_fuse_two_existing_groups(self):
-        self.packs.add("terms", impostor.parse_groups("DAS, ARR\nSDF, ARR2"))
+        self.packs.add(self.ref("terms"), impostor.parse_groups("DAS, ARR\nSDF, ARR2"))
 
-        self.packs.add("terms", [["DAS", "SDF"]])
+        self.packs.add(self.ref("terms"), [["DAS", "SDF"]])
 
-        self.assertEqual(len(self.packs.groups("terms")), 1)
+        self.assertEqual(len(self.packs.groups(self.ref("terms"))), 1)
 
     def test_add_reports_invalid_words_without_storing_them(self):
-        result = self.packs.add("terms", [["ok", "  ", "y" * 200]])
+        result = self.packs.add(self.ref("terms"), [["ok", "  ", "y" * 200]])
 
         self.assertEqual(result.added, ("ok",))
         self.assertEqual(len(result.invalid), 2)
 
     def test_remove_drops_words_and_reports_misses(self):
-        self.packs.add("terms", [["DAS", "ARR", "SDF"]])
+        self.packs.add(self.ref("terms"), [["DAS", "ARR", "SDF"]])
 
-        result = self.packs.remove("terms", ["arr", "llama"])
+        result = self.packs.remove(self.ref("terms"), ["arr", "llama"])
 
         self.assertEqual(result.removed, ("ARR",))
         self.assertEqual(result.missing, ("llama",))
-        self.assertEqual(self.packs.words("terms"), ("DAS", "SDF"))
+        self.assertEqual(self.packs.words(self.ref("terms")), ("DAS", "SDF"))
 
     def test_emptying_a_group_drops_only_that_group(self):
-        self.packs.add("terms", impostor.parse_groups("DAS, ARR\nquad, tetris"))
+        self.packs.add(self.ref("terms"), impostor.parse_groups("DAS, ARR\nquad, tetris"))
 
-        self.packs.remove("terms", ["DAS", "ARR"])
+        self.packs.remove(self.ref("terms"), ["DAS", "ARR"])
 
-        self.assertEqual(self.packs.groups("terms"), (("quad", "tetris"),))
+        self.assertEqual(self.packs.groups(self.ref("terms")), (("quad", "tetris"),))
 
     def test_emptying_a_pack_deletes_it(self):
-        self.packs.add("terms", [["quad"]])
+        self.packs.add(self.ref("terms"), [["quad"]])
 
-        result = self.packs.remove("terms", ["quad"])
+        result = self.packs.remove(self.ref("terms"), ["quad"])
 
         self.assertTrue(result.pack_deleted)
-        self.assertNotIn("terms", self.packs.packs())
+        self.assertNotIn("terms", self.names())
         self.assertNotIn("terms", self.read_file())
 
     def test_remove_from_unknown_pack_raises(self):
         with self.assertRaises(WordPackError):
-            self.packs.remove("ghosts", ["boo"])
+            self.packs.remove(self.ref("ghosts"), ["boo"])
 
     def test_delete_pack_returns_its_size(self):
-        self.packs.add("terms", [["quad", "tetris"]])
+        self.packs.add(self.ref("terms"), [["quad", "tetris"]])
 
-        self.assertEqual(self.packs.delete_pack("terms"), 2)
-        self.assertNotIn("terms", self.packs.packs())
+        self.assertEqual(self.packs.delete_pack(self.ref("terms")), 2)
+        self.assertNotIn("terms", self.names())
 
     def test_hand_edits_are_picked_up_without_a_restart(self):
-        self.packs.add("terms", [["quad"]])
+        self.packs.add(self.ref("terms"), [["quad"]])
 
         # Someone edits the JSON by hand while the bot is running.
         self.path.write_text(json.dumps({"terms": [["quad", "tetris"]]}),
                              encoding="utf-8")
 
-        self.assertEqual(self.packs.words("terms"), ("quad", "tetris"))
+        self.assertEqual(self.packs.words(self.ref("terms")), ("quad", "tetris"))
 
     def test_hand_edits_are_not_clobbered_by_a_later_add(self):
-        self.packs.add("terms", [["quad"]])
+        self.packs.add(self.ref("terms"), [["quad"]])
         self.path.write_text(json.dumps({"terms": [["quad"], ["DAS"]]}),
                              encoding="utf-8")
 
-        self.packs.add("terms", [["ARR"]])
+        self.packs.add(self.ref("terms"), [["ARR"]])
 
         self.assertEqual(self.read_file()["terms"], [["quad"], ["DAS"], ["ARR"]])
 
@@ -209,19 +217,19 @@ class WordPackFileTests(unittest.TestCase):
         self.path.write_text("{not json", encoding="utf-8")
 
         with self.assertRaises(WordPackError):
-            self.packs.packs()
+            self.names()
 
     def test_wrong_shape_is_rejected_whole(self):
         self.path.write_text(json.dumps({"terms": "quad"}), encoding="utf-8")
 
         with self.assertRaises(WordPackError):
-            self.packs.packs()
+            self.names()
 
     def test_a_bare_string_loads_as_a_group_of_one(self):
         self.path.write_text(json.dumps({"terms": ["finesse", ["DAS", "ARR"]]}),
                              encoding="utf-8")
 
-        self.assertEqual(self.packs.groups("terms"),
+        self.assertEqual(self.packs.groups(self.ref("terms")),
                          (("finesse",), ("DAS", "ARR")))
 
     def test_duplicate_entries_in_a_hand_edit_are_dropped(self):
@@ -229,53 +237,53 @@ class WordPackFileTests(unittest.TestCase):
             json.dumps({"terms": [["quad", "QUAD", "", "tetris"]]}),
             encoding="utf-8")
 
-        self.assertEqual(self.packs.words("terms"), ("quad", "tetris"))
+        self.assertEqual(self.packs.words(self.ref("terms")), ("quad", "tetris"))
 
     def test_pick_from_a_named_pack_stays_in_that_pack(self):
-        self.packs.add("terms", [["quad", "tetris"]])
-        self.packs.add("players", [["diao", "garbo"]])
+        self.packs.add(self.ref("terms"), [["quad", "tetris"]])
+        self.packs.add(self.ref("players"), [["diao", "garbo"]])
 
-        picked = self.packs.pick("terms", rng=random.Random(1))
+        picked = self.packs.pick(self.ref("terms"), rng=random.Random(1))
 
-        self.assertEqual(picked.pack, "terms")
+        self.assertEqual(picked.pack, self.ref("terms"))
         self.assertIn(picked.word, ("quad", "tetris"))
 
     def test_the_decoy_is_a_different_word_from_the_same_group(self):
-        self.packs.add("terms", impostor.parse_groups(
+        self.packs.add(self.ref("terms"), impostor.parse_groups(
             "T-spin double, T-spin triple\nDAS, ARR"))
         rng = random.Random(5)
 
         for _ in range(50):
-            picked = self.packs.pick("terms", decoy=True, rng=rng)
-            group = next(g for g in self.packs.groups("terms")
+            picked = self.packs.pick(self.ref("terms"), decoy=True, rng=rng)
+            group = next(g for g in self.packs.groups(self.ref("terms"))
                          if picked.word in g)
             self.assertIn(picked.decoy, group)
             self.assertNotEqual(picked.decoy, picked.word)
 
     def test_solo_groups_are_skipped_when_a_decoy_is_wanted(self):
-        self.packs.add("terms", impostor.parse_groups(
+        self.packs.add(self.ref("terms"), impostor.parse_groups(
             "finesse\nDAS, ARR"))
         rng = random.Random(11)
 
-        drawn = {self.packs.pick("terms", decoy=True, rng=rng).word
+        drawn = {self.packs.pick(self.ref("terms"), decoy=True, rng=rng).word
                  for _ in range(40)}
 
         self.assertNotIn("finesse", drawn)
         self.assertEqual(drawn, {"DAS", "ARR"})
 
     def test_solo_groups_are_fine_without_a_decoy(self):
-        self.packs.add("terms", [["finesse"]])
+        self.packs.add(self.ref("terms"), [["finesse"]])
 
-        picked = self.packs.pick("terms", decoy=False, rng=random.Random(1))
+        picked = self.packs.pick(self.ref("terms"), decoy=False, rng=random.Random(1))
 
         self.assertEqual(picked.word, "finesse")
         self.assertIsNone(picked.decoy)
 
     def test_a_pack_with_no_pairs_says_so_rather_than_dealing(self):
-        self.packs.add("terms", impostor.parse_groups("finesse\nmisdrop"))
+        self.packs.add(self.ref("terms"), impostor.parse_groups("finesse\nmisdrop"))
 
         with self.assertRaises(WordPackError) as caught:
-            self.packs.pick("terms", decoy=True)
+            self.packs.pick(self.ref("terms"), decoy=True)
 
         self.assertIn("similar", str(caught.exception))
 
@@ -287,14 +295,14 @@ class WordPackFileTests(unittest.TestCase):
         rng = random.Random(7)
 
         tiny_hits = sum(1 for _ in range(400)
-                        if self.packs.pick(rng=rng).pack == "tiny")
+                        if self.packs.pick(rng=rng).pack.name == "tiny")
 
         # 2 words in 101: a pack-first pick would land near 200.
         self.assertLess(tiny_hits, 40)
 
     def test_pick_from_an_unknown_or_empty_pack_raises(self):
         with self.assertRaises(WordPackError):
-            self.packs.pick("ghosts")
+            self.packs.pick(self.ref("ghosts"))
 
     def test_pick_with_no_words_at_all_raises(self):
         self.path.write_text("{}", encoding="utf-8")
@@ -303,22 +311,22 @@ class WordPackFileTests(unittest.TestCase):
             self.packs.pick()
 
     def test_pack_stats_count_words_groups_and_usable_groups(self):
-        self.packs.add("terms", impostor.parse_groups(
+        self.packs.add(self.ref("terms"), impostor.parse_groups(
             "DAS, ARR\nfinesse"))
 
-        stats = self.packs.counts()["terms"]
+        stats = self.packs.counts()[self.ref("terms")]
 
         self.assertEqual((stats.words, stats.groups, stats.decoy_groups),
                          (3, 2, 1))
 
     def test_a_failed_write_leaves_the_original_file_untouched(self):
-        self.packs.add("terms", [["quad"]])
+        self.packs.add(self.ref("terms"), [["quad"]])
         before = self.path.read_text(encoding="utf-8")
         # A path that cannot be created: the write must fail, not half-happen.
         broken = impostor.WordPacks(self.path / "words.json")
 
         with self.assertRaises(WordPackError):
-            broken.add("terms", [["quad"]])
+            broken.add(impostor.PackRef("terms"), [["quad"]])
 
         self.assertEqual(self.path.read_text(encoding="utf-8"), before)
 
@@ -540,6 +548,321 @@ class WordBoardTests(unittest.TestCase):
                                   show_words=True)
 
 
+class ImportTests(unittest.TestCase):
+    """Bulk word import from an uploaded file."""
+
+    def parse(self, text, filename="words.txt"):
+        return impostor.parse_import(text.encode("utf-8"), filename)
+
+    def test_a_text_file_uses_the_same_grammar_as_the_add_option(self):
+        groups = self.parse("T-spin double, T-spin triple\nDAS, ARR, SDF")
+
+        self.assertEqual(groups, (("T-spin double", "T-spin triple"),
+                                  ("DAS", "ARR", "SDF")))
+
+    def test_a_json_file_takes_a_list_of_groups(self):
+        groups = self.parse('[["quad", "tetris"], ["DAS", "ARR"]]',
+                            "words.json")
+
+        self.assertEqual(groups, (("quad", "tetris"), ("DAS", "ARR")))
+
+    def test_a_bare_string_in_json_is_a_group_of_one(self):
+        groups = self.parse('["finesse", ["DAS", "ARR"]]', "words.json")
+
+        self.assertEqual(groups, (("finesse",), ("DAS", "ARR")))
+
+    def test_the_format_follows_the_extension_not_the_content(self):
+        # A .txt holding JSON is read as text, so the result is predictable.
+        groups = self.parse('["quad", "tetris"]', "words.txt")
+
+        self.assertNotEqual(groups, (("quad",), ("tetris",)))
+
+    def test_a_whole_word_file_is_refused_with_a_pointer(self):
+        with self.assertRaises(WordPackError) as caught:
+            self.parse('{"terms": [["quad", "tetris"]]}', "words.json")
+
+        self.assertIn("one pack at a time", str(caught.exception))
+
+    def test_broken_json_names_the_line(self):
+        with self.assertRaises(WordPackError) as caught:
+            self.parse('[["quad",\n "tetris"', "words.json")
+
+        self.assertIn("valid JSON", str(caught.exception))
+
+    def test_non_text_entries_in_json_are_refused(self):
+        with self.assertRaises(WordPackError):
+            self.parse('[["quad", 7]]', "words.json")
+
+    def test_an_empty_file_is_refused(self):
+        with self.assertRaises(WordPackError) as caught:
+            self.parse("   \n\n  ")
+
+        self.assertIn("no words", str(caught.exception))
+
+    def test_a_file_over_the_byte_cap_is_refused(self):
+        oversized = b"a\n" * impostor.MAX_IMPORT_BYTES
+
+        with self.assertRaises(WordPackError) as caught:
+            impostor.parse_import(oversized, "words.txt")
+
+        self.assertIn("limit", str(caught.exception))
+
+    def test_a_file_over_the_word_cap_is_refused(self):
+        many = "\n".join(f"w{i}" for i in range(impostor.MAX_IMPORT_WORDS + 1))
+
+        with self.assertRaises(WordPackError) as caught:
+            self.parse(many)
+
+        self.assertIn(f"{impostor.MAX_IMPORT_WORDS:,}", str(caught.exception))
+
+    def test_a_file_that_is_not_utf8_is_refused(self):
+        with self.assertRaises(WordPackError) as caught:
+            impostor.parse_import(b"\xff\xfe not utf8", "words.txt")
+
+        self.assertIn("UTF-8", str(caught.exception))
+
+    def test_an_import_goes_through_the_normal_add_rules(self):
+        # Dedupe, merging and validation are add()'s job, not the parser's.
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        packs = impostor.WordPacks(Path(directory.name) / "w.json")
+        ref = impostor.PackRef("terms")
+        packs.add(ref, [["quad", "tetris"]])
+
+        result = packs.add(ref, self.parse("quad, triple\nDAS, ARR"))
+
+        self.assertIn("triple", result.added)
+        self.assertIn("quad", result.duplicates)
+        self.assertEqual(len(result.merged), 1)
+
+
+class PersonalPackTests(unittest.TestCase):
+    """Packs tied to one Discord user: only they edit them, only they play them."""
+
+    ANA = 111111111111111111
+    BEN = 222222222222222222
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.path = Path(self.dir.name) / "words.json"
+        # Start empty: a missing file seeds DEFAULT_PACKS, which would muddy
+        # the "what can be drawn" assertions below.
+        self.path.write_text("{}", encoding="utf-8")
+        self.packs = impostor.WordPacks(self.path)
+        self.packs.add(impostor.PackRef("shared"), [["quad", "tetris", "triple"]])
+
+    def mine(self, owner, name="memes"):
+        return impostor.PackRef(name, owner)
+
+    def read_file(self):
+        return json.loads(self.path.read_text(encoding="utf-8"))
+
+    def test_a_personal_pack_is_stored_under_its_owner(self):
+        self.packs.add(self.mine(self.ANA), [["a", "b", "c"]])
+
+        self.assertIn(f"memes@{self.ANA}", self.read_file())
+
+    def test_two_users_can_own_a_pack_of_the_same_name(self):
+        self.packs.add(self.mine(self.ANA), [["ana one", "ana two"]])
+        self.packs.add(self.mine(self.BEN), [["ben one", "ben two"]])
+
+        self.assertEqual(self.packs.words(self.mine(self.ANA)),
+                         ("ana one", "ana two"))
+        self.assertEqual(self.packs.words(self.mine(self.BEN)),
+                         ("ben one", "ben two"))
+
+    def test_a_personal_pack_never_collides_with_a_shared_one(self):
+        self.packs.add(impostor.PackRef("memes"), [["server one", "server two"]])
+        self.packs.add(self.mine(self.ANA), [["ana one", "ana two"]])
+
+        self.assertEqual(self.packs.words(impostor.PackRef("memes")),
+                         ("server one", "server two"))
+        self.assertEqual(self.packs.words(self.mine(self.ANA)),
+                         ("ana one", "ana two"))
+
+    def test_you_only_see_shared_packs_and_your_own(self):
+        self.packs.add(self.mine(self.ANA), [["a", "b"]])
+        self.packs.add(self.mine(self.BEN), [["c", "d"]])
+
+        visible = self.packs.visible_refs(self.ANA)
+
+        self.assertIn(self.mine(self.ANA), visible)
+        self.assertNotIn(self.mine(self.BEN), visible)
+        self.assertIn(impostor.PackRef("shared"), visible)
+
+    def test_resolving_your_own_name_prefers_your_pack(self):
+        self.packs.add(impostor.PackRef("memes"), [["server one", "server two"]])
+        self.packs.add(self.mine(self.ANA), [["ana one", "ana two"]])
+
+        self.assertEqual(self.packs.resolve("memes", self.ANA),
+                         self.mine(self.ANA))
+
+    def test_resolving_falls_back_to_the_shared_pack(self):
+        self.packs.add(impostor.PackRef("memes"), [["server one", "server two"]])
+
+        self.assertEqual(self.packs.resolve("memes", self.BEN),
+                         impostor.PackRef("memes"))
+
+    def test_you_cannot_resolve_somebody_elses_pack_by_name(self):
+        self.packs.add(self.mine(self.ANA), [["a", "b"]])
+
+        with self.assertRaises(WordPackError) as caught:
+            self.packs.resolve("memes", self.BEN)
+
+        self.assertIn("someone else", str(caught.exception))
+
+    def test_you_cannot_resolve_somebody_elses_pack_by_key(self):
+        self.packs.add(self.mine(self.ANA), [["a", "b"]])
+
+        with self.assertRaises(WordPackError):
+            self.packs.resolve(f"memes@{self.ANA}", self.BEN)
+
+    def test_the_owner_can_resolve_their_pack_by_key(self):
+        self.packs.add(self.mine(self.ANA), [["a", "b"]])
+
+        self.assertEqual(self.packs.resolve(f"memes@{self.ANA}", self.ANA),
+                         self.mine(self.ANA))
+
+    def test_an_unnamed_draw_never_touches_personal_packs(self):
+        # One person's private words must not turn up at a table that did not
+        # ask for them.
+        self.packs.add(self.mine(self.ANA), [["secret one", "secret two"]])
+        rng = random.Random(3)
+
+        drawn = {self.packs.pick(rng=rng).pack for _ in range(60)}
+
+        self.assertEqual(drawn, {impostor.PackRef("shared")})
+
+    def test_a_named_personal_draw_uses_only_that_pack(self):
+        self.packs.add(self.mine(self.ANA), [["secret one", "secret two"]])
+        rng = random.Random(3)
+
+        drawn = {self.packs.pick(self.mine(self.ANA), rng=rng).word
+                 for _ in range(20)}
+
+        self.assertEqual(drawn, {"secret one", "secret two"})
+
+    def test_personal_packs_are_capped_per_user(self):
+        for i in range(impostor.MAX_PERSONAL_PACKS):
+            self.packs.add(self.mine(self.ANA, f"pack{i}"), [["a", "b"]])
+
+        with self.assertRaises(WordPackError) as caught:
+            self.packs.add(self.mine(self.ANA, "one too many"), [["a", "b"]])
+
+        self.assertIn(str(impostor.MAX_PERSONAL_PACKS), str(caught.exception))
+
+    def test_the_cap_is_per_user_not_global(self):
+        for i in range(impostor.MAX_PERSONAL_PACKS):
+            self.packs.add(self.mine(self.ANA, f"pack{i}"), [["a", "b"]])
+
+        self.packs.add(self.mine(self.BEN, "fine"), [["a", "b"]])
+
+        self.assertEqual(self.packs.personal_pack_count(self.BEN), 1)
+
+    def test_adding_to_a_pack_you_already_own_is_not_capped(self):
+        for i in range(impostor.MAX_PERSONAL_PACKS):
+            self.packs.add(self.mine(self.ANA, f"pack{i}"), [["a", "b"]])
+
+        result = self.packs.add(self.mine(self.ANA, "pack0"), [["c"]])
+
+        self.assertEqual(result.added, ("c",))
+
+    def test_deleting_your_pack_frees_a_slot(self):
+        self.packs.add(self.mine(self.ANA), [["a", "b"]])
+
+        self.packs.delete_pack(self.mine(self.ANA))
+
+        self.assertEqual(self.packs.personal_pack_count(self.ANA), 0)
+
+    def test_a_file_written_before_personal_packs_loads_as_shared(self):
+        self.path.write_text(json.dumps({"terms": [["quad", "tetris"]]}),
+                             encoding="utf-8")
+
+        refs = self.packs.shared_refs()
+
+        self.assertEqual(refs, (impostor.PackRef("terms"),))
+        self.assertIsNone(refs[0].owner_id)
+
+    def test_pack_names_are_normalised_inside_the_ref(self):
+        # Two dict keys for one pack would silently store it twice.
+        self.assertEqual(impostor.PackRef("  My Pack "),
+                         impostor.PackRef("my pack"))
+
+    def test_a_personal_key_round_trips(self):
+        ref = self.mine(self.ANA)
+
+        self.assertEqual(impostor.parse_pack_key(ref.key), ref)
+
+    def test_a_shared_key_round_trips(self):
+        ref = impostor.PackRef("tetris terms")
+
+        self.assertEqual(impostor.parse_pack_key(ref.key), ref)
+
+    def test_labels_say_whose_pack_it_is(self):
+        ref = self.mine(self.ANA)
+
+        self.assertIn("yours", ref.label(self.ANA))
+        self.assertNotIn("yours", ref.label(self.BEN))
+        self.assertEqual(impostor.PackRef("shared").label(self.ANA), "shared")
+
+
+class PackSelectionTests(unittest.TestCase):
+    """Telling a picked pack apart from a typed one."""
+
+    ANA = 111111111111111111
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        path = Path(self.dir.name) / "words.json"
+        path.write_text("{}", encoding="utf-8")
+        self.packs = impostor.WordPacks(path)
+        self.packs.add(impostor.PackRef("memes"), [["server one", "server two"]])
+        self.packs.add(impostor.PackRef("memes", self.ANA),
+                       [["ana one", "ana two"]])
+
+    def test_a_typed_name_is_not_explicit(self):
+        ref, explicit = impostor.parse_pack_selection("memes")
+
+        self.assertFalse(explicit)
+        self.assertIsNone(ref.owner_id)
+
+    def test_a_picked_personal_pack_is_explicit(self):
+        ref, explicit = impostor.parse_pack_selection(f"memes@{self.ANA}")
+
+        self.assertTrue(explicit)
+        self.assertEqual(ref.owner_id, self.ANA)
+
+    def test_a_picked_shared_pack_is_explicit(self):
+        ref, explicit = impostor.parse_pack_selection(
+            impostor.SHARED_MARKER + "memes")
+
+        self.assertTrue(explicit)
+        self.assertIsNone(ref.owner_id)
+
+    def test_typing_a_name_still_prefers_your_own_pack(self):
+        self.assertEqual(self.packs.resolve("memes", self.ANA),
+                         impostor.PackRef("memes", self.ANA))
+
+    def test_picking_the_shared_pack_does_not_open_yours_instead(self):
+        # The whole point of the marker: the picker said "the server's one".
+        resolved = self.packs.resolve(impostor.SHARED_MARKER + "memes",
+                                      self.ANA)
+
+        self.assertEqual(resolved, impostor.PackRef("memes"))
+
+    def test_picking_a_shared_pack_that_is_gone_says_so(self):
+        with self.assertRaises(WordPackError) as caught:
+            self.packs.resolve(impostor.SHARED_MARKER + "ghosts", self.ANA)
+
+        self.assertIn("server pack", str(caught.exception))
+
+    def test_the_marker_cannot_be_typed_as_a_pack_name(self):
+        with self.assertRaises(WordPackError):
+            impostor.normalize_pack_name(impostor.SHARED_MARKER + "memes")
+
+
 class GuessGroupSizeTests(unittest.TestCase):
     """A pair leaks the answer to a decoy-holding impostor; three does not."""
 
@@ -548,28 +871,32 @@ class GuessGroupSizeTests(unittest.TestCase):
         self.addCleanup(self.dir.cleanup)
         self.packs = impostor.WordPacks(Path(self.dir.name) / "words.json")
 
+    @staticmethod
+    def ref(name, owner=None):
+        return impostor.PackRef(name, owner)
+
     def test_pairs_are_skipped_when_guessing_needs_a_gamble(self):
-        self.packs.add("terms", impostor.parse_groups(
+        self.packs.add(self.ref("terms"), impostor.parse_groups(
             "quad, tetris\nDAS, ARR, SDF"))
         rng = random.Random(9)
 
-        drawn = {self.packs.pick("terms", min_group=impostor.MIN_GUESS_GROUP,
+        drawn = {self.packs.pick(self.ref("terms"), min_group=impostor.MIN_GUESS_GROUP,
                                  rng=rng).word for _ in range(40)}
 
         self.assertEqual(drawn, {"DAS", "ARR", "SDF"})
 
     def test_a_pack_of_only_pairs_explains_the_refusal(self):
-        self.packs.add("terms", [["quad", "tetris"]])
+        self.packs.add(self.ref("terms"), [["quad", "tetris"]])
 
         with self.assertRaises(WordPackError) as caught:
-            self.packs.pick("terms", min_group=impostor.MIN_GUESS_GROUP)
+            self.packs.pick(self.ref("terms"), min_group=impostor.MIN_GUESS_GROUP)
 
         self.assertIn("guessing:false", str(caught.exception))
 
     def test_the_pick_reports_the_group_it_drew_from(self):
-        self.packs.add("terms", [["DAS", "ARR", "SDF"]])
+        self.packs.add(self.ref("terms"), [["DAS", "ARR", "SDF"]])
 
-        picked = self.packs.pick("terms", rng=random.Random(1))
+        picked = self.packs.pick(self.ref("terms"), rng=random.Random(1))
 
         self.assertEqual(set(picked.group), {"DAS", "ARR", "SDF"})
         self.assertIn(picked.word, picked.group)
@@ -770,6 +1097,70 @@ class RoleMessageTests(unittest.TestCase):
     def test_a_non_player_gets_nothing(self):
         with self.assertRaises(RoundError):
             impostor.role_message(self.make_round(), 99)
+
+
+class HelpTests(unittest.TestCase):
+    """The help must not drift from the constants that enforce the rules."""
+
+    DISCORD_MESSAGE_LIMIT = 2000
+
+    def texts(self):
+        return {topic: impostor_help.help_text(topic, lobby_minutes=10,
+                                               vote_minutes=5)
+                for topic in impostor_help.TOPICS}
+
+    def test_every_topic_returns_something(self):
+        for topic, body in self.texts().items():
+            self.assertTrue(body.strip(), f"{topic} is empty")
+
+    def test_an_unknown_topic_falls_back_to_how_to_play(self):
+        self.assertEqual(impostor_help.help_text("nonsense", 10, 5),
+                         impostor_help.help_text(impostor_help.TOPIC_PLAY,
+                                                 10, 5))
+
+    def test_player_limits_come_from_the_constants(self):
+        body = impostor_help.help_text(impostor_help.TOPIC_PLAY, 10, 5)
+
+        self.assertIn(str(impostor.MIN_PLAYERS), body)
+        self.assertIn(str(impostor.MAX_PLAYERS), body)
+
+    def test_board_and_group_sizes_come_from_the_constants(self):
+        options = impostor_help.round_options()
+        words = impostor_help.managing_words()
+
+        self.assertIn(str(impostor.BOARD_SIZE), options)
+        self.assertIn(str(impostor.MIN_GUESS_GROUP), options)
+        self.assertIn(str(impostor.MIN_DECOY_GROUP), words)
+
+    def test_timeouts_are_the_ones_passed_in(self):
+        body = impostor_help.help_text(impostor_help.TOPIC_PLAY,
+                                       lobby_minutes=42, vote_minutes=7)
+
+        self.assertIn("42", body)
+        self.assertIn("7", body)
+
+    def test_every_start_option_is_documented(self):
+        options = impostor_help.round_options()
+
+        for name in ("players", "delivery", "pack", "impostors", "category",
+                     "decoy", "blind", "guessing", "voting", "wordlist"):
+            self.assertIn(f"`{name}`", options, f"{name} is undocumented")
+
+    def test_every_command_is_mentioned_somewhere(self):
+        joined = "\n".join(self.texts().values())
+
+        for command in ("start", "myword", "status", "reveal", "cancel",
+                        "words list", "words add", "words remove",
+                        "words deletepack"):
+            self.assertIn(f"/impostor {command}", joined,
+                          f"{command} is undocumented")
+
+    def test_each_topic_fits_in_one_discord_message(self):
+        # _chunk would split it anyway, but a topic that needs splitting is a
+        # sign it has grown past being readable.
+        for topic, body in self.texts().items():
+            self.assertLessEqual(len(body), self.DISCORD_MESSAGE_LIMIT,
+                                 f"{topic} is too long")
 
 
 if __name__ == "__main__":

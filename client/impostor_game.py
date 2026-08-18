@@ -32,6 +32,7 @@ LOBBY_TIMEOUT_SECONDS = 600      # 10 minutes of nobody pressing anything
 ROUND_TIMEOUT_SECONDS = 3600     # abandoned rounds stop holding a live button
 GUESS_TIMEOUT_SECONDS = 120      # the impostor's open dropdown
 VOTE_TIMEOUT_SECONDS = 300       # a called vote closes itself after 5 minutes
+PLAY_AGAIN_TIMEOUT_SECONDS = 900  # the rematch offer on a finished round
 MESSAGE_LIMIT = 1900             # Discord's 2000, minus room for a header
 AUTOCOMPLETE_LIMIT = 25          # Discord's hard cap on choices
 MAX_SELECT_OPTIONS = 25          # ...and on select-menu options
@@ -83,7 +84,7 @@ class Game:
 
     channel_id: int
     host_id: int
-    pack: str | None            # None = pick across every pack
+    pack: impostor.PackRef | None   # None = draw across every shared pack
     impostors: int | None       # None = scale with the player count
     show_category: bool
     players: tuple[int, ...]
@@ -117,7 +118,8 @@ def _mentions(user_ids: tuple[int, ...]) -> str:
 
 def _lobby_text(game: Game) -> str:
     count = len(game.players)
-    pack = f"`{game.pack}`" if game.pack else "any pack"
+    pack = (f"`{game.pack.label(game.host_id)}`" if game.pack
+            else "any shared pack")
     auto = impostor.default_impostor_count(max(count, impostor.MIN_PLAYERS))
     impostors = (str(game.impostors) if game.impostors is not None
                  else f"auto ({auto})")

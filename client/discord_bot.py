@@ -49,8 +49,9 @@ Activity tracker (backed by presence_tracker.py; samples every 10 minutes):
 Both accept an optional guild_id to inspect any server the bot is in; the
 x-axis is labelled in Pacific time (PST/PDT).
 
-Tetris Impostor party game (backed by impostor.py, impostor_game.py,
-impostor_views.py and impostor_commands.py).
+Tetris Impostor party game (backed by impostor.py, impostor_words.py,
+impostor_game.py, impostor_views.py, impostor_vote.py and
+impostor_commands.py).
 Everyone gets a word; the impostor gets a SIMILAR word from the same group
 ("T-spin double" vs "T-spin triple") so they can bluff:
     /impostor start [players] [delivery] [pack] [impostors] [category]
@@ -79,14 +80,21 @@ Everyone gets a word; the impostor gets a SIMILAR word from the same group
                                            the impostor picks the crew's word
                                            from a dropdown and wins outright
                                            if right, loses if wrong
+    /impostor help [topic] [share]         rules, options, or word upkeep;
+                                           private unless share:true
     /impostor myword                       re-read your own role privately
     /impostor status                       who is in / is a round running
     /impostor reveal                       end the round, show word + impostors
     /impostor cancel                       scrap it without revealing
-    /impostor words list|add|remove|deletepack
-                                           maintain data/impostor_words.json
-                                           (Manage Server; hand edits to the
-                                           JSON are picked up automatically)
+    /impostor words list|add|remove|deletepack|import [scope]
+                                           maintain data/impostor_words.json.
+                                           scope:server (default) edits the
+                                           shared packs and needs Manage
+                                           Server; scope:mine makes a pack
+                                           tied to you that only you can
+                                           start a round with. Hand edits to
+                                           the JSON are picked up
+                                           automatically.
 
 Requires the privileged Server Members and Presence intents to be enabled in
 the Discord Developer Portal (Bot > Privileged Gateway Intents); without them

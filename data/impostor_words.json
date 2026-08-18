@@ -28,5 +28,8 @@
     ["overhang", "well", "T-slot"],
     ["I-piece", "T-piece", "S-piece", "Z-piece", "L-piece", "J-piece", "O-piece"],
     ["40 lines", "blitz", "zen"]
+  ],
+  "tetrisatuci": [
+    ["Bennxt", "Satilea", "Snorlax", "Yauna", "Inkl1ng", "Awesumsauce", "Stqr", "Betanine", "Weeg", "Waifer", "Potatoling2", "Teesa", "Flowaa", "BulletShimeji", "Sieradni"]
   ]
 }
