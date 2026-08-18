@@ -31,10 +31,20 @@ DEFAULT_WORDS_PATH = ROOT / "data" / "impostor_words.json"
 LOBBY_TIMEOUT_SECONDS = 600      # 10 minutes of nobody pressing anything
 ROUND_TIMEOUT_SECONDS = 3600     # abandoned rounds stop holding a live button
 GUESS_TIMEOUT_SECONDS = 120      # the impostor's open dropdown
+VOTE_TIMEOUT_SECONDS = 300       # a called vote closes itself after 5 minutes
 MESSAGE_LIMIT = 1900             # Discord's 2000, minus room for a header
 AUTOCOMPLETE_LIMIT = 25          # Discord's hard cap on choices
+MAX_SELECT_OPTIONS = 25          # ...and on select-menu options
 
 NO_MENTIONS = discord.AllowedMentions.none()
+
+# How a player gets their word. A bot cannot push an ephemeral message at
+# somebody -- ephemeral only exists as a reply to that person's own
+# interaction -- so "button" means the round message carries a button each
+# player presses to pull their own private copy. "dm" pushes, but only reaches
+# players who accept DMs from server members.
+DELIVERY_BUTTON = "button"
+DELIVERY_DM = "dm"
 
 _packs: impostor.WordPacks | None = None
 
@@ -80,6 +90,10 @@ class Game:
     decoy: bool = True          # impostor gets a near-miss word
     blind: bool = False         # ...and is not told they are the impostor
     guessing: bool = True       # impostor may guess the crew word early
+    delivery: str = DELIVERY_BUTTON   # how a player receives their role
+    voting: bool = True               # crew may call a vote to eject someone
+    wordlist: bool = True             # show everyone the board of candidates
+    vote: impostor.Vote | None = None  # the open ballot, if one is running
     round: impostor.Round | None = None
 
     @property
@@ -116,10 +130,21 @@ def _lobby_text(game: Game) -> str:
             "impostor gets no word")
     if game.guessing:
         mode += " · early guess allowed"
-    return (f"🕵️ **Impostor** — lobby open (host <@{game.host_id}>)\n"
+    if game.voting:
+        mode += " · crew may call a vote"
+    if game.wordlist:
+        mode += " · word list shown"
+    how = ("press **See my word** on the round message"
+           if game.delivery == DELIVERY_BUTTON else "direct message")
+    # A host who named a roster without themselves in it runs the game but
+    # does not play. Say so here, where Join can still fix it.
+    host = (f"host <@{game.host_id}>" if game.host_id in game.players
+            else f"host <@{game.host_id}>, not playing")
+    return (f"🕵️ **Impostor** — lobby open ({host})\n"
             f"Words: {pack} · impostors: {impostors} · "
             f"category shown: {'yes' if game.show_category else 'no'}\n"
             f"Mode: {mode}\n"
+            f"Roles arrive by: {how}\n"
             f"**Players ({count}/{impostor.MAX_PLAYERS}):** "
             f"{_mentions(game.players)}\n"
             f"_{status}. Lobby closes after "
@@ -138,13 +163,39 @@ def _round_text(game: Game) -> str:
                  f"different one{category}.")
     else:
         dealt = f"everyone else got a word{category}."
+    board = impostor.word_board(rnd)
     return (f"🕵️ **Impostor** — round in play\n"
-            f"**Players ({len(rnd.player_ids)}):** {_mentions(rnd.player_ids)}\n"
+            + (f"**The word is one of these:**\n{board}\n" if board else "")
+            + f"**Players ({len(rnd.player_ids)}):** "
+            f"{_mentions(rnd.player_ids)}\n"
             f"{len(rnd.impostor_ids)} impostor"
             f"{'s' if len(rnd.impostor_ids) != 1 else ''} · {dealt}\n"
             + ("_The impostor may guess the word early — right, they win; "
                "wrong, you do._\n" if rnd.guessing_allowed else "")
-            + "_Lost your DM? `/impostor myword`. Done? `/impostor reveal`._")
+            + ("_Crew: press **Call a vote** when you are ready to eject "
+               "someone._\n" if game.voting else "")
+            + ("_Press **See my word** for your own copy — only you see it. "
+               "Done? `/impostor reveal`._"
+               if game.delivery == DELIVERY_BUTTON else
+               "_Lost your DM? `/impostor myword`. Done? "
+               "`/impostor reveal`._"))
+
+
+def _vote_text(game: Game) -> str:
+    """The public vote message: who has voted, never who they voted for."""
+    rnd, vote = game.round, game.vote
+    if rnd is None or vote is None:            # only reachable via caller bug
+        return "🗳️ **Vote closed.**"
+    voted = tuple(p for p in rnd.player_ids if vote.has_voted(p))
+    waiting = tuple(p for p in rnd.player_ids if not vote.has_voted(p))
+    return (f"🗳️ **Vote called** — who is the impostor?\n"
+            f"Eject the impostor and the crew win; eject a crewmate and they "
+            f"lose. Everyone votes, impostor included.\n"
+            f"**In ({len(voted)}/{len(rnd.player_ids)}):** "
+            f"{_mentions(voted) if voted else 'nobody yet'}\n"
+            f"**Waiting on:** {_mentions(waiting) if waiting else 'nobody'}\n"
+            f"_Press **Cast my vote** — your pick stays private until the "
+            f"tally. Closes after {VOTE_TIMEOUT_SECONDS // 60} minutes._")
 
 
 # ── Permission helpers ────────────────────────────────────────────────────────
