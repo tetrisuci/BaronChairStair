@@ -35,7 +35,8 @@ can see this") message, so the channel is never flooded.
 /bennxt roles | recent | notify | notifylist | debug
                             all reply "bennxt is no longer bummxt"
 The civil/mechanical job tracker these used to front was removed once bennxt
-got hired; the names are kept so old invocations still resolve.
+got hired; the names and their descriptions are kept so old invocations still
+resolve and the command picker looks unchanged.
 
 Activity tracker (backed by presence_tracker.py; samples every 10 minutes):
     /activity graph [days] [breakdown] [guild_id]
@@ -1173,15 +1174,17 @@ bot.tree.add_command(internships)
 
 # ── bennxt ────────────────────────────────────────────────────────────────────
 # The civil/mechanical job tracker that used to live here is gone: bennxt got
-# the job it was built to find. Every name it answered to is kept, so the old
-# invocations still resolve instead of vanishing from the command list — they
-# all give the same answer now. Discord treats a name as either a command or a
-# group, never both, so these subcommands are the whole surface: there is no
-# bare /bennxt.
+# the job it was built to find. Every name and description it answered to is
+# kept, so the old invocations still resolve and the command picker reads as it
+# always did — they all give the same answer now. Discord treats a name as
+# either a command or a group, never both, so these subcommands are the whole
+# surface: there is no bare /bennxt.
 
 BENNXT_RETIRED = "bennxt is no longer bummxt"
 
-bennxt = app_commands.Group(name="bennxt", description=f"{BENNXT_RETIRED}.")
+bennxt = app_commands.Group(
+    name="bennxt",
+    description="Civil/mechanical internships & new-grad roles in California")
 
 
 async def _bennxt_retired(interaction: discord.Interaction):
@@ -1190,12 +1193,20 @@ async def _bennxt_retired(interaction: discord.Interaction):
                                             allowed_mentions=NO_MENTIONS)
 
 
-# The tracker's original subcommands, all pointed at the same callback rather
-# than five copies of one send_message.
-for _retired in ("roles", "recent", "notify", "notifylist", "debug"):
+# The tracker's original subcommands, carrying the descriptions they shipped
+# with so the command picker still reads the way people remember it. All five
+# point at the same callback rather than five copies of one send_message.
+BENNXT_RETIRED_COMMANDS = {
+    "roles":      "Civil/mech CA roles, filtered by visa sponsorship.",
+    "recent":     "Newest civil/mech CA postings, most recent first.",
+    "notify":     "Toggle notices for new civil/mech CA roles.",
+    "notifylist": "Show who is subscribed to bennxt notices.",
+    "debug":      "Scan stats, database size, and Gemini quota usage.",
+}
+
+for _name, _desc in BENNXT_RETIRED_COMMANDS.items():
     bennxt.add_command(app_commands.Command(
-        name=_retired, description=f"{BENNXT_RETIRED}.",
-        callback=_bennxt_retired))
+        name=_name, description=_desc, callback=_bennxt_retired))
 
 bot.tree.add_command(bennxt)
 
