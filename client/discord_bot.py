@@ -26,19 +26,14 @@ notices batched to at most one per hour):
     /internships info <role>               salary + description for one role
     /internships ping                      toggle notices for yourself
     /internships pinglist                  show who is subscribed
+    /internships debug                     sweep health, DB size, Gemini quota
 
 New postings produce one quiet, mention-free notice per subscribed channel
 with a button; pressing it replies with the listing as an ephemeral ("only you
 can see this") message, so the channel is never flooded.
 
-bennxt tracker — civil/mechanical internships AND new-grad roles in California,
-screened for visa sponsorship with Gemini (replies are PUBLIC, not ephemeral):
-    /bennxt roles [sponsorship] [region] [fit] [evidence]
-                                             best matches: SoCal + resume fit
-    /bennxt recent [days] [sponsorship] [region] [level] [company] [evidence]
-                                             newest postings, most recent first
-    /bennxt notify                           toggle new-role notices
-    /bennxt notifylist                       show who is subscribed
+/bennxt is a stub that replies "bennxt is no longer bummxt" — the
+civil/mechanical job tracker it used to front was removed once bennxt got hired.
 
 Activity tracker (backed by presence_tracker.py; samples every 10 minutes):
     /activity graph [days] [breakdown] [guild_id]
@@ -161,17 +156,6 @@ ANNOUNCE_MAX = 8            # max postings listed per ping announcement
 RECENT_DAYS_DEFAULT = 7     # default look-back for `internships recent`
 RECENT_MAX_ROLES = 40       # cap on roles listed per command invocation
 DESC_SNIPPET_MAX = 1200     # description excerpt length for `internships info`
-
-# bennxt: civil/mechanical + new-grad + California + visa sponsorship.
-# Public (non-ephemeral) by request, with its own opt-in notify list.
-BENNXT_SWEEP_MINUTES = 180   # Gemini free tier — scan far less often than tech
-BENNXT_MAX_ROLES = 25        # roles listed per command invocation
-SPONSOR_LABEL = {"yes": "✅ sponsors", "likely": "🟢 sponsored before",
-                 "unknown": "❔ not stated", "no": "🚫 no sponsorship"}
-REGION_LABEL = {"socal": "📍 SoCal", "ca": "CA", "remote": "remote",
-                "unknown": "location TBD"}
-FIT_LABEL = {"strong": "🎯 strong resume fit", "possible": "🤔 possible fit",
-             "weak": "⚠️ weak fit"}
 
 # Presence tracker (/activity) — see client/presence_tracker.py.
 PRESENCE_SAMPLE_MINUTES = presence_tracker.SAMPLE_MINUTES
@@ -368,12 +352,6 @@ db.execute("""
         value REAL
     )
 """)
-db.execute("""
-    CREATE TABLE IF NOT EXISTS bennxt_pings (
-        user_id INTEGER PRIMARY KEY,
-        channel_id INTEGER NOT NULL
-    )
-""")
 db.commit()
 
 # presence_samples, owned by client/presence_tracker.py. A schema mismatch
@@ -442,19 +420,11 @@ async def yauna_cancer(ctx):
 async def on_ready():
     await bot.tree.sync()
     if pconn is not None:
-        # Say plainly at boot whether resume matching is on — otherwise a
-        # missing PDF only shows up as an empty `fit:strong` much later.
-        resume = poller.load_resume()
-        print(f"bennxt resume: {'loaded' if resume else 'MISSING'} "
-              f"({poller.RESUME_PATH})"
-              + ("" if resume else " — /bennxt fit ratings disabled"))
         # Re-attach the digest button so notices posted before a restart stay
         # clickable (registering twice across reconnects is harmless).
         bot.add_view(InternshipDigestView())
         if not internship_sweep.is_running():
             internship_sweep.start()
-        if not bennxt_sweep.is_running():
-            bennxt_sweep.start()
     if presence_error is None and not presence_sample.is_running():
         presence_sample.start()
     print(f"Logged in as {bot.user} (id: {bot.user.id})")
@@ -663,240 +633,6 @@ async def _send_recent(send, days: int, us_only: bool,
     await send(content=header, allowed_mentions=NO_MENTIONS)
     for chunk in _split_blocks(blocks):
         await send(content=chunk, allowed_mentions=NO_MENTIONS)
-
-
-def _format_bennxt(p, v, show_evidence: bool = False) -> str:
-    """One listing block for a bennxt role, led by its sponsorship verdict."""
-    status = SPONSOR_LABEL.get(v.get("sponsorship"), "❔ not stated")
-    posted = f"posted {poller.age_str(p)} ago" if p.published else "date unknown"
-    # resolved_location is Gemini's reading for postings whose location field
-    # was blank or collapsed ("4 Locations").
-    loc = (v.get("resolved_location") or p.location
-           or REGION_LABEL.get(v.get("region"), "location not stated"))
-    if v.get("resolved_location") and not (p.location or "").strip():
-        loc = f"{loc} (from posting text)"
-    if v.get("region") == "socal":
-        loc = f"📍 {loc}"
-    bits = [loc]
-    if v.get("salary"):
-        bits.append(v["salary"])
-    bits.append(posted)
-    head = status
-    if v.get("fit"):
-        head += " · " + FIT_LABEL[v["fit"]]
-    block = (f"**{p.company}** — {p.title}\n"
-             f"{head} · " + " · ".join(bits))
-    h1b = v.get("h1b")
-    if h1b:
-        where = f"{h1b['ca']} in CA" if h1b.get("ca") else "none in CA"
-        block += (f"\n_H-1B: {h1b['total']} certified filing(s) for similar "
-                  f"roles in the last 2 years ({where})._")
-    if v.get("fit_reason"):
-        block += f"\n_{v['fit_reason'][:200]}_"
-    if show_evidence and v.get("evidence"):
-        ev = v["evidence"].replace("`", "'")[:180]
-        block += f"\n> {ev}"
-    links = []
-    if p.url:
-        links.append(f"[apply]({p.url})")
-    if v.get("company_site"):
-        # The employer's own site — for researching the company, and for
-        # applying there directly when its careers page carries the role.
-        links.append(f"[company site]({v['company_site']})")
-    if links:
-        block += "\n" + " · ".join(links)
-    return block
-
-
-# Latest bennxt scan, kept in memory: the scan costs Gemini calls, so commands
-# read this rather than re-scanning per invocation.
-_bennxt_cache: dict = {"at": 0.0, "roles": []}
-
-
-# Single-flight: one scan at a time, process-wide. Without this, two people
-# running /bennxt roles during a cold scan each start their OWN full scan —
-# doubling ~1800 HTTP requests and ~122 Gemini calls for identical results.
-# Late callers await the in-flight scan and watch its progress instead.
-_bennxt_lock = asyncio.Lock()
-# Progress of the scan currently running, so latecomers can render it too.
-# `subs` holds callbacks belonging to each waiting interaction.
-_bennxt_progress: dict = {"phase": None, "done": 0, "total": None,
-                          "started": 0.0, "subs": []}
-
-
-def _bennxt_scan_running() -> bool:
-    return _bennxt_lock.locked()
-
-
-async def _bennxt_roles(force: bool = False, on_progress=None):
-    """Cached bennxt results, refreshed at most every BENNXT_SWEEP_MINUTES.
-
-    on_progress: optional callable(phase, done, total) for live updates. It is
-    registered for the duration of the call, so a caller that arrives while a
-    scan is already running still sees that scan's progress.
-    """
-    def _fresh() -> bool:
-        age = time.time() - _bennxt_cache["at"]
-        return not (force or (not _bennxt_cache["roles"] and age > 60)
-                    or age > BENNXT_SWEEP_MINUTES * 60)
-
-    if _fresh():
-        return _bennxt_cache["roles"]
-
-    if on_progress:
-        _bennxt_progress["subs"].append(on_progress)
-        # A latecomer joins mid-scan, so replay the current state immediately
-        # rather than leaving them on a blank message until the next tick.
-        if _bennxt_scan_running() and _bennxt_progress["phase"]:
-            try:
-                on_progress(_bennxt_progress["phase"], _bennxt_progress["done"],
-                            _bennxt_progress["total"])
-            except Exception:
-                pass
-    try:
-        async with _bennxt_lock:
-            # Re-check inside the lock: while we waited, the scan we were
-            # queued behind may have just filled the cache. Doing the work
-            # again would spend a second scan's quota for nothing.
-            if _fresh():
-                return _bennxt_cache["roles"]
-
-            def _fanout(phase, done, total):
-                _bennxt_progress.update(phase=phase, done=done, total=total)
-                for cb in list(_bennxt_progress["subs"]):
-                    try:
-                        cb(phase, done, total)
-                    except Exception:
-                        pass
-
-            _bennxt_progress.update(phase=None, done=0, total=None,
-                                    started=time.time())
-            roles = await poller.bennxt_scan(pconn, verbose=True,
-                                             on_progress=_fanout)
-            _bennxt_cache.update(at=time.time(), roles=roles)
-        return _bennxt_cache["roles"]
-    finally:
-        if on_progress and on_progress in _bennxt_progress["subs"]:
-            _bennxt_progress["subs"].remove(on_progress)
-
-
-
-# Live progress for long scans. The scan takes minutes on a cold cache, and a
-# silent "thinking..." for that long is indistinguishable from a hung bot.
-BENNXT_PROGRESS_EVERY = 3.0     # seconds between message edits (rate limits)
-# Discord invalidates an interaction token 15 minutes after the command was
-# invoked. Stop editing before that so a cold scan can't die on an expired
-# token; the result is then delivered as a normal channel message instead.
-BENNXT_TOKEN_TTL = 13 * 60
-
-_PHASE_LABEL = {
-    "boards":  "Polling job boards",
-    "details": "Fetching descriptions",
-    "sites":   "Looking up company sites",
-    "llm":     "Checking sponsorship with Gemini",
-    "done":    "Done",
-}
-
-
-def _bar(done: int, total, width: int = 10) -> str:
-    if not total:
-        return "▓" * width if done else "░" * width
-    # Any real progress shows at least one block: round() renders 5/106 as an
-    # empty bar, which reads as "stuck" during the slowest phase of the scan.
-    # Likewise, only a genuinely finished phase gets a full bar.
-    filled = max(0, min(width, round(width * done / total)))
-    if done and filled == 0:
-        filled = 1
-    if filled == width and done < total:
-        filled = width - 1
-    return "▓" * filled + "░" * (width - filled)
-
-
-class _ScanProgress:
-    """Throttled progress display for one interaction.
-
-    The scan calls update() thousands of times; this records state cheaply and
-    lets a background task do the actual editing every few seconds, so message
-    edits never gate the scan and never trip Discord's rate limits.
-    """
-
-    def __init__(self, interaction: discord.Interaction):
-        self.interaction = interaction
-        self.started = time.time()
-        self.state = None            # (phase, done, total)
-        self.dirty = False
-        self._task = None
-        self._stop = asyncio.Event()
-
-    def update(self, phase, done, total):
-        """Called from the scan. Must stay cheap and never block or raise."""
-        self.state = (phase, done, total)
-        self.dirty = True
-
-    @staticmethod
-    def _mmss(seconds: float) -> str:
-        s = max(0, int(seconds))
-        return f"{s // 60}m {s % 60:02d}s" if s >= 60 else f"{s}s"
-
-    def _render(self) -> str:
-        phase, done, total = self.state or ("boards", 0, None)
-        clock = self._mmss(time.time() - self.started)
-        label = _PHASE_LABEL.get(phase, phase)
-        count = f"{done}/{total}" if total else str(done)
-        pct = f" ({100 * done / total:.0f}%)" if total else ""
-        line = f"{_bar(done, total)} {count}{pct}"
-        note = ""
-        if phase == "llm" and total:
-            # The slowest phase by far and the one people wait on, so give a
-            # real ETA instead of just a bar. Gemini calls are paced by the
-            # RPM limiter, which makes remaining time genuinely predictable.
-            left = total - done
-            eta = self._mmss(left / max(1, poller.LLM_RPM) * 60)
-            note = (f"\n*Gemini allows {poller.LLM_RPM} requests/min, so this "
-                    f"phase takes a while — about {eta} left.*")
-            if not _bennxt_cache["roles"]:
-                note += ("\n*First scan after a restart or database reset, so "
-                         "every posting is classified from scratch. Later "
-                         "scans reuse these results and finish in seconds.*")
-        return (f"⏳ **Scanning civil/mech California roles…**\n"
-                f"{label} · {line} · {clock} elapsed{note}")
-
-    async def _loop(self):
-        while not self._stop.is_set():
-            try:
-                await asyncio.wait_for(self._stop.wait(),
-                                       timeout=BENNXT_PROGRESS_EVERY)
-                return                      # stopped
-            except asyncio.TimeoutError:
-                pass
-            if not self.dirty:
-                continue
-            if time.time() - self.started > BENNXT_TOKEN_TTL:
-                return                      # token about to expire; stop editing
-            self.dirty = False
-            try:
-                await self.interaction.edit_original_response(
-                    content=self._render())
-            except discord.HTTPException:
-                # A failed progress edit must never affect the scan or the
-                # final reply — the token may have expired or the message
-                # been deleted.
-                return
-
-    def start(self):
-        self._task = asyncio.create_task(self._loop())
-        return self
-
-    async def stop(self):
-        self._stop.set()
-        if self._task:
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
-
-    def token_expired(self) -> bool:
-        return time.time() - self.started > BENNXT_TOKEN_TTL
 
 
 def _private(interaction: discord.Interaction):
@@ -1133,6 +869,8 @@ async def internships_help_slash(interaction: discord.Interaction):
         "· `/internships info <role>` — salary and description for one posting. "
         "Start typing a company or title and pick a suggestion.",
         "· `/internships pinglist` — who's subscribed, and their filters.",
+        "· `/internships debug` — sweep health, database size, and Gemini "
+        "quota usage. Read-only; it never triggers a sweep.",
         "",
         "**Filters**",
         f"· `category` — one of {cats}. Use `all` to clear it.",
@@ -1315,360 +1053,6 @@ async def internships_pinglist_slash(interaction: discord.Interaction):
         await send(chunk)
 
 
-bot.tree.add_command(internships)
-
-
-# ── bennxt: civil/mechanical + California + visa sponsorship ──────────────────
-
-bennxt = app_commands.Group(
-    name="bennxt",
-    description="Civil/mechanical internships & new-grad roles in California")
-
-
-@bennxt.command(name="roles",
-                description="Civil/mech CA roles, filtered by visa sponsorship.")
-@app_commands.describe(
-    sponsorship="Which sponsorship statuses to show (default: hides explicit no)",
-    region="Where the role is (default: SoCal first, then rest of California)",
-    fit="How well the role matches the resume (default: hides weak matches)",
-    days="Only roles posted in the last N days (undated ones are still shown)",
-    evidence="Show the quoted sponsorship language from each posting")
-@app_commands.choices(
-    sponsorship=[
-        app_commands.Choice(name="Sponsors or not stated (default)", value="open"),
-        app_commands.Choice(name="Known H-1B sponsors only", value="yes"),
-        app_commands.Choice(name="Everything, including no-sponsorship", value="all"),
-    ],
-    region=[
-        app_commands.Choice(name="SoCal first, then all CA (default)", value="all"),
-        app_commands.Choice(name="SoCal only (Irvine / LA / OC / SD)", value="socal"),
-    ],
-    fit=[
-        app_commands.Choice(name="Hide weak resume matches (default)", value="ok"),
-        app_commands.Choice(name="Only strong resume matches", value="strong"),
-        app_commands.Choice(name="Everything, regardless of fit", value="all"),
-    ])
-async def bennxt_roles_slash(
-    interaction: discord.Interaction,
-    sponsorship: app_commands.Choice[str] = None,
-    region: app_commands.Choice[str] = None,
-    fit: app_commands.Choice[str] = None,
-    days: app_commands.Range[int, 1, 60] = None,
-    evidence: bool = False,
-):
-    if pconn is None:
-        await interaction.response.send_message(_tracker_disabled(), ephemeral=True)
-        return
-    mode = sponsorship.value if sponsorship else "open"
-    # Public by design — bennxt replies are visible to the whole channel.
-    await interaction.response.defer(thinking=True)
-    # Only show progress when a scan will actually run; a warm cache returns
-    # instantly and a progress bar would just flicker.
-    progress = None
-    if not _bennxt_cache["roles"] or _bennxt_scan_running():
-        progress = _ScanProgress(interaction).start()
-    try:
-        roles = await _bennxt_roles(
-            on_progress=progress.update if progress else None)
-    except Exception as e:
-        print(f"bennxt scan failed: {type(e).__name__}: {e}", file=sys.stderr)
-        await interaction.followup.send(
-            "The bennxt scan failed — try again in a few minutes.",
-            allowed_mentions=NO_MENTIONS)
-        return
-    finally:
-        if progress:
-            await progress.stop()
-    # A scan can outlive the 15-minute interaction token. If it did, followup
-    # sends would fail, so reply in the channel instead of losing the result.
-    send = interaction.followup.send
-    if progress and progress.token_expired():
-        chan = interaction.channel
-        if chan is not None:
-            async def send(content, **kw):
-                return await chan.send(f"{interaction.user.mention} {content}"
-                                       if content else content, **kw)
-    elif progress:
-        # The deferred message still shows the last progress frame. Overwrite
-        # it with the header rather than leaving "Scanning…" above the results.
-        async def send(content, **kw):
-            nonlocal progress
-            if progress is not None:
-                progress = None
-                try:
-                    return await interaction.edit_original_response(
-                        content=content,
-                        allowed_mentions=kw.get("allowed_mentions"))
-                except discord.HTTPException:
-                    pass
-            return await interaction.followup.send(content, **kw)
-
-    keep = {"open": ("yes", "likely", "unknown"),
-            "yes": ("yes", "likely"),
-            "all": ("yes", "likely", "unknown", "no")}[mode]
-    sel = [(p, v) for p, v in roles if v.get("sponsorship") in keep]
-    if days:
-        # Undated postings are KEPT, unlike in `recent`. 68% of the candidate
-        # pool has no date at all (iCIMS sitemaps and some Workday feeds carry
-        # none), so dropping them would silently hide most of the results and
-        # read as "nothing was posted recently". They're counted and disclosed
-        # below instead. Anything older than BENNXT_MAX_AGE_DAYS was already
-        # excluded during the scan, so an undated role is at worst that old.
-        cutoff = time.time() - days * 86400
-        sel = [(p, v) for p, v in sel
-               if not p.published or p.published >= cutoff]
-    if region and region.value == "socal":
-        sel = [(p, v) for p, v in sel if v.get("region") == "socal"]
-    fit_mode = fit.value if fit else "ok"
-    if fit_mode == "strong":
-        sel = [(p, v) for p, v in sel if v.get("fit") == "strong"]
-    elif fit_mode == "ok":
-        # Unscored roles (no resume, or the LLM didn't answer) are kept.
-        sel = [(p, v) for p, v in sel if v.get("fit") != "weak"]
-    tally = {k: sum(1 for _, v in roles if v.get("sponsorship") == k)
-             for k in ("yes", "likely", "unknown", "no")}
-    socal_n = sum(1 for _, v in roles if v.get("region") == "socal")
-    window = days or poller.BENNXT_MAX_AGE_DAYS
-    if not sel:
-        extra = (f" Nothing dated within {days} day(s) — try a larger `days`."
-                 if days else "")
-        await send(
-            "No civil/mechanical California roles matched that filter right "
-            f"now, among postings from the last {window} "
-            f"days (last scan: ✅ {tally['yes']} sponsor · ❔ {tally['unknown']} "
-            f"not stated · 🚫 {tally['no']} ruled out).{extra}",
-            allowed_mentions=NO_MENTIONS)
-        return
-
-    scope = ("in SoCal (Irvine / LA / OC / SD)" if region
-             and region.value == "socal" else "in California, SoCal first")
-    strong_n = sum(1 for _, v in roles if v.get("fit") == "strong")
-    header = (f"**{len(sel)} civil/mechanical roles {scope}** "
-              f"(internships + new grad, posted in the last "
-              f"{window} days)\n"
-              f"Last scan: 📍 {socal_n} SoCal · ✅ {tally['yes']} sponsor · "
-              f"🟢 {tally['likely']} sponsored before · "
-              f"❔ {tally['unknown']} not stated · 🚫 {tally['no']} ruled out"
-              + ("" if mode == "all" else " (hidden)")
-              + (f" · 🎯 {strong_n} strong resume matches" if strong_n else ""))
-    blocks = [_format_bennxt(p, v, evidence) for p, v in sel[:BENNXT_MAX_ROLES]]
-    if len(sel) > BENNXT_MAX_ROLES:
-        blocks.append(f"...and {len(sel) - BENNXT_MAX_ROLES} more.")
-    note = ("*❔ = the posting never mentions work authorization; verify "
-            "with the employer before applying.*")
-    # Counted from the final selection, so the number matches what's shown.
-    undated_kept = sum(1 for p, _ in sel if not p.published) if days else 0
-    if undated_kept:
-        # Say so plainly: these passed the filter by not having a date, not by
-        # being recent. Silence here would overstate how fresh the list is.
-        note += (f"\n*{undated_kept} of these carry no posting date (their "
-                 f"job board doesn't publish one) and are shown regardless of "
-                 f"`days`. They're at most {poller.BENNXT_MAX_AGE_DAYS} days "
-                 f"old — use `/bennxt recent` for dated postings only.*")
-    unscored = sum(1 for _, v in sel if not v.get("fit"))
-    if unscored:
-        # Two very different causes, two very different fixes — don't guess.
-        if poller.load_resume() is None:
-            note += (f"\n*No resume is loaded, so {unscored} role(s) have no "
-                     f"fit rating and `fit:strong` matches nothing. Put a PDF "
-                     f"at `{poller.RESUME_PATH}` (and `pip install pypdf`), "
-                     "then restart the bot.*")
-        else:
-            # Local date, matching how the poller keys llm_usage; SQL
-            # date('now') is UTC and reads the wrong row for part of each day.
-            row = pconn.execute(
-                "SELECT n FROM llm_usage WHERE day=?",
-                (poller.datetime.now().strftime("%Y-%m-%d"),)).fetchone()
-            spent = row[0] if row else 0
-            cap = poller.total_rpd()   # whole chain, not one model's cap
-            if spent >= cap:
-                why = (f"the daily Gemini quota ({cap}/day across "
-                       "all models) is used up; it resets at midnight Pacific")
-            else:
-                why = (f"the scan stopped early ({spent}/{cap} calls "
-                       "used today) — usually a Gemini timeout or outage")
-            note += (f"\n*{unscored} role(s) here have no resume-fit rating "
-                     f"yet: {why}. They get scored on the next run.*")
-    blocks.append(note)
-    await send(header, allowed_mentions=NO_MENTIONS)
-    for chunk in _split_blocks(blocks):
-        await send(chunk, allowed_mentions=NO_MENTIONS)
-
-
-@bennxt.command(name="recent",
-                description="Newest civil/mech CA postings, most recent first.")
-@app_commands.describe(
-    days=f"Only postings from the last N days (default {RECENT_DAYS_DEFAULT})",
-    sponsorship="Which sponsorship statuses to show (default: hides explicit no)",
-    region="Where the role is (default: anywhere in California)",
-    level="Internships, new-grad roles, or both",
-    company="Only this employer (partial name is fine)",
-    evidence="Show the quoted sponsorship language from each posting")
-@app_commands.choices(
-    sponsorship=[
-        app_commands.Choice(name="Sponsors or not stated (default)", value="open"),
-        app_commands.Choice(name="Known H-1B sponsors only", value="yes"),
-        app_commands.Choice(name="Everything, including no-sponsorship", value="all"),
-    ],
-    region=[
-        app_commands.Choice(name="Anywhere in California (default)", value="all"),
-        app_commands.Choice(name="SoCal only (Irvine / LA / OC / SD)", value="socal"),
-    ],
-    level=[
-        app_commands.Choice(name="Internships and new grad (default)", value="all"),
-        app_commands.Choice(name="Internships only", value="intern"),
-        app_commands.Choice(name="New grad / entry level only", value="newgrad"),
-    ])
-async def bennxt_recent_slash(
-    interaction: discord.Interaction,
-    days: app_commands.Range[int, 1, 60] = RECENT_DAYS_DEFAULT,
-    sponsorship: app_commands.Choice[str] = None,
-    region: app_commands.Choice[str] = None,
-    level: app_commands.Choice[str] = None,
-    company: str = None,
-    evidence: bool = False,
-):
-    """Strictly newest-first, unlike `roles` which ranks SoCal + resume fit."""
-    if pconn is None:
-        await interaction.response.send_message(_tracker_disabled(), ephemeral=True)
-        return
-    await interaction.response.defer(thinking=True)
-    try:
-        roles = await _bennxt_roles()
-    except Exception as e:
-        print(f"bennxt scan failed: {type(e).__name__}: {e}", file=sys.stderr)
-        await interaction.followup.send(
-            "The bennxt scan failed — try again in a few minutes.",
-            allowed_mentions=NO_MENTIONS)
-        return
-
-    cutoff = time.time() - days * 86400
-    keep = {"open": ("yes", "likely", "unknown"),
-            "yes": ("yes", "likely"),
-            "all": ("yes", "likely", "unknown", "no")}[
-                sponsorship.value if sponsorship else "open"]
-
-    sel = [(p, v) for p, v in roles
-           if v.get("sponsorship") in keep
-           and (p.published or 0) >= cutoff]
-    if region and region.value == "socal":
-        sel = [(p, v) for p, v in sel if v.get("region") == "socal"]
-    unrated_level = 0
-    if level and level.value != "all":
-        # The LLM's level verdict when we have one, else the title heuristic.
-        # Most postings have neither (the scan only scores what fits its
-        # budget), so this filter is deliberately strict — and we report how
-        # many were set aside rather than pretending they didn't match.
-        want = level.value
-        def _lvl(p, v):
-            return v.get("level") or (
-                "intern" if poller.bennxt_level_from_title(p.title) == "early"
-                else None)
-        unrated_level = sum(1 for p, v in sel if _lvl(p, v) is None)
-        sel = [(p, v) for p, v in sel if _lvl(p, v) == want]
-    if company:
-        needle = company.lower().strip()
-        sel = [(p, v) for p, v in sel if needle in (p.company or "").lower()]
-
-    # Newest first — the whole point of this command.
-    sel.sort(key=lambda pv: -(pv[0].published or 0))
-
-    if not sel:
-        await interaction.followup.send(
-            f"No civil/mechanical California postings in the last {days} day(s) "
-            "matched those filters. Try a longer window or `/bennxt roles`.",
-            allowed_mentions=NO_MENTIONS)
-        return
-
-    scope = []
-    if region and region.value == "socal":
-        scope.append("SoCal")
-    if level and level.value != "all":
-        scope.append("internships" if level.value == "intern" else "new grad")
-    if company:
-        scope.append(f"company ~ {company}")
-    suffix = f" · {' · '.join(scope)}" if scope else ""
-    header = (f"**{len(sel)} civil/mechanical posting"
-              f"{'s' if len(sel) != 1 else ''} from the last {days} days** "
-              f"(newest first{suffix})")
-    blocks = [_format_bennxt(p, v, evidence) for p, v in sel[:BENNXT_MAX_ROLES]]
-    if len(sel) > BENNXT_MAX_ROLES:
-        blocks.append(f"...and {len(sel) - BENNXT_MAX_ROLES} more — narrow the "
-                      "window with `days:` or filter by `company:`.")
-    note = ("*❔ = the posting never mentions work authorization; verify "
-            "with the employer before applying.*")
-    if unrated_level:
-        note += (f"\n*{unrated_level} posting(s) in this window have no "
-                 "intern/new-grad rating yet and are hidden by the `level` "
-                 "filter — drop it to see them.*")
-    blocks.append(note)
-    await interaction.followup.send(header, allowed_mentions=NO_MENTIONS)
-    for chunk in _split_blocks(blocks):
-        await interaction.followup.send(chunk, allowed_mentions=NO_MENTIONS)
-
-
-@bennxt_recent_slash.autocomplete("company")
-async def bennxt_company_autocomplete(interaction: discord.Interaction,
-                                      current: str):
-    """Suggest employers that actually have postings in the current scan."""
-    if pconn is None or not _bennxt_cache["roles"]:
-        return []
-    cur = current.lower().strip()
-    names = sorted({p.company for p, _ in _bennxt_cache["roles"] if p.company})
-    return [app_commands.Choice(name=n[:100], value=n[:100])
-            for n in names if cur in n.lower()][:25]
-
-
-@bennxt.command(name="notify",
-                description="Toggle notices for new civil/mech CA roles.")
-async def bennxt_notify_slash(interaction: discord.Interaction):
-    if pconn is None:
-        await interaction.response.send_message(_tracker_disabled(), ephemeral=True)
-        return
-    uid, cid = interaction.user.id, interaction.channel_id
-    if db.execute("SELECT 1 FROM bennxt_pings WHERE user_id=?", (uid,)).fetchone():
-        db.execute("DELETE FROM bennxt_pings WHERE user_id=?", (uid,))
-        db.commit()
-        msg = "Removed you from the bennxt notify list."
-    else:
-        db.execute("INSERT INTO bennxt_pings VALUES (?, ?)", (uid, cid))
-        db.commit()
-        msg = ("Added you to the bennxt notify list — new civil/mechanical "
-               "California roles are posted in this channel. Run the command "
-               "again to unsubscribe.")
-    await interaction.response.send_message(msg, ephemeral=True)
-
-
-@bennxt.command(name="notifylist",
-                description="Show who is subscribed to bennxt notices.")
-async def bennxt_notifylist_slash(interaction: discord.Interaction):
-    if pconn is None:
-        await interaction.response.send_message(_tracker_disabled(), ephemeral=True)
-        return
-    subs = db.execute("SELECT user_id, channel_id FROM bennxt_pings").fetchall()
-    if not subs:
-        await interaction.response.send_message(
-            "Nobody is subscribed yet — sign up with `/bennxt notify`.",
-            allowed_mentions=NO_MENTIONS)
-        return
-
-    by_channel: dict[int, list[int]] = {}
-    for uid, cid in subs:
-        by_channel.setdefault(cid, []).append(uid)
-
-    lines = [f"**{len(subs)} subscribed to bennxt notices**"]
-    for cid, uids in sorted(by_channel.items()):
-        lines.append(f"<#{cid}>: " + " ".join(f"<@{u}>" for u in uids))
-
-    # NO_MENTIONS renders the name chips without pinging anyone. Public, like
-    # the rest of /bennxt.
-    chunks = _pack(lines, MAX_CHUNK, "\n")
-    await interaction.response.send_message(chunks[0],
-                                            allowed_mentions=NO_MENTIONS)
-    for chunk in chunks[1:]:
-        await interaction.followup.send(chunk, allowed_mentions=NO_MENTIONS)
-
-
 def _human_bytes(n: int) -> str:
     for unit in ("B", "KB", "MB", "GB"):
         if n < 1024 or unit == "GB":
@@ -1700,24 +1084,26 @@ def _ago(ts: float) -> str:
     return f"{d / 86400:.1f}d ago"
 
 
-@bennxt.command(name="debug",
-                description="Scan stats, database size, and Gemini quota usage.")
-async def bennxt_debug_slash(interaction: discord.Interaction):
-    """Diagnostics for the bennxt pipeline.
+@internships.command(
+    name="debug",
+    description="Sweep health, database size, and Gemini quota usage.")
+async def internships_debug_slash(interaction: discord.Interaction):
+    """Diagnostics for the internship pipeline.
 
-    Deliberately read-only: it never triggers a scan. A debug command that
-    spent 90 seconds and a chunk of the daily Gemini quota just to report
-    quota usage would change the very numbers it exists to report.
+    Deliberately read-only: it reports what the last sweep did rather than
+    running one, so it never changes the numbers it exists to report.
     """
     if pconn is None:
         await interaction.response.send_message(_tracker_disabled(), ephemeral=True)
         return
-    await interaction.response.defer(thinking=True)
+    await interaction.response.defer(thinking=True, ephemeral=True)
+    send = _private(interaction)
 
     L = []
 
-    # ── Gemini quota. Per-MODEL daily caps, which is why the fallback chain
-    # exists — each model carries its own budget.
+    # ── Gemini quota. Only the CLI poller spends this (`sweep --llm`,
+    # `list --llm`, `llm-diff`); the bot's sweep is regex-classified. It still
+    # reads out here because both write the same postings database.
     # The poller keys llm_usage by LOCAL date; SQL date('now') is UTC and
     # would read the wrong row for part of each day.
     today = poller.datetime.now().strftime("%Y-%m-%d")
@@ -1725,81 +1111,30 @@ async def bennxt_debug_slash(interaction: discord.Interaction):
         "SELECT n, COALESCE(prompt_tokens,0), COALESCE(output_tokens,0) "
         "FROM llm_usage WHERE day=?", (today,)).fetchone()
     used, ptok, otok = row if row else (0, 0, 0)
-    # llm_usage counts calls across every model, so compare against the whole
-    # chain's budget, not one model's per-model cap.
-    cap = poller.total_rpd()
+    # GEMINI_RPD is the daily cap of the single model the poller calls, and
+    # llm_usage counts calls to that model, so the two compare directly.
+    cap = poller.LLM_RPD
     pct = 100 * used / cap if cap else 0
-    bar = "█" * int(pct // 10) + "░" * (10 - int(pct // 10))
+    # Clamped: a lowered GEMINI_RPD can leave today's count above the cap, and
+    # an unclamped width renders as a bar longer than its own scale.
+    filled = min(10, int(pct // 10))
+    bar = "█" * filled + "░" * (10 - filled)
     L.append("**Gemini quota (today)**")
-    L.append(f"`{bar}` {used}/{cap} requests ({pct:.0f}%) across the model "
-             f"chain · currently on `{poller.GEMINI_MODEL}`")
+    L.append(f"`{bar}` {used}/{cap} requests ({pct:.0f}%) · "
+             f"model `{poller.GEMINI_MODEL}`")
     if ptok or otok:
         L.append(f"tokens: {ptok:,} in · {otok:,} out · {ptok + otok:,} total")
     else:
         # Distinguishes "no calls yet" from "this build predates the counter".
         L.append("tokens: not recorded yet (counted from the next Gemini call)")
-    exhausted = [m for m, day in poller._MODEL_EXHAUSTED.items() if day == today]
-    chain = [poller.GEMINI_MODEL] + poller.GEMINI_FALLBACK_MODELS
-    L.append("models: " + " → ".join(
-        f"~~{m}~~" if m in exhausted else m for m in chain))
-    if exhausted:
-        L.append(f"*{len(exhausted)} model(s) hit their daily cap; "
-                 "each resets at midnight Pacific.*")
     L.append(f"limits: {poller.LLM_RPM} req/min · {poller.LLM_TPM:,} tok/min · "
-             f"{poller.LLM_RPD} req/day per model "
-             f"({len(chain)} models = {cap} total)")
+             f"{cap} req/day · resets at midnight Pacific")
 
     # 7-day request history, so a quota surprise has context.
     hist = pconn.execute(
         "SELECT day, n FROM llm_usage ORDER BY day DESC LIMIT 7").fetchall()
     if len(hist) > 1:
         L.append("last 7 days: " + " · ".join(f"{d[5:]} {n}" for d, n in hist))
-
-    # ── Last scan. In-memory, so it describes THIS process only.
-    s = poller.BENNXT_LAST_SCAN
-    L.append("")
-    L.append("**Last bennxt scan**")
-    if not s:
-        L.append(f"No scan since the bot started. The sweep runs every "
-                 f"{BENNXT_SWEEP_MINUTES}m — run `/bennxt roles` to force one.")
-    else:
-        L.append(f"{_ago(s.get('started'))} · took {s.get('duration', 0):.0f}s "
-                 f"· cached for {BENNXT_SWEEP_MINUTES}m")
-        L.append(f"boards: {s.get('boards_ok', 0)}/{s.get('boards_total', 0)} ok"
-                 f" · {s.get('boards_error', 0)} errored"
-                 f" · {s.get('boards_unchanged', 0)} unchanged (304)")
-        # The funnel — where postings are actually lost.
-        L.append("```")
-        L.append(f"{s.get('postings', 0):>6}  scanned from all boards")
-        L.append(f"{s.get('prefiltered', 0):>6}  pass civil/mech + CA prefilter")
-        if s.get("stale_dropped"):
-            L.append(f"{-s['stale_dropped']:>6}  older than {s.get('max_age')}d")
-        if s.get("capped"):
-            L.append(f"{-s['capped']:>6}  over the {s.get('max_details')} "
-                     f"detail-fetch cap")
-        L.append(f"{s.get('detailed', 0):>6}  descriptions fetched")
-        if s.get("yoe_dropped"):
-            L.append(f"{-s['yoe_dropped']:>6}  demand too many years experience")
-        L.append(f"{s.get('with_description', 0):>6}  had usable text "
-                 f"(-> sent to Gemini)")
-        L.append(f"{s.get('results', 0):>6}  final roles")
-        L.append("```")
-        if s.get("by_region"):
-            L.append("candidates by region: " + " · ".join(
-                f"{k}={v}" for k, v in sorted(s["by_region"].items())))
-        if s.get("sponsorship"):
-            L.append("sponsorship: " + " · ".join(
-                f"{SPONSOR_LABEL.get(k, k)} {v}"
-                for k, v in sorted(s["sponsorship"].items())))
-        if s.get("fit"):
-            L.append("resume fit: " + " · ".join(
-                f"{k}={v}" for k, v in sorted(s["fit"].items())))
-        # The single most useful number for "why am I missing roles?".
-        if s.get("capped"):
-            L.append(f"⚠️ **{s['capped']} candidates went unchecked** "
-                     f"({s.get('capped_early', 0)} explicitly intern/new-grad). "
-                     f"Raise `BENNXT_MAX_DETAILS` (now {s.get('max_details')}) "
-                     "to cover more.")
 
     # ── Databases.
     L.append("")
@@ -1810,93 +1145,39 @@ async def bennxt_debug_slash(interaction: discord.Interaction):
     L.append(f"`postings.db` {_db_size(poller.DB_PATH)} — {post_n:,} postings · "
              f"{seen_n:,} seen (dedup ledger) · {cache_n:,} cached verdicts")
     pings = db.execute("SELECT COUNT(*) FROM intern_pings").fetchone()[0]
-    bpings = db.execute("SELECT COUNT(*) FROM bennxt_pings").fetchone()[0]
     L.append(f"`stats.db` {_db_size(ROOT / 'stats.db')} — {pings} internship "
-             f"subscriber(s) · {bpings} bennxt subscriber(s)")
+             f"subscriber(s)")
 
-    # Sweep health from the tech poller, which shares the same database.
+    # ── Sweep health.
+    L.append("")
+    L.append("**Sweeps**")
+    L.append(f"the bot sweeps every {SWEEP_MINUTES}m · notices batched to at "
+             f"most one per {ANNOUNCE_MINUTES}m · {len(_pending)} posting(s) "
+             "waiting for the next notice")
     sw = pconn.execute("SELECT started, duration, errors, new_rows FROM sweeps "
                        "ORDER BY started DESC LIMIT 1").fetchone()
     if sw:
-        L.append(f"last tech sweep: {_ago(sw[0])} · {sw[1]:.0f}s · "
+        L.append(f"last recorded sweep: {_ago(sw[0])} · {sw[1]:.0f}s · "
                  f"{sw[2]} errors · {sw[3]} new")
-
-    # ── Config that changes what gets found.
-    L.append("")
-    L.append("**Config**")
-    resume = poller.load_resume()
-    L.append(f"resume: " + (f"loaded, {len(resume):,} chars" if resume else
-                            f"**not loaded** — no fit ratings "
-                            f"(`{poller.RESUME_PATH}`, needs `pypdf`)"))
-    try:
-        sponsors = poller.load_h1b_sponsors()
-        L.append(f"H-1B sponsor list: {len(sponsors):,} companies")
-    except Exception:
-        L.append("H-1B sponsor list: unavailable")
-    L.append(f"boards: {len(poller.BENNXT_BOARDS)} · "
-             f"max age {poller.BENNXT_MAX_AGE_DAYS}d · "
-             f"detail cap {poller.BENNXT_MAX_DETAILS} · "
-             f"cache {len(_bennxt_cache['roles'])} roles "
-             f"({_ago(_bennxt_cache['at'])})")
+    else:
+        L.append("last recorded sweep: none yet")
 
     for chunk in _pack(L, MAX_CHUNK, "\n"):
-        await interaction.followup.send(chunk, allowed_mentions=NO_MENTIONS)
+        await send(chunk)
 
 
-bot.tree.add_command(bennxt)
+bot.tree.add_command(internships)
 
 
-_bennxt_announced: set = set()   # (platform, external_id) already posted
+# ── bennxt ────────────────────────────────────────────────────────────────────
+# The civil/mechanical job tracker that used to live here is gone: bennxt got
+# the job it was built to find. What's left is a stub so the command still
+# resolves instead of vanishing from the command list.
 
-
-@tasks.loop(minutes=BENNXT_SWEEP_MINUTES)
-async def bennxt_sweep():
-    """Scan and post genuinely-new civil/mech CA roles to subscribed channels.
-
-    Public messages (per request), no mentions. Runs far less often than the
-    tech sweep because every scan spends Gemini calls on the free tier.
-    """
-    try:
-        roles = await _bennxt_roles(force=True)
-        subs = db.execute("SELECT user_id, channel_id FROM bennxt_pings").fetchall()
-    except Exception as e:
-        pconn.rollback()
-        print(f"bennxt sweep failed: {type(e).__name__}: {e}", file=sys.stderr)
-        return
-
-    first_run = not _bennxt_announced
-    fresh = [(p, v) for p, v in roles
-             if (p.platform, p.external_id) not in _bennxt_announced
-             and v.get("sponsorship") in ("yes", "unknown")]
-    _bennxt_announced.update((p.platform, p.external_id) for p, _ in roles)
-    # First run seeds the set silently, exactly like the tech tracker.
-    if first_run or not fresh or not subs:
-        return
-
-    by_channel: dict[int, list[int]] = {}
-    for uid, cid in subs:
-        by_channel.setdefault(cid, []).append(uid)
-    n = len(fresh)
-    header = (f"**{n} new civil/mechanical role{'s' if n != 1 else ''} in "
-              f"California** — {len(subs)} subscribed")
-    blocks = [_format_bennxt(p, v) for p, v in fresh[:ANNOUNCE_MAX]]
-    if n > ANNOUNCE_MAX:
-        blocks.append(f"...and {n - ANNOUNCE_MAX} more — run `/bennxt roles`.")
-    for cid in by_channel:
-        try:
-            channel = bot.get_channel(cid) or await bot.fetch_channel(cid)
-            await channel.send(header, allowed_mentions=NO_MENTIONS)
-            for chunk in _split_blocks(blocks):
-                await channel.send(chunk, allowed_mentions=NO_MENTIONS)
-        except Exception as e:
-            print(f"bennxt notice to channel {cid} failed: "
-                  f"{type(e).__name__}: {e}", file=sys.stderr)
-
-
-@bennxt_sweep.before_loop
-async def _bennxt_wait_ready():
-    await bot.wait_until_ready()
-
+@bot.tree.command(name="bennxt", description="bennxt is no longer bummxt.")
+async def bennxt_slash(interaction: discord.Interaction):
+    await interaction.response.send_message("bennxt is no longer bummxt",
+                                            allowed_mentions=NO_MENTIONS)
 
 
 # ── Presence tracker ──────────────────────────────────────────────────────────
