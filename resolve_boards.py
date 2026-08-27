@@ -16,7 +16,7 @@ Only validated entries are emitted.
     # optional "Company Name = url" to override the detected name)
     python resolve_boards.py --file careers_urls.txt
 
-    # emit registry rows ready to paste into BENNXT_BOARDS
+    # emit registry rows ready to paste into SEED_BOARDS
     python resolve_boards.py --file careers_urls.txt --emit
 
 Supported: greenhouse, lever, ashby, workday (already pollable today) and
@@ -175,8 +175,8 @@ async def main():
     ap.add_argument("urls", nargs="*", help="careers URLs to resolve")
     ap.add_argument("--file", help="file of careers URLs, one per line")
     ap.add_argument("--emit", action="store_true",
-                    help="print BENNXT_BOARDS rows for validated boards")
-    ap.add_argument("--sector", default="aec")
+                    help="print SEED_BOARDS rows for validated boards")
+    ap.add_argument("--sector", default="tech")
     a = ap.parse_args()
 
     targets = [(u, None) for u in a.urls]
@@ -208,7 +208,7 @@ async def main():
     print(f"\n{len(good)}/{len(results)} resolved to a validated, pollable board")
 
     if a.emit and good:
-        print("\n# paste into BENNXT_BOARDS in internship_poller.py")
+        print("\n# paste into SEED_BOARDS in internship_poller.py")
         for r in good:
             if r["ats"] == "icims":
                 print(f'    ("icims", "{r["origin"]}",'.ljust(58) +
