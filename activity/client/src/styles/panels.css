@@ -1,0 +1,257 @@
+/*
+ * Cards and the controls inside them.
+ *
+ * Every panel is the same object: cream paper, a plum edge, a hard offset
+ * shadow, and a heavy caption. Nothing floats and nothing blurs, so the whole
+ * interface stacks like stickers on a page.
+ */
+
+.panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 11px 12px 12px;
+  border: var(--edge) solid var(--ink);
+  border-radius: var(--radius);
+  background: var(--cream);
+  box-shadow: var(--drop) var(--drop) 0 var(--ink);
+  min-width: 0;
+}
+
+.panel__caption {
+  margin: 0;
+  font-family: var(--display);
+  font-weight: 800;
+  font-stretch: 112%;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.panel--tinted { background: var(--sun); }
+
+/* ── Goal ─────────────────────────────────────────────────────────────────── */
+
+.goal__text {
+  margin: 0;
+  font-family: var(--display);
+  font-weight: 800;
+  font-stretch: 108%;
+  font-size: clamp(15px, 1.5vw, 19px);
+  line-height: 1.1;
+  text-transform: uppercase;
+  letter-spacing: -0.01em;
+}
+
+.goal__sub {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-soft);
+}
+
+/* ── Attack meter ─────────────────────────────────────────────────────────── */
+
+.meter__numbers {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.meter__value {
+  font-family: var(--mono);
+  font-weight: 500;
+  font-size: 30px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  transition: color 140ms ease;
+}
+
+.meter__of {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-soft);
+}
+
+.meter__track {
+  height: 12px;
+  border: var(--edge) solid var(--ink);
+  border-radius: var(--radius-sm);
+  background: var(--cream-shade);
+  overflow: hidden;
+}
+
+.meter__fill {
+  height: 100%;
+  width: 0;
+  background: var(--mino-o);
+  border-right: var(--edge) solid var(--ink);
+  transition: width 200ms cubic-bezier(0.2, 0.9, 0.3, 1), background-color 160ms ease;
+}
+
+/* Hitting the target is the moment of the whole game; let it land. */
+.meter--met .meter__fill {
+  background: var(--good);
+  border-right-color: transparent;
+}
+.meter--met .meter__value { color: var(--good-ink); }
+.meter--met .meter__track { animation: meter-pop 320ms cubic-bezier(0.2, 1.5, 0.4, 1); }
+
+@keyframes meter-pop {
+  40% { transform: scale(1.04, 1.28); }
+}
+
+/* ── Hold and next ────────────────────────────────────────────────────────── */
+
+.bay {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: 6px;
+  border: var(--edge) dashed var(--ink-line);
+  border-radius: var(--radius-sm);
+  background: var(--cream-shade);
+}
+
+/*
+ * Every piece draws at the same cell size, so an I and a T look like they came
+ * out of the same box. Their overall boxes differ, which is the point.
+ */
+.glyph {
+  display: block;
+  width: calc(var(--glyph-cell, 11px) * var(--glyph-cols, 1));
+  height: calc(var(--glyph-cell, 11px) * var(--glyph-rows, 1));
+}
+
+.queue {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  /* Long puzzles run to seventy pieces; the panel stays put and the list scrolls. */
+  max-height: 250px;
+  overflow-y: auto;
+  min-height: 0;
+  scrollbar-width: thin;
+  scrollbar-color: var(--ink-line) transparent;
+}
+
+.queue__row {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  /* Two cells tall, so a flat I does not shrink its row out of the rhythm. */
+  min-height: calc(var(--glyph-cell, 11px) * 2 + 6px);
+  padding: 3px 5px;
+  border-radius: var(--radius-sm);
+}
+
+/* The piece you are about to get is worth pointing at. */
+.queue__row--current {
+  background: var(--sun);
+  box-shadow: inset 0 0 0 1px var(--ink-line);
+}
+
+.queue__index {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-faint);
+  text-align: right;
+}
+
+/* ── Stat rows ────────────────────────────────────────────────────────────── */
+
+.stat {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 3px 0;
+  border-bottom: 1px dotted var(--ink-line);
+}
+
+.stat:last-child { border-bottom: none; }
+
+.stat__key {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+.stat__value {
+  font-family: var(--mono);
+  font-weight: 500;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+/* ── Buttons ──────────────────────────────────────────────────────────────── */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border: var(--edge) solid var(--ink);
+  border-radius: var(--radius-sm);
+  background: var(--cream);
+  box-shadow: 3px 3px 0 var(--ink);
+  font-family: var(--display);
+  font-weight: 800;
+  font-stretch: 108%;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  /* Presses travel along the shadow, so the button really moves. */
+  transition: transform 70ms ease, box-shadow 70ms ease, background-color 90ms ease;
+}
+
+.btn:hover:not(:disabled) { background: var(--sun); }
+
+.btn:active:not(:disabled) {
+  transform: translate(3px, 3px);
+  box-shadow: 0 0 0 var(--ink);
+}
+
+.btn:disabled { opacity: 0.4; cursor: not-allowed; box-shadow: none; }
+
+.btn--primary { background: var(--ink); color: var(--sun); }
+.btn--primary:hover:not(:disabled) { background: var(--ink-soft); }
+
+.btn--small { padding: 5px 9px; font-size: 10px; box-shadow: 2px 2px 0 var(--ink); }
+.btn--small:active:not(:disabled) { transform: translate(2px, 2px); }
+
+.btnrow { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* ── Toast ────────────────────────────────────────────────────────────────── */
+
+.toast {
+  position: absolute;
+  left: 50%;
+  bottom: 76px;
+  transform: translateX(-50%);
+  padding: 7px 14px;
+  border: var(--edge) solid var(--ink);
+  border-radius: var(--radius-sm);
+  background: var(--ink);
+  color: var(--sun);
+  box-shadow: var(--drop) var(--drop) 0 rgb(46 21 51 / 0.25);
+  font-family: var(--display);
+  font-weight: 800;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  pointer-events: none;
+  animation: toast-in 220ms cubic-bezier(0.2, 1.4, 0.4, 1);
+  z-index: 5;
+}
+
+@keyframes toast-in {
+  from { transform: translate(-50%, 10px); opacity: 0; }
+}
