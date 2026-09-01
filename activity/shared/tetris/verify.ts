@@ -20,6 +20,21 @@ export const MAX_FRAMES = FRAMES_PER_SECOND * 60 * 30;
 export const MAX_EVENTS = 20_000;
 
 /**
+ * How long the replay keeps ticking after the log goes quiet.
+ *
+ * Gravity is zero in a puzzle, so nothing moves on its own — once the inputs
+ * stop, the only thing still owed is the lock delay of the piece left sitting
+ * on the stack. Eight seconds is far past that (the longest gap measured
+ * between the last input and the final lock, across every archived solution at
+ * the slowest soft-drop setting, was under a second) and far short of the half
+ * hour the frame ceiling allows.
+ *
+ * It is a bound on wasted work, not on play: any frame carrying an event resets
+ * it, so a real run of any length is unaffected.
+ */
+const IDLE_FRAMES = 480;
+
+/**
  * Frame numbers come from the client and nothing ties them to a real clock, so
  * a submitted time is a claim, not a measurement. This is the floor under that
  * claim: the fastest human play tops out around six pieces a second, so a tenth
@@ -164,19 +179,31 @@ export function verifyRun(
 
   const firstInputFrame = events[0]?.frame ?? 0;
   let cursor = 0;
+  let lastProgressFrame = 0;
+  engine.events.on("falling.lock", () => {
+    lastProgressFrame = engine.frame;
+  });
 
   // Run until the puzzle's pieces are spent, not until the last key. A piece
   // seated with soft drop locks when its lock delay expires, which is after the
   // final input — stopping at the last event would score those runs as if the
-  // player had never placed anything. The frame ceiling is only the bound that
-  // keeps a hostile log from spinning; an empty one costs about 18ms.
+  // player had never placed anything.
+  //
+  // But a run that ends without spending its pieces — every skipped puzzle in a
+  // rush, and the one the buzzer cuts off — has no such end, and used to tick
+  // every one of MAX_FRAMES doing nothing: about 15ms of blocked event loop
+  // each, which a request full of them turns into a denial of service. So the
+  // loop also stops once the log is exhausted and nothing has locked for a
+  // while. See IDLE_FRAMES.
   while (engine.frame <= MAX_FRAMES && ledger.remaining > 0 && !spentBeyondThePuzzle) {
     const batch: InputEvent[] = [];
     while (cursor < events.length && events[cursor]!.frame === engine.frame) {
       batch.push(events[cursor]!);
       cursor++;
     }
+    if (batch.length > 0) lastProgressFrame = engine.frame;
     engine.tick(batch as never);
+    if (cursor >= events.length && engine.frame - lastProgressFrame > IDLE_FRAMES) break;
   }
 
   const lastPlacementFrame = placements[placements.length - 1]?.frame ?? firstInputFrame;

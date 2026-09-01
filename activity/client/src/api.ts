@@ -50,6 +50,46 @@ export interface SubmitResponse {
   readonly leaderboard: readonly StoredRun[];
 }
 
+/** One player's rush, as it appears on the board. */
+export interface RushRun {
+  readonly day: number;
+  readonly player: PlayerProfile;
+  readonly solved: number;
+  readonly attempted: number;
+  readonly skipsUsed: number;
+  readonly timeToLastSolveMs: number;
+  readonly elapsedMs: number;
+  readonly createdAt: number;
+}
+
+export interface RushState {
+  readonly day: number;
+  readonly resetsAt: number;
+  readonly durationMs: number;
+  readonly skips: number;
+  readonly run: RushRun | null;
+  readonly best: number;
+  readonly leaderboard: readonly RushRun[];
+}
+
+export interface RushStart {
+  /** Signed by the server; carries the instant the five minutes began. */
+  readonly ticket: string;
+  readonly ranked: boolean;
+  readonly day: number;
+  readonly durationMs: number;
+  readonly skips: number;
+  readonly puzzles: readonly PuzzlePrompt[];
+}
+
+export interface RushSubmitResponse {
+  readonly ranked: boolean;
+  readonly run: RushRun;
+  readonly isFirst: boolean;
+  readonly best: number;
+  readonly leaderboard: readonly RushRun[];
+}
+
 export interface ArchiveEntry {
   readonly id: number;
   readonly title: string;
@@ -131,6 +171,31 @@ export class Api {
 
   leaderboard(): Promise<{ day: number; entries: readonly StoredRun[] }> {
     return this.request("/api/daily/leaderboard");
+  }
+
+  rush(): Promise<RushState> {
+    return this.request("/api/rush");
+  }
+
+  startRush(practice: boolean): Promise<RushStart> {
+    return this.request("/api/rush/start", {
+      method: "POST",
+      body: JSON.stringify({ practice }),
+    });
+  }
+
+  submitRush(body: {
+    ticket: string;
+    handling: unknown;
+    segments: readonly { events: unknown }[];
+    timeToLastSolveMs: number;
+    skipsUsed: number;
+  }): Promise<RushSubmitResponse> {
+    return this.request("/api/rush/run", { method: "POST", body: JSON.stringify(body) });
+  }
+
+  rushLeaderboard(): Promise<{ day: number; entries: readonly RushRun[] }> {
+    return this.request("/api/rush/leaderboard");
   }
 
   archive(): Promise<{ puzzles: readonly ArchiveEntry[]; today: number }> {

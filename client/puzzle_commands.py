@@ -15,11 +15,12 @@ Environment (see example.env):
     PUZZLE_API      Base URL of the activity server, e.g.
                        https://puzzle.example.com
     PUZZLE_API_KEY  Shared secret matching the server's BOT_API_KEY.
-                       Only needed for /puzzle standings.
+                       Only needed for /puzzle standings and /puzzle rush.
 """
 
 import logging
 import os
+from collections.abc import Callable
 from urllib.parse import urlparse
 
 import aiohttp
@@ -48,6 +49,11 @@ GRADE_BANDS = (
 )
 
 STANDINGS_SHOWN = 10
+
+# Both boards are per guild, and both can be handed a reply they cannot read,
+# so the two sentences live in one place rather than drifting apart.
+SERVER_ONLY = "Standings are per server, so this only works in a server."
+UNEXPECTED_REPLY = "The puzzle server sent something unexpected. Try again later."
 
 
 def _app_id() -> str:
@@ -161,21 +167,47 @@ async def puzzle_play(interaction: discord.Interaction):
     await interaction.followup.send(f"Today's puzzle is up. {launch}", embed=embed)
 
 
-def _standings_lines(entries: list[dict]) -> list[str]:
-    """One line per player. Raises KeyError/TypeError on an unexpected shape."""
+def _standings_lines(entries: list[dict], detail: Callable[[dict], str]) -> list[str]:
+    """
+    One line per player, in the order the server sent them.
+
+    What follows the name is the only thing a daily board and a rush board
+    disagree about, so it arrives as `detail`. Raises KeyError/TypeError on an
+    unexpected shape, whether from here or from inside `detail`.
+    """
     lines = []
     for rank, entry in enumerate(entries[:STANDINGS_SHOWN], start=1):
         # Display names are player-chosen and embeds render masked links, so a
         # username like "[Free Nitro](https://…)" would become a live link.
         name = discord.utils.escape_markdown(entry["player"]["username"])
-        if entry["solved"]:
-            detail = _duration(entry["totalMs"])
-            if entry["resets"]:
-                detail += f" · {entry['resets']} restart{'s' if entry['resets'] != 1 else ''}"
-        else:
-            detail = f"unsolved · {entry['attack']}/{entry['targetAttack']}"
-        lines.append(f"`{rank:>2}` **{name}** — {detail}")
+        lines.append(f"`{rank:>2}` **{name}** — {detail(entry)}")
     return lines
+
+
+def _daily_detail(entry: dict) -> str:
+    """Time on the puzzle, or how close an unsolved attempt came."""
+    if not entry["solved"]:
+        return f"unsolved · {entry['attack']}/{entry['targetAttack']}"
+    detail = _duration(entry["totalMs"])
+    if entry["resets"]:
+        detail += f" · {entry['resets']} restart{'s' if entry['resets'] != 1 else ''}"
+    return detail
+
+
+def _rush_detail(entry: dict) -> str:
+    """
+    Solves lead, because that is what the rush ranks by; the time only tells
+    two players on the same count apart. A run with nothing solved has no such
+    time — the server sends zero — so it says what it did instead.
+    """
+    solved = entry["solved"]
+    if not solved:
+        return f"no solves · {entry['attempted']} attempted"
+    detail = (f"{solved} solve{'s' if solved != 1 else ''}"
+              f" · {_duration(entry['timeToLastSolveMs'])}")
+    if entry["skipsUsed"]:
+        detail += f" · {entry['skipsUsed']} skip{'s' if entry['skipsUsed'] != 1 else ''}"
+    return detail
 
 
 @puzzle_group.command(
@@ -188,9 +220,7 @@ async def puzzle_standings(interaction: discord.Interaction):
             _not_configured("PUZZLE_API_KEY"), ephemeral=True)
         return
     if interaction.guild_id is None:
-        await interaction.response.send_message(
-            "Standings are per server, so this only works in a server.",
-            ephemeral=True)
+        await interaction.response.send_message(SERVER_ONLY, ephemeral=True)
         return
 
     await interaction.response.defer(thinking=True)
@@ -204,7 +234,7 @@ async def puzzle_standings(interaction: discord.Interaction):
         return
     except (KeyError, TypeError) as exc:
         log.warning("puzzle /api/standings unusable: %s", exc)
-        await interaction.followup.send("The puzzle server sent something unexpected. Try again later.")
+        await interaction.followup.send(UNEXPECTED_REPLY)
         return
 
     if not entries:
@@ -214,14 +244,63 @@ async def puzzle_standings(interaction: discord.Interaction):
     # Built inside its own guard: the interaction is already deferred, so an
     # unexpected shape here would leave the user watching a spinner forever.
     try:
-        lines = _standings_lines(entries)
+        lines = _standings_lines(entries, _daily_detail)
     except (KeyError, TypeError) as exc:
         log.warning("puzzle standings entry unusable: %s", exc)
-        await interaction.followup.send("Puzzle sent something unexpected. Try again later.")
+        await interaction.followup.send(UNEXPECTED_REPLY)
         return
 
     embed = discord.Embed(
         title=f"Puzzle #{day} — leaderboard",
+        description="\n".join(lines),
+        colour=PUZZLE_COLOUR)
+    if len(entries) > STANDINGS_SHOWN:
+        embed.set_footer(text=f"and {len(entries) - STANDINGS_SHOWN} more")
+    await interaction.followup.send(embed=embed)
+
+
+@puzzle_group.command(
+    name="rush",
+    description="Today's five-minute puzzle rush board for this server.")
+async def puzzle_rush(interaction: discord.Interaction):
+    api_key = os.environ.get("PUZZLE_API_KEY", "").strip()
+    if not api_key:
+        await interaction.response.send_message(
+            _not_configured("PUZZLE_API_KEY"), ephemeral=True)
+        return
+    if interaction.guild_id is None:
+        await interaction.response.send_message(SERVER_ONLY, ephemeral=True)
+        return
+
+    await interaction.response.defer(thinking=True)
+    try:
+        data = await _get(f"/api/rush/standings?guild={interaction.guild_id}",
+                          api_key=api_key)
+        entries = data["entries"]
+        day = data["day"]
+    except PuzzleServerUnavailable as exc:
+        await interaction.followup.send(str(exc))
+        return
+    except (KeyError, TypeError) as exc:
+        log.warning("puzzle /api/rush/standings unusable: %s", exc)
+        await interaction.followup.send(UNEXPECTED_REPLY)
+        return
+
+    if not entries:
+        await interaction.followup.send(f"Nobody has run rush #{day} yet. Be first.")
+        return
+
+    # Built inside its own guard: the interaction is already deferred, so an
+    # unexpected shape here would leave the user watching a spinner forever.
+    try:
+        lines = _standings_lines(entries, _rush_detail)
+    except (KeyError, TypeError) as exc:
+        log.warning("puzzle rush entry unusable: %s", exc)
+        await interaction.followup.send(UNEXPECTED_REPLY)
+        return
+
+    embed = discord.Embed(
+        title=f"Puzzle rush #{day} — leaderboard",
         description="\n".join(lines),
         colour=PUZZLE_COLOUR)
     if len(entries) > STANDINGS_SHOWN:
@@ -248,17 +327,25 @@ async def puzzle_help(interaction: discord.Interaction):
                "it is recorded."),
         inline=False)
     embed.add_field(
+        name="Puzzle rush",
+        value=("Five minutes against one shared sequence that ramps in "
+               "difficulty, with two skips. A dead board just restarts the "
+               "same puzzle, so time is all it costs. One ranked rush each "
+               "day; practice rushes are unlimited and never recorded."),
+        inline=False)
+    embed.add_field(
         name="Controls",
         value=("Fully rebindable, with TETR.IO-style handling: DAS, ARR, DCD, "
                "SDF, safe lock, DAS cancel, and initial rotation/hold. Open "
                "**Settings** in the activity, or press Esc."),
         inline=False)
     embed.add_field(
-        name="Leaderboard",
+        name="Leaderboards",
         value=("`/puzzle standings` ranks today's solvers in this server by "
-               "total time on the puzzle. Times come from the player's own "
-               "client, so treat them as a friendly scoreboard, not a record "
-               "book."),
+               "total time on the puzzle, and `/puzzle rush` ranks today's "
+               "rushes by solves, then by who reached that count soonest. "
+               "Times come from the player's own client, so treat them as a "
+               "friendly scoreboard, not a record book."),
         inline=False)
     if app_id:
         embed.add_field(

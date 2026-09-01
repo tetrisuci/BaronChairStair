@@ -16,6 +16,7 @@ import {
   type BoardCell,
   type ClearName,
   decodeBoard,
+  meetsTarget,
   type Mino,
   pieceBudget,
   type PuzzlePrompt,
@@ -129,7 +130,7 @@ export class PuzzleRun {
       // A piece the ledger cannot account for is the engine's padding, not the
       // puzzle's. It never counts and it always ends the run.
       if (piece === null || piece === "G" || !this.ledger.spend(piece)) {
-        this.finish(this.attack >= this.puzzle.targetAttack ? "solved" : "failed");
+        this.finish(meetsTarget(this.attack, this.puzzle.targetAttack) ? "solved" : "failed");
         return;
       }
       this.piecesPlaced++;
@@ -184,6 +185,21 @@ export class PuzzleRun {
     this.engine.events.removeAllListeners();
   }
 
+  /** Whether the attempt is driving its own frame loop. */
+  get isRunning(): boolean {
+    return this.phase === "playing";
+  }
+
+  /**
+   * The log so far, mid-attempt.
+   *
+   * A rush needs this: a puzzle left behind by the buzzer or by a skip never
+   * reaches `onFinish`, but its inputs are still part of the submission.
+   */
+  log(): readonly InputEvent[] {
+    return this.events;
+  }
+
   // ── Input ──────────────────────────────────────────────────────────────────
 
   /**
@@ -201,7 +217,7 @@ export class PuzzleRun {
     // continuing to accept input would leave the player driving a board whose
     // moves the server will never see.
     if (this.events.length >= MAX_EVENTS) {
-      this.finish(this.attack >= this.puzzle.targetAttack ? "solved" : "failed");
+      this.finish(meetsTarget(this.attack, this.puzzle.targetAttack) ? "solved" : "failed");
       return;
     }
 
@@ -264,7 +280,7 @@ export class PuzzleRun {
   }
 
   private checkForEnd(): void {
-    if (this.attack >= this.puzzle.targetAttack) this.finish("solved");
+    if (meetsTarget(this.attack, this.puzzle.targetAttack)) this.finish("solved");
     else if (this.ledger.remaining === 0) this.finish("failed");
   }
 

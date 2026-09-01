@@ -272,3 +272,68 @@
 @keyframes toast-in {
   from { transform: translate(-50%, 10px); opacity: 0; }
 }
+
+/* ── Rush ─────────────────────────────────────────────────────────────────── */
+
+/*
+ * The clock is the whole mode, so it is sized like the thing you are actually
+ * watching rather than like another stat row.
+ */
+.rush__time {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  padding: 2px 0 6px;
+}
+
+.rush__clock {
+  font-family: var(--mono);
+  font-weight: 500;
+  font-size: 38px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+  transition: color 160ms ease;
+}
+
+/*
+ * The last half-minute. The colour does the work; nothing flashes, because a
+ * board that flashes while you are trying to read it is worse than no warning.
+ */
+.rush__clock--urgent { color: var(--warn); }
+
+.rush__pips { letter-spacing: 0.14em; }
+
+.rush__blurb {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ink-soft);
+}
+
+.rush__headline {
+  margin: 0;
+  font-family: var(--display);
+  font-weight: 900;
+  font-stretch: 118%;
+  font-size: clamp(22px, 3vw, 30px);
+  line-height: 1;
+  text-transform: uppercase;
+  letter-spacing: -0.01em;
+}
+
+/*
+ * A moment with no board: the rush intro, and the sign-off after it. One
+ * column down the middle rather than cards stranded in a rail beside an empty
+ * stage.
+ */
+.deck--screen { grid-template-columns: minmax(0, 1fr); }
+
+.screen {
+  display: grid;
+  gap: 14px;
+  align-content: start;
+  justify-self: center;
+  width: min(520px, 100%);
+  padding: 0 var(--drop) var(--drop) 0;
+}

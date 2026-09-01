@@ -80,14 +80,26 @@ function signingKey(): Promise<CryptoKey> {
   return cachedKey;
 }
 
-async function sign(payload: string): Promise<string> {
+/**
+ * Signs a payload within a named context.
+ *
+ * The context is mixed into what gets signed so a token minted for one purpose
+ * can never validate as another. Sessions and rush tickets are signed with the
+ * same key and both are `payload.signature`, so without this a rush ticket
+ * presented as a session token would pass the signature check and arrive at a
+ * route as a session with no player on it. Sessions keep the empty context they
+ * have always used, so tokens already in the wild stay valid.
+ */
+async function sign(payload: string, context = ""): Promise<string> {
   const signature = await crypto.subtle.sign(
     "HMAC",
     await signingKey(),
-    new TextEncoder().encode(payload),
+    new TextEncoder().encode(context ? `${context}.${payload}` : payload),
   );
   return base64url(signature);
 }
+
+const RUSH_CONTEXT = "rush.v1";
 
 /** Constant-time compare, so a bad secret leaks nothing about the good one. */
 export function equalStrings(a: string, b: string): boolean {
@@ -196,4 +208,68 @@ export async function verifyGuild(
     // A leaderboard scoped a little too broadly beats blocking the game.
     return null;
   }
+}
+
+
+// ── Rush tickets ─────────────────────────────────────────────────────────────
+
+/**
+ * A rush, as the server remembers it — which is to say, not at all.
+ *
+ * The five minutes have to be measured by a clock the player cannot touch, but
+ * keeping a table of open rushes would mean rows to expire, a write on every
+ * start, and a rush that dies when the process restarts. Instead the start
+ * instant is signed and handed to the client, which gives it back at the end:
+ * the server reads its own timestamp out of the ticket and subtracts. The
+ * signature is what makes that safe, and nothing is stored.
+ *
+ * `seed` travels in the ticket too, so a practice rush gets a sequence the
+ * client did not choose and cannot re-roll without starting the clock again.
+ */
+export interface RushTicket {
+  readonly playerId: string;
+  readonly guildId: string | null;
+  /** The day this rush is scored against, fixed at the moment it began. */
+  readonly day: number;
+  readonly seed: number;
+  /** Ranked rushes go on the leaderboard; practice ones are never recorded. */
+  readonly ranked: boolean;
+  readonly startedAt: number;
+}
+
+export async function mintRushTicket(ticket: RushTicket): Promise<string> {
+  const payload = base64url(new TextEncoder().encode(JSON.stringify(ticket)));
+  return `${payload}.${await sign(payload, RUSH_CONTEXT)}`;
+}
+
+export async function readRushTicket(token: unknown): Promise<RushTicket> {
+  if (typeof token !== "string" || token.length === 0) {
+    throw new AuthError("This rush has no ticket. Start it again.", 400);
+  }
+  const parts = token.split(".");
+  if (parts.length !== 2) throw new AuthError("Malformed rush ticket", 400);
+  const [payload, signature] = parts as [string, string];
+  if (!payload || !signature) throw new AuthError("Malformed rush ticket", 400);
+  if (!equalStrings(signature, await sign(payload, RUSH_CONTEXT))) {
+    throw new AuthError("Bad rush ticket signature", 400);
+  }
+
+  let ticket: RushTicket;
+  try {
+    ticket = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+  } catch {
+    throw new AuthError("Unreadable rush ticket", 400);
+  }
+  // A signature proves the server wrote it, not that it wrote something sane;
+  // a ticket from an older build could be missing any of this.
+  if (
+    typeof ticket.playerId !== "string" ||
+    !Number.isInteger(ticket.day) ||
+    !Number.isInteger(ticket.seed) ||
+    typeof ticket.ranked !== "boolean" ||
+    !Number.isFinite(ticket.startedAt)
+  ) {
+    throw new AuthError("Incomplete rush ticket", 400);
+  }
+  return ticket;
 }
