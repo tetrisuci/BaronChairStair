@@ -369,3 +369,10 @@ vite.config.ts.timestamp-*
 
 ecosystem.config.cjs
 *.db
+
+# Puzzle activity — the SQLite store is generated at runtime.
+activity/data/*.sqlite
+activity/data/*.sqlite-*
+
+# The raw puzzle archive export. Decoded output lives in activity/data/puzzles.json.
+tmp/
