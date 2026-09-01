@@ -1,0 +1,163 @@
+/*
+ * Design tokens.
+ *
+ * The palette and type are lifted from tetrisatuci.org so the activity reads as
+ * part of the club rather than a separate product: sun-yellow ground, plum ink,
+ * heavy Archivo display type, DM Mono for anything numeric.
+ *
+ * Two rules carry the whole look. Shadows are hard offsets, never blurs — the
+ * interface is made of stickers laid on paper, not of floating glass. And the
+ * corner radius is small and constant, enough to take the edge off without
+ * turning anything into a pill.
+ *
+ * Fonts are self-hosted: a Discord activity runs in a sandboxed iframe that
+ * cannot reach fonts.googleapis.com.
+ */
+
+@font-face {
+  font-family: "Archivo";
+  src: url("/fonts/archivo-var-latin.woff2") format("woff2-variations");
+  font-weight: 400 900;
+  font-stretch: 75% 125%;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "DM Mono";
+  src: url("/fonts/dm-mono-400-latin.woff2") format("woff2");
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "DM Mono";
+  src: url("/fonts/dm-mono-500-latin.woff2") format("woff2");
+  font-weight: 500;
+  font-display: swap;
+}
+
+:root {
+  /* Ground and paper */
+  --sun: #fcd750;
+  --cream: #fff6de;
+  --cream-shade: #f6ead0;
+  /** Playfield ruling, taken from the club's own board. */
+  --board-grid: #eadfcc;
+
+  /*
+   * Ink, in four weights. Anything carrying words stops at --ink-faint, which
+   * is the lightest that still clears WCAG AA on both the cream and the yellow
+   * (5.1:1 and 4.6:1). The two below it are for rules and hairlines only.
+   */
+  --ink: #2e1533;
+  --ink-soft: #6b4573;
+  --ink-faint: rgb(46 21 51 / 0.65);
+  --ink-line: rgb(46 21 51 / 0.16);
+  --ink-hair: rgb(46 21 51 / 0.09);
+
+  /* Piece colours, straight from the club's own set */
+  --mino-i: #2fa8b8;
+  --mino-j: #3669b8;
+  --mino-l: #da7c38;
+  --mino-o: #f6b642;
+  --mino-s: #7db441;
+  --mino-t: #b93ecc;
+  --mino-z: #c8402f;
+  /*
+   * Garbage is the one cell that must never read as a piece. No grey is
+   * luminance-distinct from all seven — they span the range — so the cue is
+   * chroma: keep it nearly neutral, with just enough plum to belong to the
+   * palette, and let the outline do the separating.
+   */
+  --mino-g: #8a8290;
+
+  /* The bright green is a fill; on cream it is far too pale to set text in. */
+  --good: #7db441;
+  --good-ink: #487017;
+  --warn: #c8402f;
+
+  /* Shape */
+  --radius: 6px;
+  --radius-sm: 4px;
+  --edge: 2px;
+  --drop: 4px;
+  --drop-lg: 6px;
+  --sheet-pad: 16px;
+  --gutter: 16px;
+
+  --display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --mono: "DM Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--sun);
+  color: var(--ink);
+  font-family: var(--display);
+  font-size: 14px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+/* Headings on the club's site are heavy, wide, and tightly tracked. */
+.display {
+  font-family: var(--display);
+  font-weight: 800;
+  font-stretch: 118%;
+  letter-spacing: -0.015em;
+  text-transform: uppercase;
+  line-height: 1;
+}
+
+/* Small captions are mono, wide-tracked, and quiet. */
+.label {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+.readout {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+:focus-visible {
+  outline: var(--edge) solid var(--ink);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

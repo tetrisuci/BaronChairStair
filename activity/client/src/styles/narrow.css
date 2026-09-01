@@ -1,0 +1,92 @@
+/*
+ * Narrow layouts.
+ *
+ * Loaded last so these overrides win without specificity tricks. Below the
+ * breakpoint the two rails unfold into strips above and below the board, and
+ * the board keeps a guaranteed minimum height — a puzzle you cannot see is not
+ * a puzzle.
+ */
+
+@media (max-width: 880px) {
+  :root {
+    --sheet-pad: 10px;
+    --gutter: 8px;
+    --drop: 3px;
+    --drop-lg: 4px;
+  }
+
+  /*
+   * Content wins over fit here. The strips take the height they need and the
+   * deck scrolls if the sum does not fit, rather than clipping a result card
+   * halfway through its share slip.
+   */
+  .deck {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(230px, 1fr) auto;
+    overflow-y: auto;
+    scrollbar-width: none;
+    padding-bottom: 2px;
+  }
+  .deck::-webkit-scrollbar { display: none; }
+
+  .stage { min-height: 230px; }
+
+  /*
+   * Panels wrap onto more lines rather than the rail becoming a scroller:
+   * `overflow-x: auto` forces the cross axis to clip too, which is what was
+   * cutting result cards off halfway.
+   */
+  .rail {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 8px;
+    overflow: visible;
+    /* The column layout allows the rail to shrink and scroll inside; wrapped
+       rows must not, or the grid row squashes a card down over its own text. */
+    min-height: auto;
+  }
+  .rail > * { flex: 1 1 190px; min-width: 132px; }
+  /* Hold holds one piece; it never needs an equal share. */
+  .rail > .panel:has(.bay) { flex: 0 0 auto; min-width: 92px; }
+
+  /* The next queue reads left-to-right when it is a strip. */
+  .queue {
+    flex-direction: row;
+    align-items: center;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+  }
+  .queue::-webkit-scrollbar { display: none; }
+  .queue { --glyph-cell: 8px; }
+  /* Adjacent same-colour pieces read as one long block without a divider. */
+  .queue__row {
+    grid-template-columns: minmax(0, 1fr);
+    justify-items: center;
+    gap: 3px;
+    padding: 3px 8px;
+    border-right: 1px dotted var(--ink-line);
+  }
+  .queue__row:last-child { border-right: none; }
+
+  .stat { padding: 1px 0; }
+  .stat__value { font-size: 12px; }
+
+  /* The badge has to sit inside a much smaller board. */
+  .verdict-badge { padding: 7px 14px 8px; border-width: 2px; }
+  .verdict-badge__text { font-size: clamp(15px, 4vw, 22px); }
+  .verdict-badge__note { font-size: 9px; }
+
+  .credits { padding: 7px 10px; gap: 6px 12px; }
+  .credits__by { display: none; }
+
+  .spec__col + .spec__col { border-left: none; border-top: 1px dotted var(--ink-line); }
+  .board-list { max-height: 130px; }
+}
+
+@media (max-width: 560px) {
+  .masthead__meta .tally:nth-child(n + 3) { display: none; }
+  .rail > * { min-width: 118px; }
+  .credits__title { font-size: 13px; }
+}

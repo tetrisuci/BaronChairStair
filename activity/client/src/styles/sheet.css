@@ -1,0 +1,208 @@
+/*
+ * The page frame: header, the three-column play area, and the footer strip.
+ *
+ * The ground is the club's yellow with a faint graph ruling — the same texture
+ * the site uses behind its hero. Everything that holds content is a cream card
+ * sitting on top of it with a hard plum shadow.
+ */
+
+.sheet {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 10px;
+  padding: var(--sheet-pad);
+  background:
+    linear-gradient(var(--ink-hair) 1px, transparent 1px) 0 0 / 100% 28px,
+    linear-gradient(90deg, var(--ink-hair) 1px, transparent 1px) 0 0 / 28px 100%,
+    var(--sun);
+}
+
+/* ── Header ───────────────────────────────────────────────────────────────── */
+
+.masthead {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.masthead__mark {
+  font-family: var(--display);
+  font-weight: 800;
+  font-stretch: 125%;
+  letter-spacing: -0.02em;
+  text-transform: uppercase;
+  font-size: clamp(20px, 2.6vw, 30px);
+  line-height: 1;
+}
+
+/* The club's own logo motif: a little stack of coloured blocks. */
+.blockmark {
+  display: grid;
+  grid-template-columns: repeat(2, 9px);
+  grid-template-rows: repeat(2, 9px);
+  gap: 2px;
+  flex: none;
+}
+.blockmark span {
+  border-radius: 1px;
+  border: 1px solid var(--ink);
+}
+
+.masthead__spacer { flex: 1 1 auto; }
+
+.masthead__meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+/* A count that reads at a glance: big mono number, small mono caption. */
+.tally {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  padding: 4px 9px;
+  border: var(--edge) solid var(--ink);
+  border-radius: var(--radius-sm);
+  background: var(--cream);
+  box-shadow: 3px 3px 0 var(--ink);
+}
+
+.tally__value {
+  font-family: var(--mono);
+  font-weight: 500;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+.tally__key {
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+/* ── Play area ────────────────────────────────────────────────────────────── */
+
+.deck {
+  display: grid;
+  grid-template-columns: minmax(160px, 214px) minmax(0, 1fr) minmax(158px, 214px);
+  align-items: stretch;
+  justify-content: center;
+  gap: var(--gutter);
+  width: min(100%, 1090px);
+  margin: 0 auto;
+  min-height: 0;
+}
+
+.rail {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+}
+
+.rail--right { overflow: hidden; }
+
+/*
+ * The board is positioned absolutely inside the stage. In normal flow its pixel
+ * size would feed back into the size of the box being measured to choose that
+ * size, and the board would creep on every resize.
+ */
+.stage {
+  position: relative;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.field {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+}
+
+/* ── Footer strip ─────────────────────────────────────────────────────────── */
+
+.credits {
+  display: flex;
+  align-items: center;
+  gap: 8px 18px;
+  flex-wrap: wrap;
+  padding: 9px 14px;
+  border: var(--edge) solid var(--ink);
+  border-radius: var(--radius);
+  background: var(--cream);
+  box-shadow: var(--drop) var(--drop) 0 var(--ink);
+}
+
+.credits__title {
+  font-family: var(--display);
+  font-weight: 800;
+  font-stretch: 112%;
+  font-size: 15px;
+  text-transform: uppercase;
+  letter-spacing: -0.01em;
+}
+
+.credits__by { color: var(--ink-soft); font-size: 12px; }
+
+.credits__spacer { flex: 1 1 auto; }
+
+.credits__countdown {
+  font-family: var(--mono);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--ink);
+  color: var(--sun);
+}
+
+/* Difficulty as a row of filled blocks, not a number nobody can calibrate. */
+.credits__pips { display: flex; }
+.pips { display: flex; align-items: center; gap: 3px; }
+.pips__dot {
+  width: 9px;
+  height: 9px;
+  border: 1px solid var(--ink);
+  border-radius: 1px;
+  background: transparent;
+}
+.pips__dot--on { background: var(--ink); }
+.pips__plus { font-family: var(--mono); font-size: 10px; margin-left: 2px; }
+
+/* ── Boot ─────────────────────────────────────────────────────────────────── */
+
+.boot {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 14px;
+}
+
+.boot__blocks { display: flex; gap: 4px; }
+.boot__blocks span {
+  width: 14px;
+  height: 14px;
+  border: var(--edge) solid var(--ink);
+  border-radius: 2px;
+  background: var(--cream);
+  animation: hop 900ms ease-in-out infinite;
+}
+.boot__blocks span:nth-child(2) { animation-delay: 110ms; }
+.boot__blocks span:nth-child(3) { animation-delay: 220ms; }
+.boot__blocks span:nth-child(4) { animation-delay: 330ms; }
+
+@keyframes hop {
+  0%, 60%, 100% { transform: translateY(0); }
+  30% { transform: translateY(-7px); }
+}

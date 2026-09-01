@@ -99,6 +99,7 @@ the Discord Developer Portal (Bot > Privileged Gateway Intents); without them
 login fails with PrivilegedIntentsRequired.
 """
 
+import logging
 import os
 import sys
 import asyncio
@@ -122,6 +123,9 @@ from build_snapshots import build_rounds
 from render import top_attack_bursts
 import presence_tracker
 from impostor_commands import impostor_group
+from puzzle_commands import puzzle_group
+
+log = logging.getLogger(__name__)
 
 ROOT = Path(__file__).parent.parent
 
@@ -419,9 +423,45 @@ async def yauna_cancer(ctx):
 
     await ctx.send("**Cancer Leaderboard**\n" + "\n".join(lines))
 
+# Discord creates this command itself when an application has Activities
+# enabled -- it is the entry the app launcher shows. discord.py has no concept
+# of it, so a plain tree.sync() leaves it out of the bulk payload, Discord reads
+# that as a request to delete it, and rejects the whole update (error 50240).
+ENTRY_POINT_COMMAND_TYPE = 4
+
+
+async def _sync_global_commands():
+    """
+    Bulk-sync global commands, preserving Discord's own Entry Point command.
+
+    Reaches into discord.py internals because 2.7.1 has no public way to do
+    this: `_get_all_commands`, `get_translated_payload` and `to_dict` have all
+    changed shape across the 2.x line (`to_dict` took no argument before 2.4),
+    so a dependency bump can break this. Written against **discord.py 2.7.1**.
+    """
+    tree = bot.tree
+    commands = tree._get_all_commands(guild=None)
+    translator = tree.translator
+    if translator:
+        payload = [await c.get_translated_payload(tree, translator) for c in commands]
+    else:
+        payload = [c.to_dict(tree) for c in commands]
+
+    existing = await bot.http.get_global_commands(bot.application_id)
+    payload = payload + [c for c in existing
+                         if c.get("type") == ENTRY_POINT_COMMAND_TYPE]
+    await bot.http.bulk_upsert_global_commands(bot.application_id, payload=payload)
+
+
 @bot.event
 async def on_ready():
-    await bot.tree.sync()
+    # on_ready fires on every reconnect, and global command writes are rate
+    # limited -- a failure here must not take down everything after it, which
+    # includes re-attaching the persistent digest button.
+    try:
+        await _sync_global_commands()
+    except Exception:
+        log.exception("command sync failed; commands may be stale until restart")
     if pconn is not None:
         # Re-attach the digest button so notices posted before a restart stay
         # clickable (registering twice across reconnects is harmless).
@@ -1389,6 +1429,7 @@ async def activity_now(interaction: discord.Interaction,
 
 bot.tree.add_command(activity)
 bot.tree.add_command(impostor_group)
+bot.tree.add_command(puzzle_group)
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
