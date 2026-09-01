@@ -1,10 +1,11 @@
 /*
- * Narrow layouts.
+ * Narrow and short layouts.
  *
  * Loaded last so these overrides win without specificity tricks. Below the
- * breakpoint the two rails unfold into strips above and below the board, and
- * the board keeps a guaranteed minimum height — a puzzle you cannot see is not
- * a puzzle.
+ * width breakpoint the two rails unfold into strips above and below the board;
+ * below the height one the three columns stay but the deck scrolls as a whole.
+ * Either way the board keeps a guaranteed minimum height — a puzzle you cannot
+ * see is not a puzzle.
  */
 
 @media (max-width: 880px) {
@@ -89,4 +90,40 @@
   .masthead__meta .tally:nth-child(n + 3) { display: none; }
   .rail > * { min-width: 118px; }
   .credits__title { font-size: 13px; }
+}
+
+/*
+ * Too short for even the smallest usable board.
+ *
+ * `.stage` has a floor, so past this point the deck cannot shrink any further
+ * and the board would simply be shaved off top and bottom. Scrolling the deck
+ * as one gives that height back. The rails hand in their own scrollers first —
+ * with the deck scrolling they would be three scroll areas nested inside a
+ * fourth, and the wheel would land in whichever one the pointer happened to be
+ * over.
+ *
+ * The threshold is the stage floor plus the masthead, the credits strip, and
+ * the padding and gaps between them; it is deliberately generous, because
+ * crossing it early costs a scrollbar and crossing it late costs the board.
+ */
+@media (max-height: 380px) {
+  .deck {
+    align-items: start;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: none;
+  }
+  .deck::-webkit-scrollbar { display: none; }
+
+  .rail {
+    overflow: visible;
+    min-height: auto;
+  }
+
+  /*
+   * With the deck scrolling, the rails sit at their natural height and nothing
+   * squeezes the queue any more — so its own cap has to come down, or the next
+   * panel alone is taller than the strip of deck you can see at once.
+   */
+  .queue { max-height: 40vh; }
 }
