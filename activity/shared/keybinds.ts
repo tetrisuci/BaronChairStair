@@ -12,7 +12,7 @@
 import type { GameKey } from "./tetris/verify";
 
 /** Actions the run itself handles, alongside the engine's own keys. */
-export type LocalAction = "reset" | "settings";
+export type LocalAction = "reset" | "settings" | "skip";
 
 export type BindableAction = GameKey | LocalAction;
 
@@ -28,6 +28,7 @@ export const ACTION_ORDER: readonly BindableAction[] = [
   "rotate180",
   "hold",
   "reset",
+  "skip",
   "settings",
 ];
 
@@ -41,6 +42,7 @@ export const ACTION_LABELS: Readonly<Record<BindableAction, string>> = {
   rotate180: "Flip 180",
   hold: "Hold",
   reset: "Restart",
+  skip: "Skip puzzle",
   settings: "Settings",
 };
 
@@ -54,6 +56,8 @@ export const DEFAULT_KEYBINDS: Keybinds = {
   rotate180: ["KeyA"],
   hold: ["KeyC", "ShiftLeft"],
   reset: ["KeyR"],
+  // Rush only; in the daily there is nothing to skip to.
+  skip: ["KeyS"],
   settings: ["Escape"],
 };
 
@@ -137,8 +141,15 @@ export function buildLookup(binds: Keybinds): ReadonlyMap<string, BindableAction
   return lookup;
 }
 
+/**
+ * Listed once rather than tested inline, so adding a local action cannot leave
+ * this behind — a game key that answers `false` here is routed to the engine,
+ * which does not have it, and the binding silently does nothing.
+ */
+const LOCAL_ACTIONS = new Set<string>(["reset", "skip", "settings"]);
+
 export function isLocalAction(action: BindableAction): action is LocalAction {
-  return action === "reset" || action === "settings";
+  return LOCAL_ACTIONS.has(action);
 }
 
 export function isGameKey(action: BindableAction): action is GameKey {

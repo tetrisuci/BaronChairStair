@@ -99,6 +99,18 @@ export function toPrompt(puzzle: Puzzle): PuzzlePrompt {
   return prompt;
 }
 
+/**
+ * Whether a run cleared the puzzle's bar.
+ *
+ * One definition, imported by the client that shows the verdict and the server
+ * that records it. Rush counts solves, so a rush and a daily disagreeing about
+ * whether the same replayed run counted would be a scoring bug, not a rounding
+ * one.
+ */
+export function meetsTarget(attack: number, targetAttack: number): boolean {
+  return attack >= targetAttack;
+}
+
 /** Total pieces a player may place — the queue, plus anything pre-held. */
 export function pieceBudget(puzzle: Pick<Puzzle, "queue" | "hold">): number {
   return puzzle.queue.length + (puzzle.hold ? 1 : 0);
