@@ -430,6 +430,8 @@ export class App {
   private readonly relayout = (): void => {
     const rows = BOARD_HEIGHT;
     const box = this.stage.getBoundingClientRect();
+    // The 200 matches `.stage { min-height }`; if it were larger the renderer
+    // would draw a board the stage then clipped.
     this.renderer.layout(Math.max(160, box.width), Math.max(200, box.height), rows);
     if (this.solutionPlayer) this.renderer.draw(this.solutionPlayer.view());
     else this.run?.renderOnce();

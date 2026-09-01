@@ -100,14 +100,26 @@
   min-height: 0;
 }
 
+/*
+ * A rail taller than the deck scrolls; it used to be cut off at whatever height
+ * the row happened to be, which on a short window sliced the progress panel and
+ * the whole result card in half with no way to reach the rest.
+ *
+ * The padding is the panels' own hard offset shadow. Asking for `overflow-y`
+ * forces the cross axis to `auto` as well, so without that room the shadow
+ * would be shaved off the side of every card in the rail.
+ */
 .rail {
   display: flex;
   flex-direction: column;
   gap: 12px;
   min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0 var(--drop) var(--drop) 0;
+  scrollbar-width: thin;
+  scrollbar-color: var(--ink-line) transparent;
 }
-
-.rail--right { overflow: hidden; }
 
 /*
  * The board is positioned absolutely inside the stage. In normal flow its pixel
@@ -116,7 +128,14 @@
  */
 .stage {
   position: relative;
-  min-height: 0;
+  /*
+   * The floor the renderer is given in `relayout`. Without it here the stage
+   * could measure smaller than the smallest board the renderer will draw, and
+   * the rows at the top and bottom were quietly clipped instead of the layout
+   * admitting it had run out of room. Below this the deck scrolls — see
+   * narrow.css.
+   */
+  min-height: 200px;
   min-width: 0;
   overflow: hidden;
 }
