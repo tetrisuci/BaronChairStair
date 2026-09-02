@@ -12,7 +12,7 @@
 import type { GameKey } from "./tetris/verify";
 
 /** Actions the run itself handles, alongside the engine's own keys. */
-export type LocalAction = "reset" | "settings" | "skip";
+export type LocalAction = "reset" | "settings" | "skip" | "undo" | "redo";
 
 export type BindableAction = GameKey | LocalAction;
 
@@ -27,6 +27,8 @@ export const ACTION_ORDER: readonly BindableAction[] = [
   "rotateCCW",
   "rotate180",
   "hold",
+  "undo",
+  "redo",
   "reset",
   "skip",
   "settings",
@@ -41,6 +43,8 @@ export const ACTION_LABELS: Readonly<Record<BindableAction, string>> = {
   rotateCCW: "Rotate left",
   rotate180: "Flip 180",
   hold: "Hold",
+  undo: "Undo placement",
+  redo: "Redo placement",
   reset: "Restart",
   skip: "Skip puzzle",
   settings: "Settings",
@@ -55,6 +59,9 @@ export const DEFAULT_KEYBINDS: Keybinds = {
   rotateCCW: ["KeyZ", "ControlLeft"],
   rotate180: ["KeyA"],
   hold: ["KeyC", "ShiftLeft"],
+  // Free keys next to each other; every letter the game already uses is taken.
+  undo: ["KeyU"],
+  redo: ["KeyY"],
   reset: ["KeyR"],
   // Rush only; in the daily there is nothing to skip to.
   skip: ["KeyS"],
@@ -146,7 +153,7 @@ export function buildLookup(binds: Keybinds): ReadonlyMap<string, BindableAction
  * this behind — a game key that answers `false` here is routed to the engine,
  * which does not have it, and the binding silently does nothing.
  */
-const LOCAL_ACTIONS = new Set<string>(["reset", "skip", "settings"]);
+const LOCAL_ACTIONS = new Set<string>(["reset", "skip", "settings", "undo", "redo"]);
 
 export function isLocalAction(action: BindableAction): action is LocalAction {
   return LOCAL_ACTIONS.has(action);
