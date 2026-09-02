@@ -47,53 +47,6 @@ Activity tracker (backed by presence_tracker.py; samples every 10 minutes):
 Both accept an optional guild_id to inspect any server the bot is in; the
 x-axis is labelled in Pacific time (PST/PDT).
 
-Tetris Impostor party game (backed by impostor.py, impostor_words.py,
-impostor_game.py, impostor_views.py, impostor_vote.py and
-impostor_commands.py).
-Everyone gets a word; the impostor gets a SIMILAR word from the same group
-("T-spin double" vs "T-spin triple") so they can bluff:
-    /impostor start [players] [delivery] [pack] [impostors] [category]
-                    [decoy] [blind] [guessing] [voting] [wordlist]
-                                           open a lobby, then Join / Deal.
-                                           players @mentions the roster up
-                                           front, skipping the Join step;
-                                           delivery defaults to an in-channel
-                                           "See my word" button (ephemeral,
-                                           needs no open DMs), delivery:dm
-                                           pushes a DM instead;
-                                           voting gives the crew a "Call a
-                                           vote" button — eject the impostor
-                                           to win, eject a crewmate to lose;
-                                           wordlist (on by default) posts the
-                                           board of possible words to the
-                                           channel — the same list the
-                                           impostor guesses from;
-                                           pack picks the category (tetris
-                                           terms, openers, players, ...);
-                                           decoy:false falls back to giving
-                                           the impostor no word at all;
-                                           blind:true does not tell them;
-                                           guessing:true (default) puts a
-                                           Guess button on the round message —
-                                           the impostor picks the crew's word
-                                           from a dropdown and wins outright
-                                           if right, loses if wrong
-    /impostor help [topic] [share]         rules, options, or word upkeep;
-                                           private unless share:true
-    /impostor myword                       re-read your own role privately
-    /impostor status                       who is in / is a round running
-    /impostor reveal                       end the round, show word + impostors
-    /impostor cancel                       scrap it without revealing
-    /impostor words list|add|remove|deletepack|import [scope]
-                                           maintain data/impostor_words.json.
-                                           scope:server (default) edits the
-                                           shared packs and needs Manage
-                                           Server; scope:mine makes a pack
-                                           tied to you that only you can
-                                           start a round with. Hand edits to
-                                           the JSON are picked up
-                                           automatically.
-
 Requires the privileged Server Members and Presence intents to be enabled in
 the Discord Developer Portal (Bot > Privileged Gateway Intents); without them
 login fails with PrivilegedIntentsRequired.
@@ -122,7 +75,6 @@ from teto_client import TetoClient, TetoError
 from build_snapshots import build_rounds
 from render import top_attack_bursts
 import presence_tracker
-from impostor_commands import impostor_group
 from puzzle_commands import puzzle_group
 
 log = logging.getLogger(__name__)
@@ -1428,7 +1380,6 @@ async def activity_now(interaction: discord.Interaction,
 
 
 bot.tree.add_command(activity)
-bot.tree.add_command(impostor_group)
 bot.tree.add_command(puzzle_group)
 
 
