@@ -81,18 +81,22 @@ function settleIntoView(engine: Engine): void {
  * keyed by piece type, so topping up can never hand out a piece the puzzle
  * does not owe.
  */
-function keepQueueStocked(engine: Engine): void {
+function restockQueue(engine: Engine): { spawnedFromPadding: boolean } {
+  // Read before refilling, and returned rather than offered as its own
+  // function, because refilling is exactly what destroys the evidence: a queue
+  // that has been topped up always looks stocked. These were two functions
+  // once, called in that order, and the padding check spent its whole life
+  // reading a queue that had just been refilled — so it answered "no" every
+  // time, the held piece was never dealt, and a puzzle whose last piece was in
+  // hold handed the player a filler instead and could not be finished.
+  const spawnedFromPadding = engine.queue.length < TRAILING_FILLER_PIECES;
   while (engine.queue.length < TRAILING_FILLER_PIECES) engine.queue.push(FILLER_PIECE);
+  return { spawnedFromPadding };
 }
 
 /** Real pieces still waiting in the queue, ignoring the padding behind them. */
 function queuedPieces(engine: Engine): number {
   return engine.queue.length - TRAILING_FILLER_PIECES;
-}
-
-/** Whether the piece that just spawned came from the padding, not the puzzle. */
-function spawnedFromPadding(engine: Engine): boolean {
-  return queuedPieces(engine) < 0;
 }
 
 /** The piece a hold would put in the player's hands right now. */
@@ -111,7 +115,7 @@ function pieceHoldWouldGive(engine: Engine): Letter | null {
  * their last piece from behind it.
  */
 function dealHeldPieceIfQueueIsSpent(engine: Engine, ledger: PieceLedger): void {
-  if (!spawnedFromPadding(engine) || engine.held === null) return;
+  if (engine.held === null) return;
   const held = toLetter(engine.held);
   if (held === null || held === "G" || !ledger.owes(held)) return;
   engine.hold(false, true);
@@ -216,11 +220,11 @@ export function createPuzzleEngine(setup: PuzzleSetup, handling: Handling): Puzz
   let dealing = false;
   engine.events.on("falling.new", () => {
     settleIntoView(engine);
-    keepQueueStocked(engine);
+    const { spawnedFromPadding } = restockQueue(engine);
     if (dealing) return;
     dealing = true;
     try {
-      dealHeldPieceIfQueueIsSpent(engine, ledger);
+      if (spawnedFromPadding) dealHeldPieceIfQueueIsSpent(engine, ledger);
       lockHoldWhenNothingToSwap(engine, ledger);
     } finally {
       dealing = false;
