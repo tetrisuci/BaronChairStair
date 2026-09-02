@@ -189,6 +189,32 @@ count clamped to what the replay actually left unsolved and to the budget, the
 time never less than the play the server replayed to reach it and never more
 than the run the server timed.
 
+## The daily recap
+
+`GET /api/recap?guild=<id>&day=<n>` gives the bot everything it needs to look
+back on one finished day in one server: which puzzle it was, that server's
+board, its rush board, and how many consecutive days somebody there has
+solved. Gated on `BOT_API_KEY`, like the other two bot routes.
+
+It is a separate route rather than a `?day=` on the boards because a recap
+wants three things about the same day at the same instant, and a board that
+answered only the first would leave the streak with no home. The day is
+bounded to a *finished* one — a whole number between 1 and yesterday. That is
+not defensive habit: SQLite binds `NaN`, `1.5` and `-5` without complaint and
+answers every one of them with no rows, which a recap would go on to post as
+"nobody played" on a day that people played. Today is refused along with the
+future, because the streak counts a gap as a break, which is only honest once
+the day is over.
+
+The streak here is deliberately stricter than a player's. `Store.streak`
+forgives a missing anchor day, since the player may simply not have played yet;
+a recap only ever asks about a day that is already over, so the same
+forgiveness would congratulate a server on a run it had just broken.
+
+The board it returns is capped at a hundred rather than the interactive
+twenty-five, and carries a `total`. Misses sort last, so the smaller cap would
+have quietly deleted exactly the people a recap exists to tease.
+
 **What that proves, and what it does not.** `data/puzzles.json` is committed to
 a public repository, and `GET /api/archive/:id` hands any signed-in player the
 solution to every puzzle except today's, so the answers to a rush sequence are

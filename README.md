@@ -27,7 +27,8 @@ BaronChairStair/
 │   ├── build_snapshots.py    replay JSON → per-round board snapshots
 │   ├── render.py             attack-burst highlight boards
 │   ├── presence_tracker.py   samples who is online, every 10 minutes
-│   └── puzzle_commands.py    the /puzzle group; talks to the activity server
+│   ├── puzzle_commands.py    the /puzzle group; talks to the activity server
+│   └── puzzle_recap.py       yesterday's results, replied to yesterday's post
 ├── activity/                 the Discord Activity (own README, own tests)
 ├── internship_poller.py      Greenhouse / Lever / Ashby / Workday poller
 ├── resolve_boards.py         careers URL → validated job-board endpoint
@@ -74,10 +75,16 @@ line up in Discord's proportional font.
 /puzzle help          what the daily is and how it is scored
 ```
 
-The bot owns none of the game. It reads three endpoints on the activity server
+The bot owns none of the game. It reads four endpoints on the activity server
 and formats what comes back, so the two can never disagree about a score.
 Needs `PUZZLE_APP_ID`, `PUZZLE_API` and `PUZZLE_API_KEY`; without them the
 commands still register and explain what is missing rather than failing shut.
+
+Once a day, after the puzzle turns over, the bot replies to that server's own
+`/puzzle play` message with how yesterday went — who solved it and how fast,
+who missed, and how long the server's run of solves is. It happens once per
+server per day, and only in servers that announced the puzzle in the first
+place, because the reply needs something to reply to.
 
 ### `/activity` — who is around
 

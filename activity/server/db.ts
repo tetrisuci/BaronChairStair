@@ -112,6 +112,11 @@ CREATE TABLE IF NOT EXISTS runs (
 
 CREATE INDEX IF NOT EXISTS runs_by_day    ON runs (day, guild_id);
 CREATE INDEX IF NOT EXISTS runs_by_player ON runs (player_id, day);
+-- A server's streak asks the opposite question to the two above — one guild
+-- across every day, rather than one day across every guild — and neither of
+-- them leads with guild_id, so without this it walks the table backwards and
+-- pays for every other server's history on the way.
+CREATE INDEX IF NOT EXISTS runs_by_guild  ON runs (guild_id, solved, day);
 
 CREATE TABLE IF NOT EXISTS rush_runs (
   day             INTEGER NOT NULL,
@@ -358,6 +363,66 @@ export class Store {
       }
     }
     return streak;
+  }
+
+  /**
+   * Consecutive days ending at `day` on which somebody in the server solved.
+   *
+   * Deliberately stricter than {@link streak}. That one forgives a missing
+   * anchor day, because the player may simply not have played yet today; a
+   * recap only ever asks about a day that is already over, so the same
+   * forgiveness would congratulate a server on a run it had just broken. Here
+   * a gap is a gap.
+   *
+   * `DISTINCT` because a day holds one row per member who played it. Without
+   * it the limit would bound rows rather than days, and three friends solving
+   * together would cost the streak two days of reach.
+   */
+  guildStreak(guildId: string, day: number): number {
+    const rows = this.db
+      .query<{ day: number }, [string, number]>(
+        `SELECT DISTINCT day FROM runs
+         WHERE guild_id = ?1 AND solved = 1 AND day <= ?2
+         ORDER BY day DESC LIMIT 400`,
+      )
+      .all(guildId, day);
+
+    let streak = 0;
+    let expected = day;
+    for (const row of rows) {
+      if (row.day !== expected) break;
+      streak++;
+      expected--;
+    }
+    return streak;
+  }
+
+  /**
+   * How many of a server's members filed a run for a day.
+   *
+   * A recap names everybody, but the board it reads is capped. This is what
+   * tells it that it is about to leave people out, rather than silently
+   * shortening the list.
+   */
+  dayCount(day: number, guildId: string): number {
+    return (
+      this.db
+        .query<{ n: number }, [number, string]>(
+          "SELECT COUNT(*) AS n FROM runs WHERE day = ?1 AND guild_id = ?2",
+        )
+        .get(day, guildId)?.n ?? 0
+    );
+  }
+
+  /** The same, for the rush board. */
+  rushDayCount(day: number, guildId: string): number {
+    return (
+      this.db
+        .query<{ n: number }, [number, string]>(
+          "SELECT COUNT(*) AS n FROM rush_runs WHERE day = ?1 AND guild_id = ?2",
+        )
+        .get(day, guildId)?.n ?? 0
+    );
   }
 
   /** How many players have solved a given day, across every server. */

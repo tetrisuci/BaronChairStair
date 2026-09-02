@@ -17,7 +17,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 // Type-only, so nothing under `server/` is loaded before `beforeAll` has set the
 // environment `config` reads once at import.
-import type { StoredRushRun } from "../server/db";
+import { Store, type StoredRushRun } from "../server/db";
 import {
   decodeBoard,
   ENGINE_ROWS,
@@ -533,5 +533,132 @@ describe("puzzle rush", () => {
     expect(body.durationMs).toBe(RUSH_DURATION_MS);
     expect(body.skips).toBe(RUSH_SKIPS);
     expect(body.entries.map((entry) => entry.player.id)).toContain("guest");
+  });
+});
+
+describe("the daily recap", () => {
+  // Which refusal a bot route gives depends on whether a key is live in this
+  // process, exactly as the rush board's own test explains.
+  const enabled = Boolean(process.env.BOT_API_KEY);
+  const key = { "X-Api-Key": process.env.BOT_API_KEY ?? "" };
+  const recap = (query: string, headers: Record<string, string> = key) =>
+    Promise.resolve(fetchApp(new Request(`${BASE}/api/recap?${query}`, { headers })));
+
+  test("is gated on the bot key, not a session", async () => {
+    const wrongKey = await recap("guild=g1&day=1", { "X-Api-Key": "wrong" });
+    expect(wrongKey.status).toBe(enabled ? 401 : 404);
+    const noKey = await recap("guild=g1&day=1", {});
+    expect(noKey.status).toBe(enabled ? 401 : 404);
+  });
+
+  test.skipIf(!enabled)("refuses a day that is not a finished one", async () => {
+    // SQLite binds every one of these without complaint and answers with no
+    // rows, which a recap would go on to post as "nobody played" on a day
+    // people played. Today is refused too: the streak counts a gap as a break,
+    // which is only honest once the day is over.
+    const today = Number(
+      ((await (await get("/api/today")).json()) as { day: number }).day,
+    );
+    for (const day of ["0", "-5", "1.5", "12abc", "yesterday", "1e21", "", String(today)]) {
+      const response = await recap(`guild=g1&day=${day}`);
+      expect(response.status).toBe(400);
+    }
+    const ok = await recap(`guild=g1&day=${today - 1}`);
+    expect(ok.status).toBe(200);
+  });
+
+  test.skipIf(!enabled)("will not answer without a server to answer about", async () => {
+    // `leaderboard` reads a falsy guild as "every server at once", so a dropped
+    // parameter would put strangers into one server's recap.
+    const today = Number(
+      ((await (await get("/api/today")).json()) as { day: number }).day,
+    );
+    const response = await recap(`day=${today - 1}`);
+    expect(response.status).toBe(400);
+    expect(await errorOf(response)).toContain("guild is required");
+  });
+
+  test.skipIf(!enabled)("names the puzzle, the streak and both boards", async () => {
+    const today = Number(
+      ((await (await get("/api/today")).json()) as { day: number }).day,
+    );
+    const body = (await (await recap(`guild=g1&day=${today - 1}`)).json()) as {
+      day: number;
+      puzzle: { id: number; title: string };
+      streak: number;
+      daily: { entries: unknown[]; total: number };
+      rush: { entries: unknown[]; total: number };
+    };
+    expect(body.day).toBe(today - 1);
+    expect(Number.isInteger(body.puzzle.id)).toBe(true);
+    expect(body.streak).toBeGreaterThanOrEqual(0);
+    expect(Array.isArray(body.daily.entries)).toBe(true);
+    expect(Array.isArray(body.rush.entries)).toBe(true);
+    // No solution or board anywhere in it — the bot never needs the answer.
+    expect(JSON.stringify(body)).not.toContain("solution");
+  });
+});
+
+describe("Store.guildStreak", () => {
+  const path = join(tmpdir(), `puzzle-streak-${process.pid}.sqlite`);
+  const solve = (store: Store, day: number, playerId: string, guildId: string, solved = true) =>
+    store.recordRun(day, 1, { id: playerId, username: playerId, avatarUrl: null }, guildId, {
+      solved, attack: solved ? 10 : 1, targetAttack: 10, durationMs: 1000,
+      totalMs: 1000, resets: 0, piecesPlaced: 3, clears: [],
+    });
+
+  test("counts consecutive days and stops at the first gap", () => {
+    const store = new Store(path);
+    try {
+      for (const day of [10, 9, 8, 6, 5]) solve(store, day, "p1", "g1");
+      expect(store.guildStreak("g1", 10)).toBe(3);
+      // Unlike a player's streak, a missing anchor day is a break rather than
+      // a not-played-yet: a finished day that nobody solved ends the run.
+      expect(store.guildStreak("g1", 11)).toBe(0);
+    } finally {
+      store.close();
+      for (const suffix of ["", "-wal", "-shm"]) rmSync(path + suffix, { force: true });
+    }
+  });
+
+  test("a day counts once however many people solved it", () => {
+    const store = new Store(path);
+    try {
+      for (const player of ["a", "b", "c"]) solve(store, 20, player, "g2");
+      solve(store, 19, "a", "g2");
+      // Without DISTINCT the row limit would bound rows rather than days.
+      expect(store.guildStreak("g2", 20)).toBe(2);
+      expect(store.dayCount(20, "g2")).toBe(3);
+    } finally {
+      store.close();
+      for (const suffix of ["", "-wal", "-shm"]) rmSync(path + suffix, { force: true });
+    }
+  });
+
+  test("an unsolved day breaks the streak even though it was played", () => {
+    const store = new Store(path);
+    try {
+      solve(store, 31, "a", "g3");
+      solve(store, 30, "a", "g3", false);
+      solve(store, 29, "a", "g3");
+      expect(store.guildStreak("g3", 31)).toBe(1);
+      expect(store.dayCount(30, "g3")).toBe(1);
+    } finally {
+      store.close();
+      for (const suffix of ["", "-wal", "-shm"]) rmSync(path + suffix, { force: true });
+    }
+  });
+
+  test("one server's days never count towards another's", () => {
+    const store = new Store(path);
+    try {
+      solve(store, 40, "a", "gA");
+      solve(store, 39, "a", "gB");
+      expect(store.guildStreak("gA", 40)).toBe(1);
+      expect(store.guildStreak("gB", 40)).toBe(0);
+    } finally {
+      store.close();
+      for (const suffix of ["", "-wal", "-shm"]) rmSync(path + suffix, { force: true });
+    }
   });
 });

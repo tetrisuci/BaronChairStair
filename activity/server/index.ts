@@ -42,6 +42,15 @@ import { callerKey, limitBodySize, MAX_BODY_BYTES, rateLimit } from "./limits";
 import { PuzzleArchive } from "./puzzles";
 
 const LEADERBOARD_SIZE = 25;
+/**
+ * How many players a recap will name.
+ *
+ * The interactive boards show a top 25, which is the right size for a board.
+ * A recap names everybody who played, and misses sort last — so the board's
+ * own limit would quietly delete exactly the group the recap exists to tease.
+ * `total` on the response says when even this was not enough.
+ */
+const RECAP_SIZE = 100;
 const MINUTE = 60_000;
 /** A day of it: anything longer is a broken clock, not a long think. */
 const MAX_TOTAL_MS = 24 * 60 * MINUTE;
@@ -262,6 +271,71 @@ app.get("/api/standings", (c) => {
   const day = archive.currentDay();
   const guildId = c.req.query("guild") ?? null;
   return c.json({ day, entries: store.leaderboard(day, guildId, LEADERBOARD_SIZE) });
+});
+
+/**
+ * A finished day, named by the caller.
+ *
+ * Bounded rather than passed through. SQLite binds NaN, a fraction and a
+ * negative without complaint and answers every one of them with no rows, which
+ * a recap would go on to post as "nobody played" for a day that people played.
+ * `Number` rather than `Number.parseInt` for the same reason the bounds exist:
+ * parseInt reads "12abc" as 12 and would answer confidently about the wrong
+ * day.
+ *
+ * Today is refused along with the future, because the streak below counts a
+ * gap as a break — which is only honest once the day is over.
+ *
+ * @throws {HTTPException} 400 if the day is missing, malformed or unfinished.
+ */
+function finishedDay(c: Context<{ Variables: Variables }>): number {
+  const latest = archive.currentDay() - 1;
+  const day = Number(c.req.query("day"));
+  if (!Number.isInteger(day) || day < 1 || day > latest) {
+    throw new HTTPException(400, {
+      message: `day must be a whole number between 1 and ${latest}`,
+    });
+  }
+  return day;
+}
+
+/**
+ * Everything one server needs to look back on a finished day.
+ *
+ * A single route rather than a `?day=` on the boards, because a recap wants
+ * three things about the same day at the same instant — who played, how long
+ * the server's run of solves is, and which puzzle it even was — and a board
+ * that answered only the first would leave the streak with no home.
+ */
+app.get("/api/recap", (c) => {
+  requireBotKey(c);
+  const day = finishedDay(c);
+  const guildId = c.req.query("guild") ?? "";
+  // `leaderboard` treats a falsy guild as "every server at once", so a dropped
+  // parameter would put strangers into one server's recap.
+  if (!guildId) throw new HTTPException(400, { message: "guild is required" });
+
+  const { puzzle } = archive.forDay(day);
+  return c.json({
+    day,
+    puzzle: {
+      id: puzzle.id,
+      title: puzzle.title,
+      author: puzzle.author,
+      goal: puzzle.goal,
+      targetAttack: puzzle.targetAttack,
+    },
+    streak: store.guildStreak(guildId, day),
+    daily: {
+      entries: store.leaderboard(day, guildId, RECAP_SIZE),
+      total: store.dayCount(day, guildId),
+    },
+    rush: {
+      entries: store.rushLeaderboard(day, guildId, RECAP_SIZE),
+      total: store.rushDayCount(day, guildId),
+      durationMs: RUSH_DURATION_MS,
+    },
+  });
 });
 
 /** The rush board for the bot, same gate as the daily one. */
