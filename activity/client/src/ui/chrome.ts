@@ -4,7 +4,7 @@
  * The header carries the club's block mark and the two numbers a daily game
  * lives on — streak and total solved. The strip underneath credits whoever
  * drew the puzzle, which the archive records and which is half the fun of
- * playing a club's own puzzles.
+ * playing a club's own puzzles — and, in its far corner, Petr.
  */
 
 import type { PuzzlePrompt } from "@shared/puzzle";
@@ -28,6 +28,22 @@ function blockMark(): HTMLElement {
     { class: "blockmark", attrs: { "aria-hidden": "true" } },
     ...colours.map((colour) => el("span", { style: { background: colour } })),
   );
+}
+
+/**
+ * Petr, the Tetris at UCI mascot, tucked into the far corner of the strip.
+ *
+ * Last child of the footer rather than pinned to the viewport: the corner of
+ * the screen is already the countdown's, and a fixed image would sit on top of
+ * it. Riding the end of the row puts him in the same corner without taking
+ * anything, and he is short enough not to set the strip's height.
+ */
+function petrEgg(): HTMLElement {
+  return el("img", {
+    class: "credits__petr",
+    title: "Petr",
+    attrs: { src: "/petr.png", alt: "", "aria-hidden": "true", decoding: "async" },
+  });
 }
 
 function tally(key: string): { element: HTMLElement; value: HTMLElement } {
@@ -126,6 +142,7 @@ export function createCredits(): Credits {
     el("span", { class: "credits__spacer" }),
     el("span", { class: "label", text: "next puzzle in" }),
     countdown,
+    petrEgg(),
   );
 
   return {
