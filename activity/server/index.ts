@@ -44,7 +44,7 @@ import {
   type SocketData,
   duelSocket,
   openDuelSocket,
-  sweepLobbies,
+  sweepDuels,
   useArchive,
 } from "./duel";
 
@@ -732,8 +732,9 @@ console.log(
 );
 
 useArchive(archive.puzzles);
-// Lobbies nobody joins would otherwise sit in memory until the process ends.
-setInterval(() => sweepLobbies(), 60_000).unref?.();
+// A lobby nobody joins, and a finished match nobody plays again, would
+// otherwise sit in memory until the process ends.
+setInterval(() => sweepDuels(), 60_000).unref?.();
 
 const DUEL_PATH = "/api/duel";
 

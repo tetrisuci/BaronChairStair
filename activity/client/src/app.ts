@@ -389,6 +389,9 @@ export class App {
           // A room of its own, rather than the create form with its middle
           // hidden: setting a match up and waiting in one are different moments.
           if (duel.phase === "lobby") this.showDuelLobby(duel);
+          // A finished duel keeps sending these while a rematch is on the
+          // table, which is how each side learns the other has asked.
+          else if (duel.phase === "over") this.showRematchState(duel);
         },
         onRound: (_round, puzzle, endsAt, duel) => this.beginDuelRound(puzzle, endsAt, duel),
         onRushPuzzle: (puzzle, endsAt, _solved, _skips, duel) => {
@@ -456,6 +459,28 @@ export class App {
     this.showScreen({ wide: true, fill: true }, this.duelLobby.element);
   }
 
+  /**
+   * Who has asked to go again.
+   *
+   * `rematchEndsAt` is the only thing that retires the button on time: the
+   * sweep that drops a finished duel runs on its own interval and reports
+   * later than the offer actually lapses.
+   */
+  private showRematchState(duel: import("@shared/duel").DuelView): void {
+    const self = this.duel?.playerId ?? "";
+    const mine = duel.players.find((player) => player.id === self);
+    const other = duel.players.find((player) => player.id !== self);
+    const open =
+      duel.rematchEndsAt !== null &&
+      Date.now() < duel.rematchEndsAt &&
+      other?.connected === true;
+    this.duelResult.setRematch(
+      mine?.wantsRematch === true,
+      other?.wantsRematch === true,
+      open,
+    );
+  }
+
   /** The result, with the score both players can read and a way to go again. */
   private endDuel(winnerId: string | null, duel: import("@shared/duel").DuelView): void {
     this.duelState = duel;
@@ -465,8 +490,7 @@ export class App {
     const self = this.duel?.playerId ?? "";
     this.badge.hide();
     this.duelResult.update(duel, self, winnerId);
-    const opponent = duel.players.find((player) => player.id !== self);
-    this.duelResult.setRematch(false, false, opponent?.connected === true);
+    this.showRematchState(duel);
     this.showScreen({ wide: true, fill: true }, this.duelResult.element);
   }
 
