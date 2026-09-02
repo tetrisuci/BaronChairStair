@@ -99,9 +99,16 @@ export class InputRouter {
 
   private readonly heldKeys = new Set<GameKey>();
 
+  /**
+   * What each physical key fired on the way down. The release consults this
+   * rather than the bindings, which by then may resolve to something else.
+   */
+  private readonly downActions = new Map<string, GameKey>();
+
   private readonly releaseAll = (): void => {
     for (const key of this.heldKeys) this.handlers.onGameKey(key, false);
     this.heldKeys.clear();
+    this.downActions.clear();
   };
 
   /**
@@ -141,13 +148,17 @@ export class InputRouter {
     }
     if (InputRouter.isTyping(event)) return;
 
-    const action = this.lookup.get(chordOf(event));
+    // The chord first, or Ctrl+Z would rotate on its way into an undo. The bare
+    // code behind it, or every unchorded binding would go dead for as long as
+    // any modifier is physically down — including the shift that holds a piece.
+    const action = this.lookup.get(chordOf(event)) ?? this.lookup.get(event.code);
     if (!action) return;
     if (SWALLOWED_CODES.has(event.code)) event.preventDefault();
     if (event.repeat) return;
 
     if (isGameKey(action)) {
       if (!this.enabled) return;
+      this.downActions.set(event.code, action);
       this.heldKeys.add(action);
       this.handlers.onGameKey(action, true);
     } else {
@@ -166,11 +177,15 @@ export class InputRouter {
       }
       return;
     }
-    // Released against the bare key, not the chord: a modifier let go first
-    // would otherwise strand the key down forever.
-    const action = this.lookup.get(event.code) ?? this.lookup.get(chordOf(event));
-    if (!action || !isGameKey(action)) return;
+    // Swallowed whether or not anything was held, since the key the game owns
+    // is the same key either way — space still must not press a focused button.
     if (SWALLOWED_CODES.has(event.code)) event.preventDefault();
+    // Released by the physical key that pressed it. The binding cannot be
+    // resolved a second time here: the modifier may already be up, and the bare
+    // code may belong to a different action than the chord that fired.
+    const action = this.downActions.get(event.code);
+    if (!action) return;
+    this.downActions.delete(event.code);
     if (!this.heldKeys.delete(action)) return;
     this.handlers.onGameKey(action, false);
   };

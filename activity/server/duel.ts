@@ -49,18 +49,19 @@ import {
   DUEL_REMATCH_TTL_MS,
   type DuelCommand,
   type DuelEvent,
-  type DuelProgress,
   type DuelSettings,
   type DuelView,
   type RoundEnd,
+  claimFrameCeiling,
   roundsToWin,
   rushDuelLength,
+  sanitizeProgress,
   sanitizeSettings,
 } from "../shared/duel";
 import { decodeBoard, ENGINE_ROWS, meetsTarget, type Puzzle, toPrompt } from "../shared/puzzle";
 import { isRushEligible, RUSH_SKIPS, rushSequence } from "../shared/rush";
 import { type Handling, sanitizeHandling } from "../shared/tetris/handling";
-import { InvalidRunError, parseInputLog, verifyRun } from "../shared/tetris/verify";
+import { type InputEvent, InvalidRunError, parseInputLog, verifyRun } from "../shared/tetris/verify";
 
 /** Frames larger than this never reach a handler. */
 export const MAX_FRAME_BYTES = 64 * 1024;
@@ -76,6 +77,18 @@ export const IDLE_TIMEOUT_S = 10;
 const RATE_LIMIT = 120;
 const RATE_WINDOW_MS = 10_000;
 
+/**
+ * Claims one socket may send inside the same window.
+ *
+ * A budget of its own because a claim is the only frame that costs a replay,
+ * and the message allowance is sized for chatter — `progress` alone is two or
+ * three a second. Honest play sends about one claim per puzzle attempt, so even
+ * a rush player solving one puzzle a second stays an order of magnitude under
+ * this; a client that does not is buying replays, and buys them one error frame
+ * at a time instead.
+ */
+export const CLAIM_LIMIT = 12;
+
 /** Lobbies one player may have open at once. */
 const MAX_OPEN_PER_PLAYER = 3;
 
@@ -87,8 +100,6 @@ interface Seat {
   socket: ServerWebSocket<SocketData> | null;
   /** Rounds won in a puzzle duel, puzzles solved in a rush. */
   score: number;
-  /** Progress as last reported. Cosmetic; never trusted for anything. */
-  progress: DuelProgress | null;
   /**
    * The handling this seat is judged under, agreed when they sat down.
    *
@@ -115,7 +126,6 @@ function takeSeat(
     player,
     socket,
     score: 0,
-    progress: null,
     handling,
     position: 0,
     skipsLeft: 0,
@@ -144,6 +154,14 @@ interface Duel {
   round: Round | null;
   /** Set for a rush only; a puzzle duel has no shared stack. */
   rush: RushMatch | null;
+  /**
+   * Puzzle ids this duel has already dealt, so no round is played twice.
+   *
+   * Kept for the whole life of the duel, rematches included: a puzzle both
+   * players have already solved is not a round, it is a typing race, and it is
+   * also the one case in which a log banked on an earlier round would verify.
+   */
+  readonly dealt: Set<number>;
   roundsPlayed: number;
   /**
    * When the match ended, if it ended with a rematch still worth offering.
@@ -161,6 +179,8 @@ export interface SocketData {
   /** Fixed-window message counter; see {@link RATE_LIMIT}. */
   windowStartedAt: number;
   windowCount: number;
+  /** Claims sent in that same window; see {@link CLAIM_LIMIT}. */
+  claimCount: number;
 }
 
 const duels = new Map<string, Duel>();
@@ -230,21 +250,35 @@ function openLobbies(session: Session): DuelView[] {
 
 // ── Rounds ───────────────────────────────────────────────────────────────────
 
-function pickPuzzle(): Puzzle {
+function pickPuzzle(duel: Duel): Puzzle {
   // Chosen here, and the prompt travels in the round message, so there is no
   // seed a client could derive the coming puzzles from ahead of time.
-  return puzzlePool[Math.floor(Math.random() * puzzlePool.length)]!;
+  //
+  // Drawn from what this duel has not dealt yet. The archive is far larger than
+  // any match, so the fallback is for a pool trimmed down to nothing rather
+  // than for a long duel.
+  const fresh = puzzlePool.filter((puzzle) => !duel.dealt.has(puzzle.id));
+  const pool = fresh.length > 0 ? fresh : puzzlePool;
+  return pool[Math.floor(Math.random() * pool.length)]!;
 }
 
 function startRound(duel: Duel): void {
-  const puzzle = pickPuzzle();
+  const puzzle = pickPuzzle(duel);
+  duel.dealt.add(puzzle.id);
   const endsAt = Date.now() + duel.settings.durationMs;
   const round: Round = { index: duel.roundsPlayed + 1, puzzle, endsAt, timer: null, winnerId: null };
   duel.round = round;
   duel.phase = "playing";
-  for (const seat of duel.seats) seat.progress = null;
 
-  round.timer = setTimeout(() => endRound(duel, null, "expired"), duel.settings.durationMs);
+  // The round outlives its own deadline by the grace, which is the only way the
+  // grace can admit anything: ending it on the buzzer tears the round down
+  // before a claim one hop late can be read against it, and hands that claim to
+  // whatever round has replaced it. `endsAt` is untouched, so both ends still
+  // count down to the buzzer and a claim past `endsAt + grace` is still refused.
+  round.timer = setTimeout(
+    () => endRound(duel, null, "expired"),
+    duel.settings.durationMs + DUEL_CLAIM_GRACE_MS,
+  );
   broadcast(duel, {
     type: "round",
     round: round.index,
@@ -330,6 +364,27 @@ function dropRematch(duel: Duel): void {
 }
 
 /**
+ * Refuses a log that reaches further than the clock it was played against.
+ *
+ * The replay is what a claim costs, and what it costs is set by the last
+ * event's frame: nothing locks on its own in a puzzle, so one event parked at
+ * the far end makes the engine tick every frame up to it — tens of milliseconds
+ * of a loop that serves everything else, for a frame small enough to send
+ * hundreds of. So the cheap impossibility is checked first, the way
+ * `parseRushSegments` checks it on the HTTP rush path.
+ *
+ * An honest log cannot trip it. The client builds a fresh engine for every
+ * puzzle and every restart, so its frame counter starts at zero each round and
+ * cannot outrun the round's own wall clock.
+ */
+function checkReach(events: readonly InputEvent[], durationMs: number): void {
+  const last = events[events.length - 1];
+  if (last && last.frame > claimFrameCeiling(durationMs)) {
+    throw new InvalidRunError("That log is longer than the round");
+  }
+}
+
+/**
  * Reads a claim and, if it really solves the round, awards it.
  *
  * Nothing in here may await. `verifyRun` is synchronous, so this runs inside
@@ -338,7 +393,7 @@ function dropRematch(duel: Duel): void {
  * player can be held to. An `await` between reading `round.winnerId` and
  * setting it lets both through, and no test or type will notice.
  */
-function awardClaim(duel: Duel, playerId: string, rawEvents: unknown): void {
+function awardClaim(duel: Duel, playerId: string, position: number, rawEvents: unknown): void {
   const round = duel.round;
   if (!round || round.winnerId !== null) return;
   // Judged under the handling this player sat down with. Replaying a tuned
@@ -346,10 +401,13 @@ function awardClaim(duel: Duel, playerId: string, rawEvents: unknown): void {
   // who can never win a round rather than a player who was beaten.
   const seat = seatOf(duel, playerId);
   if (!seat) return;
+  if (position !== round.index) throw new InvalidRunError("That log was played on another puzzle");
   // Admitted late, never reordered: the check above means a claim inside the
   // grace can never take a round the opponent has already won.
   if (Date.now() > round.endsAt + DUEL_CLAIM_GRACE_MS) return;
 
+  const events = parseInputLog(rawEvents);
+  checkReach(events, duel.settings.durationMs);
   const verified = verifyRun(
     {
       board: decodeBoard(round.puzzle.board, ENGINE_ROWS),
@@ -357,7 +415,7 @@ function awardClaim(duel: Duel, playerId: string, rawEvents: unknown): void {
       hold: round.puzzle.hold,
     },
     seat.handling,
-    parseInputLog(rawEvents),
+    events,
   );
   if (!meetsTarget(verified.attack, round.puzzle.targetAttack)) {
     throw new InvalidRunError("That log does not solve this round");
@@ -396,12 +454,13 @@ function startRushMatch(duel: Duel): void {
   duel.rush = rush;
   duel.phase = "playing";
   for (const seat of duel.seats) {
-    seat.progress = null;
     seat.position = 0;
     seat.skipsLeft = RUSH_SKIPS;
   }
 
-  rush.timer = setTimeout(() => endRushMatch(duel), duel.settings.durationMs);
+  // Ended a grace after the buzzer, for the reason a round outlives its own:
+  // a solve made in time but read a hop late has to still find a match here.
+  rush.timer = setTimeout(() => endRushMatch(duel), duel.settings.durationMs + DUEL_CLAIM_GRACE_MS);
   // Sent one seat at a time, not broadcast: from the second solve onwards the
   // two are on different puzzles, and this is the message that says which.
   for (const seat of duel.seats) sendRushPuzzle(duel, seat);
@@ -411,6 +470,10 @@ function startRushMatch(duel: Duel): void {
 function sendRushPuzzle(duel: Duel, seat: Seat): void {
   const rush = duel.rush;
   if (!rush) return;
+  // Nothing new after the buzzer. The match is kept alive for the grace so a
+  // last solve can be read, not so the stack can creep forward once the clock
+  // the player is watching has run out.
+  if (Date.now() > rush.endsAt) return;
   const puzzle = rush.sequence[seat.position];
   send(seat.socket, {
     type: "rush",
@@ -427,7 +490,6 @@ function sendRushPuzzle(duel: Duel, seat: Seat): void {
 
 function advanceRush(duel: Duel, seat: Seat): void {
   seat.position++;
-  seat.progress = null;
   sendRushPuzzle(duel, seat);
 }
 
@@ -441,13 +503,20 @@ function advanceRush(duel: Duel, seat: Seat): void {
  *
  * A rush claim never ends the match. Only the clock does.
  */
-function awardRushClaim(duel: Duel, seat: Seat, rawEvents: unknown): void {
+function awardRushClaim(duel: Duel, seat: Seat, position: number, rawEvents: unknown): void {
   const rush = duel.rush;
   if (!rush) return;
+  // Which puzzle of the stack this log was played on. A mismatch is a log from
+  // before a skip, or from before a rematch re-seated everyone at zero.
+  if (position !== seat.position) {
+    throw new InvalidRunError("That log was played on another puzzle");
+  }
   if (Date.now() > rush.endsAt + DUEL_CLAIM_GRACE_MS) return;
   const puzzle = rush.sequence[seat.position];
   if (!puzzle) return;
 
+  const events = parseInputLog(rawEvents);
+  checkReach(events, duel.settings.durationMs);
   const verified = verifyRun(
     {
       board: decodeBoard(puzzle.board, ENGINE_ROWS),
@@ -455,7 +524,7 @@ function awardRushClaim(duel: Duel, seat: Seat, rawEvents: unknown): void {
       hold: puzzle.hold,
     },
     seat.handling,
-    parseInputLog(rawEvents),
+    events,
   );
   if (!meetsTarget(verified.attack, puzzle.targetAttack)) {
     throw new InvalidRunError("That log does not solve this puzzle");
@@ -573,6 +642,7 @@ function handle(socket: ServerWebSocket<SocketData>, command: DuelCommand): void
         seats: [takeSeat(session.player, socket, sanitizeHandling(command.handling))],
         round: null,
         rush: null,
+        dealt: new Set(),
         roundsPlayed: 0,
         finishedAt: null,
       };
@@ -620,12 +690,13 @@ function handle(socket: ServerWebSocket<SocketData>, command: DuelCommand): void
 
     case "claim": {
       if (!current || current.phase !== "playing") return;
+      if (!withinClaimRate(socket)) throw new InvalidRunError("Too many claims at once");
       if (current.settings.mode !== "rush") {
-        awardClaim(current, session.player.id, command.events);
+        awardClaim(current, session.player.id, command.position, command.events);
         return;
       }
       const seat = seatOf(current, session.player.id);
-      if (seat) awardRushClaim(current, seat, command.events);
+      if (seat) awardRushClaim(current, seat, command.position, command.events);
       return;
     }
 
@@ -639,13 +710,15 @@ function handle(socket: ServerWebSocket<SocketData>, command: DuelCommand): void
 
     case "progress": {
       if (!current || current.phase !== "playing") return;
-      const seat = seatOf(current, session.player.id);
-      if (seat) seat.progress = command.progress;
       // How far along, never the board: a board part-way through a puzzle is a
       // partial solution to it, and losing must not come with a hint.
+      //
+      // Bounded rather than forwarded, because this is the one frame one client
+      // writes and another renders, and a socket frame meets no middleware on
+      // the way through.
       send(opponentOf(current, session.player.id)?.socket ?? null, {
         type: "opponent",
-        progress: command.progress,
+        progress: sanitizeProgress(command.progress),
       });
       return;
     }
@@ -714,9 +787,23 @@ function withinRate(socket: ServerWebSocket<SocketData>): boolean {
   if (now - data.windowStartedAt > RATE_WINDOW_MS) {
     data.windowStartedAt = now;
     data.windowCount = 0;
+    data.claimCount = 0;
   }
   data.windowCount++;
   return data.windowCount <= RATE_LIMIT;
+}
+
+/**
+ * The claim budget inside the window {@link withinRate} keeps.
+ *
+ * Refused rather than closed: a client sending too many claims is far more
+ * likely to be a bug than an attack, and closing the socket would forfeit a
+ * match over it. The cost of a refusal is a comparison; the cost of reading the
+ * claim is the replay, which is the thing being rationed.
+ */
+function withinClaimRate(socket: ServerWebSocket<SocketData>): boolean {
+  socket.data.claimCount++;
+  return socket.data.claimCount <= CLAIM_LIMIT;
 }
 
 export const duelSocket = {
@@ -788,7 +875,13 @@ export async function openDuelSocket(
   } catch {
     return Response.json({ error: "Not signed in" }, { status: 401 });
   }
-  const data: SocketData = { session, duelId: null, windowStartedAt: Date.now(), windowCount: 0 };
+  const data: SocketData = {
+    session,
+    duelId: null,
+    windowStartedAt: Date.now(),
+    windowCount: 0,
+    claimCount: 0,
+  };
   if (server.upgrade(request, { data })) return new Response(null);
   return Response.json({ error: "Expected a WebSocket upgrade" }, { status: 400 });
 }

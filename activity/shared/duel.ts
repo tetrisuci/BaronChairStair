@@ -5,8 +5,10 @@
  * the input log that solves it, and the server replays that log through the
  * same engine it uses for every other score. Verification is not something
  * that happens after a claim arrives — verification is what reading the claim
- * means. That is why {@link DuelCommand}'s claim carries events and nothing
- * else: there is no field on it a client could lie in.
+ * means. That is why {@link DuelCommand}'s claim carries the log and the
+ * puzzle it was played on and nothing else: there is no field on it a client
+ * can win with. The position only ever costs the sender — naming anything but
+ * the puzzle that seat is on has the log refused unread.
  *
  * The second rule is about what comes back. A board part-way through a puzzle
  * is a partial solution to that puzzle, so the opponent's board is never
@@ -143,8 +145,17 @@ export type DuelCommand =
   | { readonly type: "join"; readonly duelId: string; readonly handling?: Handling }
   | { readonly type: "leave" }
   | { readonly type: "ready" }
-  /** The log that solves the puzzle this player is on. The only claim there is. */
-  | { readonly type: "claim"; readonly events: readonly InputEvent[] }
+  /**
+   * The log that solves the puzzle this player is on. The only claim there is.
+   *
+   * `position` is which puzzle of this match the log was played on — the round
+   * number in a puzzle duel, the place in the stack in a rush. It is never
+   * trusted and never awards anything: the server holds the position that seat
+   * is really on, and uses this only to refuse a log played for a different
+   * puzzle. Without it a log banked on one puzzle can be cashed against the
+   * next, because a claim is read against whatever is current when it lands.
+   */
+  | { readonly type: "claim"; readonly position: number; readonly events: readonly InputEvent[] }
   /** Rush only: give up on this puzzle and take the next one. Bounded. */
   | { readonly type: "skip" }
   /**
@@ -225,6 +236,46 @@ export function sanitizeSettings(input: unknown): DuelSettings {
       ? Math.min(high, Math.max(low, Math.round(claimed)))
       : fallback;
   return { mode, rounds: mode === "rush" ? 1 : rounds, durationMs };
+}
+
+/**
+ * Bounds a progress report.
+ *
+ * Relayed to the opponent, and it is the one field a client sends that another
+ * client renders, so it is also the one place a frame with no middleware in
+ * front of it reaches somebody else's screen. Five numbers, or five zeroes.
+ */
+export function sanitizeProgress(input: unknown): DuelProgress {
+  const raw = (input ?? {}) as Partial<Record<keyof DuelProgress, unknown>>;
+  const count = (value: unknown): number =>
+    typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.round(value)) : 0;
+  return {
+    piecesPlaced: count(raw.piecesPlaced),
+    pieceBudget: count(raw.pieceBudget),
+    attack: count(raw.attack),
+    targetAttack: count(raw.targetAttack),
+    solved: count(raw.solved),
+  };
+}
+
+/** The engine's tick rate, which is what a log's frame numbers count. */
+const FRAMES_PER_SECOND = 60;
+
+/**
+ * The furthest frame a log played inside one clock can reach.
+ *
+ * Replaying is the expensive part of reading a claim, so the cheap
+ * impossibility is checked first: an event parked at the far end of a log makes
+ * the engine tick every frame up to it, which costs the sender nothing and the
+ * server everything. `parseRushSegments` keeps the same ceiling on the HTTP
+ * rush path; a socket frame meets no middleware, so the duel keeps it itself.
+ *
+ * Here rather than in the referee because the ceiling is a property of the wire
+ * and not of one end: both sides compile this file, so a claim can never be
+ * turned down by a bound the client that sent it could not have computed.
+ */
+export function claimFrameCeiling(durationMs: number): number {
+  return Math.ceil(((durationMs + DUEL_CLAIM_GRACE_MS) / 1000) * FRAMES_PER_SECOND);
 }
 
 /** Rounds one player must take to win, so a decided match can stop early. */

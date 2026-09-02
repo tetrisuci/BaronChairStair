@@ -317,6 +317,21 @@ export function createDuelResult(callbacks: DuelResultCallbacks): DuelResult {
 
 // ── The panel alongside a live match ─────────────────────────────────────────
 
+/**
+ * How full to draw the opponent's bar, for a peer who may have sent anything.
+ *
+ * A socket frame meets no HTTP middleware on its way here, so the five numbers
+ * the type promises can arrive missing, null, negative or not numbers at all.
+ * Every one of those has to land somewhere between empty and full: a NaN width
+ * is a string the browser drops, freezing the bar on the last honest reading.
+ */
+export function opponentRatio(progress: DuelProgress | null | undefined): number {
+  const attack = Number(progress?.attack);
+  const target = Number(progress?.targetAttack);
+  if (!Number.isFinite(attack) || !Number.isFinite(target) || target <= 0) return 0;
+  return Math.max(0, Math.min(1, attack / target));
+}
+
 export interface DuelPanel {
   readonly element: HTMLElement;
   update(duel: DuelView, selfId: string, remainingMs: number): void;
@@ -364,9 +379,7 @@ export function createDuelPanel(): DuelPanel {
     },
 
     setOpponent(progress) {
-      const ratio =
-        progress.targetAttack > 0 ? Math.min(1, progress.attack / progress.targetAttack) : 0;
-      opponentBar.style.width = `${ratio * 100}%`;
+      opponentBar.style.width = `${opponentRatio(progress) * 100}%`;
     },
 
     say(message) {
