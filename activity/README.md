@@ -245,6 +245,16 @@ the order the socket delivered them, with no clock from either player involved.
 A single `await` in that path would quietly reopen it, which is why the
 function carrying it says so.
 
+A puzzle duel rests for a few seconds between rounds, and spends them showing
+both players how the round was meant to go — the reference solution, on the
+board they were just playing it on, steppable. The loser gets the most out of
+it, which is the point: it is the only look they get at the puzzle that beat
+them. It is safe only because the round is over and a duel never deals a puzzle
+it has already dealt, so the answer buys nothing for the rest of the match; the
+archive still refuses the answer to a puzzle in play, and the deciding round
+skips the reveal because the result screen follows it in the same breath. Rush
+has no such pause and should not — its whole shape is one unbroken clock.
+
 The opponent is a bar and a score, never a board — a board part-way through a
 puzzle is a partial solution to it, and losing should not come with a hint. The
 archive likewise refuses the answer to a puzzle you are currently duelling on.

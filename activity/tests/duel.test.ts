@@ -91,6 +91,7 @@ let claimLimit: DuelModule["CLAIM_LIMIT"];
 let resetDuels: DuelModule["resetDuels"];
 /** Pins the pool a duel deals from, so a repeat is a certainty and not a wait. */
 let useArchive: DuelModule["useArchive"];
+let useIntermission: DuelModule["useIntermission"];
 /** Called with a time rather than waited for: the offer's TTL is two minutes. */
 let sweepDuels: DuelModule["sweepDuels"];
 
@@ -101,9 +102,13 @@ beforeAll(async () => {
   delete process.env.DISCORD_CLIENT_SECRET;
   const entry = (await import("../server/index")).default;
   ({ mintSession } = await import("../server/auth"));
-  ({ CLAIM_LIMIT: claimLimit, resetDuels, sweepDuels, useArchive } = await import(
+  ({ CLAIM_LIMIT: claimLimit, resetDuels, sweepDuels, useArchive, useIntermission } = await import(
     "../server/duel"
   ));
+  // Rounds run back to back here. The pause between them is real behaviour and
+  // is tested on its own; making every other test sit through it would add
+  // minutes of sleeping to a suite that otherwise runs in under a second.
+  useIntermission(1);
   server = serveDuels(entry);
   httpBase = `http://127.0.0.1:${server.port}`;
   socketBase = `ws://127.0.0.1:${server.port}`;
@@ -760,9 +765,9 @@ describe("a round is won by a log that solves it", () => {
 
     // And the losing claim was refused by the referee rather than dropped on
     // the way in, which is what makes the count above worth anything: it was
-    // read, against a round it was not played on, and turned down there before
-    // it could be replayed against the wrong puzzle.
-    const refused = "That log was played on another puzzle";
+    // read, after the round it names had ended, and turned down there before it
+    // could be replayed against anything.
+    const refused = "That round is over";
     const loser = winnerId === host.id ? guest : host;
     const winner = winnerId === host.id ? host : guest;
     expect(framesOfType(loser.received, "error").map((frame) => frame.message)).toContain(refused);
@@ -1399,5 +1404,75 @@ describe("the rules of a room are the host's, and only while it is a room", () =
     const round = await host.take("round");
     const dealt = archive.find((puzzle) => puzzle.id === round.puzzle.id);
     expect(dealt?.difficulty).toBe(difficulty);
+  });
+});
+
+// ── The pause between rounds ─────────────────────────────────────────────────
+
+describe("a puzzle duel rests between rounds", () => {
+  test("the round that ended hands both players its solution", async () => {
+    // The loser especially: it is the only look they get at a puzzle that just
+    // beat them, and it costs nothing, because a duel never deals a puzzle it
+    // has already dealt.
+    const { host, guest } = await playPuzzleDuel(3);
+    const round = await host.take("round");
+    await guest.take("round");
+    claim(host, round);
+
+    const won = await host.take("roundOver");
+    const lost = await guest.take("roundOver");
+    expect(won.solution).not.toBeNull();
+    expect(won.solution!.length).toBeGreaterThan(0);
+    expect(lost.solution).toEqual(won.solution);
+    expect(won.nextRoundAt).toBeGreaterThan(Date.now() - 1);
+  });
+
+  test("the last round of a match has nothing to wait for", async () => {
+    const { host } = await hostWinsMatch(1);
+    const overs = framesOfType(host.received, "roundOver");
+    expect(overs[overs.length - 1]!.nextRoundAt).toBeNull();
+  });
+
+  test("the next round is not dealt until the pause is over", async () => {
+    useIntermission(250);
+    try {
+      const { host, guest } = await playPuzzleDuel(3);
+      const round = await host.take("round");
+      await guest.take("round");
+      claim(host, round);
+      await host.take("roundOver");
+      const waitedFrom = Date.now();
+      await host.take("round");
+      // Generous on the low side: this is asserting that a pause happened at
+      // all, not that a timer is accurate to the millisecond.
+      expect(Date.now() - waitedFrom).toBeGreaterThanOrEqual(150);
+    } finally {
+      useIntermission(1);
+    }
+  });
+
+  test("a claim sent during the pause is turned down, not swallowed", async () => {
+    useIntermission(250);
+    try {
+      const { host, guest } = await playPuzzleDuel(3);
+      const round = await host.take("round");
+      await guest.take("round");
+      claim(host, round);
+      await host.take("roundOver");
+      await guest.take("roundOver");
+
+      // The loser, finishing a moment late into a duel that has no round on.
+      claim(guest, round);
+      expect((await guest.take("error")).message).toBe("That round is over");
+    } finally {
+      useIntermission(1);
+    }
+  });
+
+  test("a rush has no pause to have — it is one clock", async () => {
+    const { host } = await lobby(rushDuel());
+    host.send({ type: "ready" });
+    await host.take("rush");
+    expect(framesOfType(host.received, "roundOver")).toHaveLength(0);
   });
 });

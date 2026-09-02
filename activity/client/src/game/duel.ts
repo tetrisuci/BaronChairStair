@@ -18,7 +18,7 @@ import type {
   DuelSettings,
   DuelView,
 } from "@shared/duel";
-import type { PuzzlePrompt } from "@shared/puzzle";
+import type { PuzzlePrompt, SolutionStep } from "@shared/puzzle";
 import type { Handling } from "@shared/tetris/handling";
 import type { GameKey, InputEvent } from "@shared/tetris/verify";
 import type { BoardView } from "../render/board";
@@ -40,7 +40,17 @@ export interface DuelCallbacks {
     duel: DuelView,
   ) => void;
   readonly onOpponent: (progress: DuelProgress) => void;
-  readonly onRoundOver: (winnerId: string | null, duel: DuelView) => void;
+  /**
+   * A round ended. `solution` is how it was meant to go and `nextRoundAt` is
+   * when the next one is dealt — null when that was the last round, because
+   * then there is nothing to wait for and the result screen is the next thing.
+   */
+  readonly onRoundOver: (
+    winnerId: string | null,
+    duel: DuelView,
+    solution: readonly SolutionStep[] | null,
+    nextRoundAt: number | null,
+  ) => void;
   readonly onMatchOver: (winnerId: string | null, duel: DuelView) => void;
   readonly onLobbies: (open: readonly DuelView[]) => void;
   readonly onError: (message: string) => void;
@@ -189,7 +199,7 @@ export class DuelClient {
         return;
       case "roundOver":
         this.disposeRun();
-        this.callbacks.onRoundOver(event.winnerId, event.duel);
+        this.callbacks.onRoundOver(event.winnerId, event.duel, event.solution, event.nextRoundAt);
         return;
       case "matchOver":
         this.disposeRun();
