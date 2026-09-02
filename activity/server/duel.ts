@@ -24,6 +24,12 @@
  * first to solve takes the round. A rush is one clock over one shared stack of
  * puzzles that each player walks alone — see {@link RushMatch}.
  *
+ * A finished match is not deleted where it stands. It stays in the registry,
+ * phase `over`, for as long as a rematch is worth offering: that window is the
+ * whole of the feature, because the pairing it holds — two seats, two sockets
+ * and the settings already agreed — is exactly what going back to the lobby
+ * list would make the two of them rebuild by hand. {@link sweepDuels} ends it.
+ *
  * The registry is in memory, which makes it the first server state in this
  * codebase a restart destroys. That is unavoidable — a duel is two people
  * rendezvoused live, which SQLite cannot reconstruct — but it does mean a
@@ -40,6 +46,7 @@ import {
   DUEL_CLAIM_GRACE_MS,
   DUEL_LOBBY_TTL_MS,
   DUEL_PLAYERS,
+  DUEL_REMATCH_TTL_MS,
   type DuelCommand,
   type DuelEvent,
   type DuelProgress,
@@ -86,10 +93,20 @@ interface Seat {
   position: number;
   /** Rush only: skips still in hand. Dealt when the match starts. */
   skipsLeft: number;
+  /** Has asked to play the finished match again. Cleared by every start. */
+  wantsRematch: boolean;
 }
 
 function takeSeat(player: PlayerProfile, socket: ServerWebSocket<SocketData>): Seat {
-  return { player, socket, score: 0, progress: null, position: 0, skipsLeft: 0 };
+  return {
+    player,
+    socket,
+    score: 0,
+    progress: null,
+    position: 0,
+    skipsLeft: 0,
+    wantsRematch: false,
+  };
 }
 
 interface Round {
@@ -114,6 +131,14 @@ interface Duel {
   /** Set for a rush only; a puzzle duel has no shared stack. */
   rush: RushMatch | null;
   roundsPlayed: number;
+  /**
+   * When the match ended, if it ended with a rematch still worth offering.
+   *
+   * Null covers three different things on purpose — not finished, finished
+   * with nobody left to ask, and restarted since — because they all mean the
+   * same to everything downstream: there is no offer standing.
+   */
+  finishedAt: number | null;
 }
 
 export interface SocketData {
@@ -145,12 +170,14 @@ function view(duel: Duel): DuelView {
     settings: duel.settings,
     hostId: duel.hostId,
     round: duel.round?.index ?? 0,
+    rematchEndsAt: duel.finishedAt === null ? null : duel.finishedAt + DUEL_REMATCH_TTL_MS,
     players: duel.seats.map((seat) => ({
       id: seat.player.id,
       username: seat.player.username,
       avatarUrl: seat.player.avatarUrl,
       connected: seat.socket !== null,
       score: seat.score,
+      wantsRematch: seat.wantsRematch,
     })),
   };
 }
@@ -236,17 +263,56 @@ function endRound(duel: Duel, winnerId: string | null, reason: RoundEnd): void {
   startRound(duel);
 }
 
+/**
+ * Ends the match, and keeps the duel for as long as a rematch is plausible.
+ *
+ * The registry entry outliving the match *is* the rematch: the seats, the
+ * settings and both sockets are already here, and hunting each other down in
+ * the lobby list again is the thing a rematch exists to avoid. It is kept only
+ * when both players are still on the end of a socket — a match that ended
+ * because one of them went away has nobody left to offer anything to — and only
+ * until {@link sweepDuels} comes for it.
+ */
 function finish(duel: Duel, winnerId: string | null, reason: RoundEnd): void {
   duel.phase = "over";
   if (duel.round?.timer) clearTimeout(duel.round.timer);
   if (duel.rush?.timer) clearTimeout(duel.rush.timer);
   duel.round = null;
   duel.rush = null;
+  for (const seat of duel.seats) seat.wantsRematch = false;
+  duel.finishedAt = bothSeated(duel) ? Date.now() : null;
+  // Sent after that, so the view inside it already says whether there is
+  // anything to ask for.
   broadcast(duel, { type: "matchOver", winnerId, reason, duel: view(duel) });
+  if (duel.finishedAt === null) discard(duel);
+}
+
+/** Two seats, both still on a socket: everything a rematch needs. */
+function bothSeated(duel: Duel): boolean {
+  return duel.seats.length === DUEL_PLAYERS && duel.seats.every((seat) => seat.socket !== null);
+}
+
+/** Drops a duel from the registry and unpins the sockets that were in it. */
+function discard(duel: Duel): void {
   duels.delete(duel.id);
   for (const seat of duel.seats) {
     if (seat.socket) seat.socket.data.duelId = null;
   }
+}
+
+/**
+ * Takes the offer off the table and drops the duel.
+ *
+ * Whoever is still here is told with a `duel` view and not a second
+ * `matchOver`: the match ended once, and it ended when it ended. What has
+ * changed is only that there is nothing left to ask for, which is exactly what
+ * a null `rematchEndsAt` says.
+ */
+function dropRematch(duel: Duel): void {
+  duel.finishedAt = null;
+  for (const seat of duel.seats) seat.wantsRematch = false;
+  broadcast(duel, { type: "duel", duel: view(duel) });
+  discard(duel);
 }
 
 /**
@@ -410,6 +476,60 @@ function endRushMatch(duel: Duel): void {
   finish(duel, rushLeader(duel), "expired");
 }
 
+// ── Rematches ────────────────────────────────────────────────────────────────
+
+/** Deals the first round, or the whole stack. The one place the modes fork. */
+function startMatch(duel: Duel): void {
+  if (duel.settings.mode === "rush") startRushMatch(duel);
+  else startRound(duel);
+}
+
+/** Whether asking to go again would still mean anything. */
+function rematchStands(duel: Duel | undefined, now = Date.now()): duel is Duel {
+  if (!duel || duel.phase !== "over" || duel.finishedAt === null) return false;
+  return now - duel.finishedAt < DUEL_REMATCH_TTL_MS;
+}
+
+/** Both of them have asked, and both are still here to play it. */
+function bothWantRematch(duel: Duel): boolean {
+  return bothSeated(duel) && duel.seats.every((seat) => seat.wantsRematch);
+}
+
+/**
+ * Notes that a player wants to go again, and starts the match if that was the
+ * second of them.
+ *
+ * An offer, never an order: one player asking changes nothing except what the
+ * other is told. That is also why asking twice is asking once — it says "I am
+ * willing", which is not a thing that can be said harder.
+ */
+function offerRematch(duel: Duel, seat: Seat): void {
+  if (seat.wantsRematch) return;
+  seat.wantsRematch = true;
+  // Both ends, always: the asker needs to see their ask land, and the opponent
+  // needs to know they are being asked rather than staring at a dead button.
+  broadcast(duel, { type: "duel", duel: view(duel) });
+  if (bothWantRematch(duel)) restart(duel);
+}
+
+/**
+ * Plays the finished match again: the same duel, from nothing.
+ *
+ * The same seats and the settings the host originally chose, because that is
+ * what both players just agreed to; a fresh puzzle or a fresh stack, because
+ * one already solved is not a match. Progress, positions and skips are dealt
+ * out by the start itself, so this only undoes what a match accumulates.
+ */
+function restart(duel: Duel): void {
+  duel.finishedAt = null;
+  duel.roundsPlayed = 0;
+  for (const seat of duel.seats) {
+    seat.score = 0;
+    seat.wantsRematch = false;
+  }
+  startMatch(duel);
+}
+
 // ── Commands ─────────────────────────────────────────────────────────────────
 
 function handle(socket: ServerWebSocket<SocketData>, command: DuelCommand): void {
@@ -418,11 +538,12 @@ function handle(socket: ServerWebSocket<SocketData>, command: DuelCommand): void
 
   switch (command.type) {
     case "open": {
-      if (current) throw new InvalidRunError("You are already in a duel");
+      if (isUnfinished(current)) throw new InvalidRunError("You are already in a duel");
       const mine = [...duels.values()].filter((duel) => duel.hostId === session.player.id);
       if (mine.length >= MAX_OPEN_PER_PLAYER) {
         throw new InvalidRunError("You already have too many lobbies open");
       }
+      releaseFinished(socket, current);
       const duel: Duel = {
         id: crypto.randomUUID().slice(0, 8),
         guildId: session.guildId,
@@ -434,6 +555,7 @@ function handle(socket: ServerWebSocket<SocketData>, command: DuelCommand): void
         round: null,
         rush: null,
         roundsPlayed: 0,
+        finishedAt: null,
       };
       duels.set(duel.id, duel);
       socket.data.duelId = duel.id;
@@ -442,13 +564,14 @@ function handle(socket: ServerWebSocket<SocketData>, command: DuelCommand): void
     }
 
     case "join": {
-      if (current) throw new InvalidRunError("You are already in a duel");
+      if (isUnfinished(current)) throw new InvalidRunError("You are already in a duel");
       const duel = duels.get(String(command.duelId));
       if (!duel || duel.phase !== "lobby") throw new InvalidRunError("That lobby is gone");
       if (duel.guildId !== session.guildId) throw new InvalidRunError("That lobby is gone");
       if (duel.seats.length >= DUEL_PLAYERS) throw new InvalidRunError("That lobby is full");
       if (seatOf(duel, session.player.id)) throw new InvalidRunError("You are already in it");
 
+      releaseFinished(socket, current);
       duel.seats.push(takeSeat(session.player, socket));
       socket.data.duelId = duel.id;
       broadcast(duel, { type: "duel", duel: view(duel) });
@@ -460,8 +583,19 @@ function handle(socket: ServerWebSocket<SocketData>, command: DuelCommand): void
       if (current.hostId !== session.player.id) throw new InvalidRunError("Only the host starts it");
       if (current.phase !== "lobby") throw new InvalidRunError("It has already started");
       if (current.seats.length < DUEL_PLAYERS) throw new InvalidRunError("Nobody has joined yet");
-      if (current.settings.mode === "rush") startRushMatch(current);
-      else startRound(current);
+      startMatch(current);
+      return;
+    }
+
+    case "rematch": {
+      // One message for a duel that is gone, an offer that has lapsed and a
+      // match still being played: what the player asked for is not on offer,
+      // and which of the three it is is not theirs to act on. Refused here as
+      // well as swept on a timer, so the deadline the view hands the client is
+      // the one the referee actually keeps.
+      if (!rematchStands(current)) throw new InvalidRunError("There is no match to play again");
+      const seat = seatOf(current, session.player.id);
+      if (seat) offerRematch(current, seat);
       return;
     }
 
@@ -505,6 +639,27 @@ function handle(socket: ServerWebSocket<SocketData>, command: DuelCommand): void
   }
 }
 
+/** A duel a player cannot walk out of just by opening or joining another. */
+function isUnfinished(duel: Duel | undefined): duel is Duel {
+  return duel !== undefined && duel.phase !== "over";
+}
+
+/**
+ * Walks a player out of the match they have already finished.
+ *
+ * Opening or joining another duel is how a player declines a rematch, so it
+ * cannot be refused as "you are already in a duel". It happens only once the
+ * new duel is certain: a refused open must not cost somebody an offer that was
+ * standing when they asked.
+ */
+function releaseFinished(socket: ServerWebSocket<SocketData>, duel: Duel | undefined): void {
+  if (!duel || duel.phase !== "over") return;
+  depart(duel, socket.data.session.player.id);
+  // `depart` unseats this socket before dropping the duel, so it is the one
+  // socket `discard` cannot reach.
+  socket.data.duelId = null;
+}
+
 /** A player left, on purpose or otherwise. */
 function depart(duel: Duel, playerId: string): void {
   if (duel.phase === "lobby") {
@@ -517,11 +672,18 @@ function depart(duel: Duel, playerId: string): void {
     broadcast(duel, { type: "duel", duel: view(duel) });
     return;
   }
+  const seat = seatOf(duel, playerId);
+  if (seat) seat.socket = null;
+  if (duel.phase === "over") {
+    // Nothing left to forfeit — only an offer to withdraw. It dies with the
+    // player who left, so the one still here is never sat waiting on somebody
+    // who is already gone.
+    dropRematch(duel);
+    return;
+  }
   // Mid-match, leaving hands the match to whoever stayed. A grace period for a
   // dropped connection is the next slice; until it exists this is correct, just
   // unkind to bad wifi.
-  const seat = seatOf(duel, playerId);
-  if (seat) seat.socket = null;
   finish(duel, opponentOf(duel, playerId)?.player.id ?? null, "forfeit");
 }
 
@@ -612,14 +774,27 @@ export async function openDuelSocket(
   return Response.json({ error: "Expected a WebSocket upgrade" }, { status: 400 });
 }
 
-/** Drops lobbies nobody joined. Called on a timer by the server. */
-export function sweepLobbies(now = Date.now()): number {
+/**
+ * Drops what nobody is in: lobbies nobody joined, and finished matches nobody
+ * went back into. Called on a timer by the server.
+ *
+ * A rematch offer needs no timer of its own precisely because this exists. The
+ * cost is that the offer outlives its deadline by up to one sweep, which is why
+ * {@link rematchStands} checks the clock rather than trusting the registry.
+ */
+export function sweepDuels(now = Date.now()): number {
   let swept = 0;
   for (const duel of [...duels.values()]) {
-    if (duel.phase !== "lobby" || now - duel.createdAt < DUEL_LOBBY_TTL_MS) continue;
-    duels.delete(duel.id);
-    broadcast(duel, { type: "matchOver", winnerId: null, reason: "forfeit", duel: view(duel) });
-    swept++;
+    if (duel.phase === "lobby" && now - duel.createdAt >= DUEL_LOBBY_TTL_MS) {
+      broadcast(duel, { type: "matchOver", winnerId: null, reason: "forfeit", duel: view(duel) });
+      discard(duel);
+      swept++;
+      continue;
+    }
+    if (duel.finishedAt !== null && now - duel.finishedAt >= DUEL_REMATCH_TTL_MS) {
+      dropRematch(duel);
+      swept++;
+    }
   }
   return swept;
 }

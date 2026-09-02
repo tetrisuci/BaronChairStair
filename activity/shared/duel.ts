@@ -16,6 +16,13 @@
  * players work one shared stack of puzzles, but each at their own pace, so the
  * puzzle a player is on is sent to that player alone. A `round` names the
  * puzzle both are racing on and a rush has no such thing.
+ *
+ * A rematch is the third rule: it is an offer, not an order. Either player may
+ * ask, both are told who has asked, and the match restarts only once both have.
+ * That is why nothing here carries a "restart" — one side cannot put the other
+ * back on the board — and why the asking lives in {@link DuelView} rather than
+ * in an event of its own: the frame that carries the score carries who has
+ * asked, so a client cannot show one without the other.
  */
 
 import type { PuzzlePrompt } from "./puzzle";
@@ -55,6 +62,16 @@ export const DUEL_PLAYERS = 2;
 /** A lobby nobody joins is swept after this. */
 export const DUEL_LOBBY_TTL_MS = 15 * 60_000;
 
+/**
+ * How long a finished duel waits to be played again before it is swept.
+ *
+ * A match that is over is kept only because the two people who just played it
+ * may want another, and they decide that while they are still looking at the
+ * result — not a quarter of an hour later, which is what a lobby is given
+ * because a lobby is waiting for somebody who has not arrived yet.
+ */
+export const DUEL_REMATCH_TTL_MS = 2 * 60_000;
+
 export type DuelMode = "puzzle" | "rush";
 
 export interface DuelSettings {
@@ -71,6 +88,8 @@ export interface DuelPlayerView {
   readonly avatarUrl: string | null;
   readonly connected: boolean;
   readonly score: number;
+  /** Has asked to go again. Only ever true while the match is over. */
+  readonly wantsRematch: boolean;
 }
 
 export type DuelPhase = "lobby" | "playing" | "over";
@@ -83,6 +102,16 @@ export interface DuelView {
   readonly players: readonly DuelPlayerView[];
   /** From 1. Zero in the lobby, and for all of a rush, which has no rounds. */
   readonly round: number;
+  /**
+   * Server clock: when this finished duel stops accepting a rematch.
+   *
+   * Null whenever asking is pointless — the match is still on, or the duel has
+   * outlived the offer, or the opponent is gone and there is nobody to ask. A
+   * client can read it as "the rematch button is live until then", which is the
+   * only way to retire that button on time: the sweep that drops the duel runs
+   * on its own timer and says so late.
+   */
+  readonly rematchEndsAt: number | null;
 }
 
 /** How far along the opponent is. Never their board — see the note above. */
@@ -108,6 +137,13 @@ export type DuelCommand =
   | { readonly type: "claim"; readonly events: readonly InputEvent[] }
   /** Rush only: give up on this puzzle and take the next one. Bounded. */
   | { readonly type: "skip" }
+  /**
+   * Play the finished match again. The first asks, the second accepts.
+   *
+   * Sending it twice is sending it once: it says "I am willing", not "go", so
+   * there is nothing for a repeat to add and nothing it can take away.
+   */
+  | { readonly type: "rematch" }
   | { readonly type: "progress"; readonly progress: DuelProgress };
 
 // ── Server to client ─────────────────────────────────────────────────────────

@@ -19,10 +19,12 @@ import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  DUEL_REMATCH_TTL_MS,
   DUEL_ROUND_MS_MIN,
   DUEL_RUSH_MS_MIN,
   type DuelCommand,
   type DuelEvent,
+  type DuelPlayerView,
   type DuelProgress,
   type DuelSettings,
   type DuelView,
@@ -80,6 +82,8 @@ let httpBase: string;
 let socketBase: string;
 let mintSession: AuthModule["mintSession"];
 let resetDuels: DuelModule["resetDuels"];
+/** Called with a time rather than waited for: the offer's TTL is two minutes. */
+let sweepDuels: DuelModule["sweepDuels"];
 
 beforeAll(async () => {
   process.env.DATABASE_PATH = DATABASE;
@@ -88,7 +92,7 @@ beforeAll(async () => {
   delete process.env.DISCORD_CLIENT_SECRET;
   const entry = (await import("../server/index")).default;
   ({ mintSession } = await import("../server/auth"));
-  ({ resetDuels } = await import("../server/duel"));
+  ({ resetDuels, sweepDuels } = await import("../server/duel"));
   server = serveDuels(entry);
   httpBase = `http://127.0.0.1:${server.port}`;
   socketBase = `ws://127.0.0.1:${server.port}`;
@@ -244,10 +248,14 @@ function framesOfType<T extends DuelEvent["type"]>(
   return received.filter((event): event is Extract<DuelEvent, { type: T }> => event.type === type);
 }
 
-function scoreOf(duel: DuelView, playerId: string): number {
+function playerIn(duel: DuelView, playerId: string): DuelPlayerView {
   const player = duel.players.find((entry) => entry.id === playerId);
   if (!player) throw new Error(`${playerId} has no seat in duel ${duel.id}`);
-  return player.score;
+  return player;
+}
+
+function scoreOf(duel: DuelView, playerId: string): number {
+  return playerIn(duel, playerId).score;
 }
 
 // ── The archive, answers and all ─────────────────────────────────────────────
@@ -774,5 +782,182 @@ describe("a rush duel is one stack walked at two paces", () => {
     } finally {
       jest.useRealTimers();
     }
+  });
+});
+
+// ── Rematches ────────────────────────────────────────────────────────────────
+
+/** Plays a best-of-`rounds` match out, the host taking every round of it. */
+async function hostWinsMatch(rounds: number): Promise<Lobby> {
+  const seats = await playPuzzleDuel(rounds);
+  for (let won = 0; won < roundsToWin(rounds); won++) {
+    const round = await seats.host.take("round");
+    await seats.guest.take("round");
+    claim(seats.host, round.puzzle);
+    await seats.host.take("roundOver");
+    await seats.guest.take("roundOver");
+  }
+  await seats.host.take("matchOver");
+  await seats.guest.take("matchOver");
+  return seats;
+}
+
+describe("a finished match is played again only if both ask", () => {
+  test("one player asking tells them both, and restarts nothing", async () => {
+    const { host, guest } = await hostWinsMatch(1);
+
+    host.send({ type: "rematch" });
+    const forGuest = await guest.take("duel");
+    const forHost = await host.take("duel");
+
+    // The opponent has to learn of the offer, or the asker is left waiting on
+    // somebody who was never told there was anything to accept.
+    expect(forGuest).toEqual(forHost);
+    expect(playerIn(forGuest.duel, host.id).wantsRematch).toBe(true);
+    expect(playerIn(forGuest.duel, guest.id).wantsRematch).toBe(false);
+    expect(forGuest.duel.phase).toBe("over");
+    expect(forGuest.duel.rematchEndsAt).not.toBeNull();
+
+    // Settled after the ask was answered, so a match it had somehow restarted
+    // would already have dealt a second round into both inboxes.
+    await Promise.all([host.settle(), guest.settle()]);
+    expect(framesOfType(host.received, "round")).toHaveLength(1);
+    expect(framesOfType(guest.received, "round")).toHaveLength(1);
+  });
+
+  test("asking twice is asking once", async () => {
+    const { host, guest } = await hostWinsMatch(1);
+
+    host.send({ type: "rematch" });
+    await guest.take("duel");
+    host.send({ type: "rematch" });
+
+    await Promise.all([host.settle(), guest.settle()]);
+    // The second ask is not the acceptance the first one is waiting for, and it
+    // is not news either: one player, one offer, one frame about it.
+    expect(framesOfType(guest.received, "duel").filter((frame) => frame.duel.phase === "over"))
+      .toHaveLength(1);
+    expect(framesOfType(host.received, "round")).toHaveLength(1);
+  });
+
+  test("both asking restarts the same duel, from zero", async () => {
+    const rounds = 3;
+    const { host, guest, duelId } = await hostWinsMatch(rounds);
+    const over = framesOfType(host.received, "matchOver")[0]!;
+    expect(scoreOf(over.duel, host.id)).toBe(roundsToWin(rounds));
+
+    host.send({ type: "rematch" });
+    await guest.take("duel");
+    guest.send({ type: "rematch" });
+
+    const forHost = await host.take("round");
+    const forGuest = await guest.take("round");
+
+    expect(forGuest).toEqual(forHost);
+    // The same duel, so neither of them went looking for the other again.
+    expect(forHost.duel.id).toBe(duelId);
+    expect(forHost.duel.settings).toEqual(over.duel.settings);
+    expect(forHost.duel.phase).toBe("playing");
+    // Rounds played back to zero: this is round one, not round four.
+    expect(forHost.round).toBe(1);
+    expect(scoreOf(forHost.duel, host.id)).toBe(0);
+    expect(scoreOf(forHost.duel, guest.id)).toBe(0);
+    expect(forHost.duel.players.map((player) => player.wantsRematch)).toEqual([false, false]);
+    expect(forHost.duel.rematchEndsAt).toBeNull();
+
+    // And it is a match, not a screen: the round can be taken like any other.
+    claim(guest, forHost.puzzle);
+    const round = await guest.take("roundOver");
+    expect(round.winnerId).toBe(guest.id);
+    expect(scoreOf(round.duel, guest.id)).toBe(1);
+    expect(scoreOf(round.duel, host.id)).toBe(0);
+  });
+
+  test("a rush goes again on a fresh stack, with a full hand of skips", async () => {
+    const { host, guest } = await lobby(rushDuel());
+    jest.useFakeTimers();
+    try {
+      host.send({ type: "ready" });
+      const first = await host.take("rush");
+      await guest.take("rush");
+      await solveRush(host, first);
+      await guest.take("duel");
+
+      jest.advanceTimersByTime(DUEL_RUSH_MS_MIN + 1);
+      const over = await host.take("matchOver");
+      await guest.take("matchOver");
+      expect(scoreOf(over.duel, host.id)).toBe(1);
+
+      host.send({ type: "rematch" });
+      await guest.take("duel");
+      guest.send({ type: "rematch" });
+
+      const again = await host.take("rush");
+      const alsoAgain = await guest.take("rush");
+      expect(again.index).toBe(0);
+      expect(again.solved).toBe(0);
+      expect(again.skipsLeft).toBe(RUSH_SKIPS);
+      expect(scoreOf(again.duel, host.id)).toBe(0);
+      // One stack, dealt fresh: both open on the same puzzle and a whole clock.
+      expect(again.puzzle?.id).toBe(alsoAgain.puzzle?.id);
+      expect(again.endsAt).toBe(alsoAgain.endsAt);
+      expect(again.endsAt).toBeGreaterThan(Date.now());
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test("there is nothing to ask for while the match is still on", async () => {
+    const { host, guest } = await playPuzzleDuel(3);
+    await host.take("round");
+    await guest.take("round");
+
+    host.send({ type: "rematch" });
+    expect((await host.take("error")).message).toBe("There is no match to play again");
+
+    await guest.settle();
+    expect(framesOfType(guest.received, "duel")).toHaveLength(1);
+  });
+});
+
+describe("a rematch offer outlives neither the players nor the day", () => {
+  test("a disconnect while an offer stands kills the offer", async () => {
+    const { host, guest } = await hostWinsMatch(1);
+    host.send({ type: "rematch" });
+    await host.take("duel");
+    await guest.take("duel");
+
+    guest.close();
+    const dead = await host.take("duel");
+
+    // Whoever is left is told the offer is off rather than being left holding
+    // it: nobody can accept it now.
+    expect(dead.duel.rematchEndsAt).toBeNull();
+    expect(playerIn(dead.duel, guest.id).connected).toBe(false);
+    expect(playerIn(dead.duel, host.id).wantsRematch).toBe(false);
+    // The match ended once, and it ended when it ended.
+    expect(framesOfType(host.received, "matchOver")).toHaveLength(1);
+
+    host.send({ type: "rematch" });
+    expect((await host.take("error")).message).toBe("There is no match to play again");
+    expect(framesOfType(host.received, "round")).toHaveLength(1);
+  });
+
+  test("the offer lapses, and the finished duel is swept with it", async () => {
+    const { host, guest } = await hostWinsMatch(1);
+    host.send({ type: "rematch" });
+    await host.take("duel");
+    await guest.take("duel");
+
+    // Still inside the window, so nothing is swept and the offer still stands.
+    expect(sweepDuels(Date.now())).toBe(0);
+    expect(sweepDuels(Date.now() + DUEL_REMATCH_TTL_MS)).toBe(1);
+
+    const gone = await guest.take("duel");
+    expect(await host.take("duel")).toEqual(gone);
+    expect(gone.duel.rematchEndsAt).toBeNull();
+
+    guest.send({ type: "rematch" });
+    expect((await guest.take("error")).message).toBe("There is no match to play again");
   });
 });

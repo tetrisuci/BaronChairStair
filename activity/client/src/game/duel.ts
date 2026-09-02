@@ -105,11 +105,7 @@ export class DuelClient {
    * before it deals anything, so one player cannot drag the other back in.
    */
   rematch(): void {
-    // Sent as a frame rather than through `send`, because the command's place
-    // in `DuelCommand` is landing alongside this. Switch it over once it has.
-    if (this.socket?.readyState === WebSocket.OPEN) {
-      this.socket.send(JSON.stringify({ type: "rematch" }));
-    }
+    this.send({ type: "rematch" });
   }
 
   close(): void {
