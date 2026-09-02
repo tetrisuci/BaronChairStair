@@ -79,10 +79,8 @@ function toggle(label: string, onPick: () => void): HTMLButtonElement {
   return button;
 }
 
-export interface RulesForm {
+interface RulesForm {
   readonly element: HTMLElement;
-  /** The rules as edited here. */
-  get(): DuelSettings;
   /** Show rules that came from the referee, which is always the authority. */
   set(settings: DuelSettings): void;
   /** The guest sees the same rows, inert. Rules are the host's to set. */
@@ -90,11 +88,7 @@ export interface RulesForm {
 }
 
 /**
- * The one set of rule controls, used both to open a room and to edit one.
- *
- * Built once and shown twice rather than written twice: the create screen and
- * the lobby offer the same choices, and two forms would be two places for a
- * new rule to be added to only one of them.
+ * The lobby's rule controls, which only its host ever sees.
  *
  * `onChange` fires per edit and is what the lobby sends upstream. It is not
  * called from {@link RulesForm.set}, so echoing the referee's answer back into
@@ -123,7 +117,7 @@ export function rulesForMode(
   };
 }
 
-export function createRulesForm(onChange: (settings: DuelSettings) => void = () => {}): RulesForm {
+function createRulesForm(onChange: (settings: DuelSettings) => void): RulesForm {
   let settings: DuelSettings = DEFAULT_DUEL_SETTINGS;
   /**
    * The best-of the host last chose for a puzzle match.
@@ -233,7 +227,6 @@ export function createRulesForm(onChange: (settings: DuelSettings) => void = () 
 
   return {
     element,
-    get: () => settings,
     set(next) {
       settings = next;
       if (next.mode === "puzzle") puzzleRounds = next.rounds;
@@ -251,11 +244,27 @@ export function createRulesForm(onChange: (settings: DuelSettings) => void = () 
   };
 }
 
-/** How a match is described in one line, wherever it needs describing. */
+/**
+ * How a match is described in one line, wherever it needs describing.
+ *
+ * This line is the whole of what a guest is told, now that the controls belong
+ * to the host — and it is what a room advertises in the browse list — so the
+ * band goes in it whenever the band is not simply "everything". A room that
+ * draws from the whole archive says nothing about difficulty, because there is
+ * nothing there to warn anybody about.
+ */
 function describe(settings: DuelSettings): string {
-  return settings.mode === "rush"
-    ? `Rush · ${Math.round(settings.durationMs / 60_000)} min · most solved wins`
-    : `Best of ${settings.rounds} · ${settings.durationMs / SECOND_MS}s a round`;
+  const shape =
+    settings.mode === "rush"
+      ? `Rush · ${Math.round(settings.durationMs / 60_000)} min · most solved wins`
+      : `Best of ${settings.rounds} · ${settings.durationMs / SECOND_MS}s a round`;
+  const whole =
+    settings.minDifficulty === MIN_DIFFICULTY &&
+    settings.maxDifficulty === MAX_DIFFICULTY &&
+    settings.includeUnrated;
+  if (whole) return shape;
+  const rated = settings.includeUnrated ? "" : ", rated only";
+  return `${shape} · difficulty ${settings.minDifficulty}–${settings.maxDifficulty}${rated}`;
 }
 
 // ── Screen one: set one up, or join one ──────────────────────────────────────
@@ -272,10 +281,12 @@ export interface DuelIntro {
 }
 
 export function createDuelIntro(callbacks: DuelIntroCallbacks): DuelIntro {
-  const rules = createRulesForm();
-
+  // No rule controls here. This screen is for finding a room, and the rules of
+  // a room belong to whoever is hosting it — a form on the way in offers them
+  // to everybody, including the people about to join somebody else's game. A
+  // room opens on the defaults and is set up in its own lobby.
   const openButton = el("button", { class: "btn btn--primary", text: "Open a room" });
-  openButton.addEventListener("click", () => callbacks.onOpen(rules.get()));
+  openButton.addEventListener("click", () => callbacks.onOpen(DEFAULT_DUEL_SETTINGS));
   const backButton = el("button", { class: "btn", text: "Back to the daily" });
   backButton.addEventListener("click", () => callbacks.onBack());
 
@@ -285,7 +296,6 @@ export function createDuelIntro(callbacks: DuelIntroCallbacks): DuelIntro {
   const element = panel(
     "1v1",
     { class: "explore" },
-    rules.element,
     el("div", { class: "btnrow" }, openButton, backButton),
     heading,
     list,
@@ -357,7 +367,12 @@ export function createDuelLobby(callbacks: DuelLobbyCallbacks): DuelLobby {
       const host = duel.hostId === selfId;
       summary.textContent = describe(duel.settings);
       rules.set(duel.settings);
+      // The guest gets the one-line summary above and nothing to touch. They
+      // still need to know what they are about to play; they do not need the
+      // controls for a decision that is not theirs. Disabled as well as hidden,
+      // so revealing the element could never be the whole of an exploit.
       rules.setEditable(host);
+      rules.element.hidden = !host;
       pool.textContent = host
         ? `${duel.poolSize} puzzle${duel.poolSize === 1 ? "" : "s"} match these rules, ` +
           `and this match needs ${duel.poolNeeded}`
