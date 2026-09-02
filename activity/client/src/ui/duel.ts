@@ -22,7 +22,7 @@ import {
   type DuelView,
 } from "@shared/duel";
 import { MAX_DIFFICULTY, MIN_DIFFICULTY } from "@shared/archive-filter";
-import { el, panel, replaceChildren } from "./dom";
+import { el, panel, replaceChildren, setToggleLabel } from "./dom";
 
 const SECOND_MS = 1000;
 /** Under this the clock counts in tenths, as it does in rush. */
@@ -73,7 +73,8 @@ function numberBox(low: number, high: number, onPick: (value: number) => void): 
 
 /** The same on/off button the explorer uses, so one control means one thing. */
 function toggle(label: string, onPick: () => void): HTMLButtonElement {
-  const button = el("button", { class: "btn btn--small explore__toggle", text: label });
+  const button = el("button", { class: "btn btn--small explore__toggle" });
+  setToggleLabel(button, label, true);
   button.addEventListener("click", () => onPick());
   return button;
 }
@@ -223,8 +224,7 @@ export function createRulesForm(onChange: (settings: DuelSettings) => void = () 
     if (roundsSelect !== focused) roundsSelect.value = String(settings.rounds);
     if (minBox !== focused) minBox.value = String(settings.minDifficulty);
     if (maxBox !== focused) maxBox.value = String(settings.maxDifficulty);
-    unratedBox.classList.toggle("spec__toggle--on", settings.includeUnrated);
-    unratedBox.setAttribute("aria-pressed", String(settings.includeUnrated));
+    setToggleLabel(unratedBox, "Unrated", settings.includeUnrated);
     // Rush is one clock for the whole match, so rounds mean nothing to it.
     roundsRow.hidden = settings.mode === "rush";
     paintDuration();
