@@ -14,7 +14,7 @@ async function boot(): Promise<void> {
 
   try {
     const connection = await connect();
-    const settings = await SettingsStore.load(connection.api);
+    const settings = await SettingsStore.load(connection.api, connection.player.id);
     await new App(root, connection, settings).start();
   } catch (error) {
     console.error("[puzzle] failed to start", error);
