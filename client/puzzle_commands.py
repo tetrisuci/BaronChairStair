@@ -20,12 +20,15 @@ Environment (see example.env):
 
 import logging
 import os
+import sqlite3
 from collections.abc import Callable
 from urllib.parse import urlparse
 
 import aiohttp
 import discord
 from discord import app_commands
+
+import puzzle_recap
 
 log = logging.getLogger(__name__)
 
@@ -55,6 +58,11 @@ STANDINGS_SHOWN = 10
 SERVER_ONLY = "Standings are per server, so this only works in a server."
 UNEXPECTED_REPLY = "The puzzle server sent something unexpected. Try again later."
 
+# Lent by discord_bot at boot so /puzzle play can note where it announced the
+# day. Left as None when nothing wired it up: this module stays importable on
+# its own, and a missing recap must never stop the commands working.
+recap_db: "sqlite3.Connection | None" = None
+
 
 def _app_id() -> str:
     return os.environ.get("PUZZLE_APP_ID", "").strip()
@@ -73,13 +81,8 @@ def _grade(difficulty: float) -> str:
     return "VI · brutal"
 
 
-def _duration(ms: int) -> str:
-    """mm:ss.d, growing an hours field rather than running the minutes up."""
-    seconds = ms / 1000
-    hours, rest = divmod(int(seconds // 60), 60)
-    if hours:
-        return f"{hours}:{rest:02d}:{seconds % 60:04.1f}"
-    return f"{rest}:{seconds % 60:04.1f}"
+# One definition, shared with the recap that formats the same times.
+_duration = puzzle_recap.format_duration
 
 
 def _not_configured(missing: str) -> str:
@@ -164,7 +167,44 @@ async def puzzle_play(interaction: discord.Interaction):
     embed.set_footer(
         text=f"“{puzzle.get('title', 'untitled')}” by {puzzle.get('author', 'unknown')}")
 
-    await interaction.followup.send(f"Today's puzzle is up. {launch}", embed=embed)
+    # `wait=True` so the send comes back with a message: without it discord.py
+    # returns None and there is nothing for tomorrow's recap to reply to.
+    message = await interaction.followup.send(
+        f"Today's puzzle is up. {launch}", embed=embed, wait=True)
+    _remember_play(interaction, day, message)
+
+
+def _remember_play(interaction: discord.Interaction, day: int,
+                   message: discord.Message | None) -> None:
+    """
+    Notes where a day was announced, for tomorrow's recap to reply to.
+
+    Best effort on purpose. Failing to record costs one server one recap;
+    raising here would cost the player the message they actually asked for.
+    """
+    if recap_db is None or interaction.guild_id is None or message is None:
+        return
+    try:
+        puzzle_recap.record_play(recap_db, interaction.guild_id, day,
+                                 message.channel.id, message.id)
+    except sqlite3.Error:
+        log.warning("could not record the play message for the recap", exc_info=True)
+
+
+async def current_day() -> int | None:
+    """Today's puzzle number, from the activity. None when it is unreachable."""
+    try:
+        return int((await _get("/api/today"))["day"])
+    except (PuzzleServerUnavailable, KeyError, TypeError, ValueError):
+        return None
+
+
+async def recap_payload(guild_id: int, day: int) -> dict:
+    """One server's finished day: the board, the streak, and the rush board."""
+    api_key = os.environ.get("PUZZLE_API_KEY", "").strip()
+    if not api_key:
+        raise PuzzleServerUnavailable(_not_configured("PUZZLE_API_KEY"))
+    return await _get(f"/api/recap?guild={guild_id}&day={day}", api_key=api_key)
 
 
 def _standings_lines(entries: list[dict], detail: Callable[[dict], str]) -> list[str]:
