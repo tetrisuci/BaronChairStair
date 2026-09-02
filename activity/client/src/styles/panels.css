@@ -367,9 +367,33 @@
 /* A list wants the room; a start card does not. */
 .screen--wide { --screen-width: 720px; }
 
+/*
+ * One card, filling the height it is given, managing its own overflow. The
+ * default screen stacks cards at their natural height and scrolls the lot;
+ * that is right for the rush cards and wrong for a card whose whole point is a
+ * list that never ends.
+ */
+.screen--fill { align-content: stretch; }
+.screen--fill > .panel { min-height: 0; }
+
 /* ── Explorer ─────────────────────────────────────────────────────────────── */
 
-.explore { gap: 10px; }
+.explore { gap: 10px; min-height: 0; }
+
+/*
+ * Two columns wherever there is room for them. Stacked, the six filters ate
+ * 170 pixels of a 478-pixel card inside Discord and left five rows of list
+ * showing under a card that ran off the bottom of the frame.
+ */
+.explore__filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(268px, 1fr));
+  gap: 7px 20px;
+  flex: none;
+}
+
+.explore__actions { flex: none; }
+.explore__count { flex: none; }
 
 .explore__row {
   display: grid;
@@ -394,6 +418,8 @@
 }
 
 .explore__to { font-family: var(--mono); font-size: 11px; color: var(--ink-faint); }
+/* Never the control that wraps: it is the shortest thing on its row. */
+.explore__toggle { white-space: nowrap; }
 .explore__slot { display: contents; }
 
 .explore__search,
@@ -428,10 +454,18 @@
  * the part that scrolls — the filters stay put above it where they are being
  * used.
  */
+/*
+ * The list takes whatever height the filters leave, rather than a share of the
+ * viewport. A fixed fraction made the card taller than the frame it sits in,
+ * so the card itself was cut off — filters and all — instead of the one part
+ * that was always going to be too long.
+ */
 .explore__list {
   display: grid;
   gap: 3px;
-  max-height: min(38vh, 340px);
+  flex: 1 1 auto;
+  /* Enough to be a list. Below this the screen scrolls instead. */
+  min-height: 132px;
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-width: thin;

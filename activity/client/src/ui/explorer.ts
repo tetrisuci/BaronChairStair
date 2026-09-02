@@ -88,7 +88,10 @@ export function createExplorer(callbacks: ExplorerCallbacks): Explorer {
   const minPieces = numberBox(MIN_PIECES, MAX_PIECES, (v) => patch({ minPieces: v }));
   const maxPieces = numberBox(MIN_PIECES, MAX_PIECES, (v) => patch({ maxPieces: v }));
 
-  const unrated = el("button", { class: "btn btn--small", text: "" });
+  // Just "Unrated", with the green doing the talking: spelling out the state
+  // pushed the button onto a second line and left the row a head taller than
+  // the one beside it.
+  const unrated = el("button", { class: "btn btn--small explore__toggle", text: "Unrated" });
   unrated.addEventListener("click", () => patch({ includeUnrated: !filter?.includeUnrated }));
 
   // Built once the archive arrives, since their options come from it.
@@ -120,16 +123,25 @@ export function createExplorer(callbacks: ExplorerCallbacks): Explorer {
   const close = el("button", { class: "btn", text: "Back to the daily" });
   close.addEventListener("click", () => callbacks.onClose());
 
-  const element = panel(
-    "Explore",
-    { class: "explore" },
+  // The filters are one block so they can lay out in columns when there is
+  // width for it, and so they stay a fixed header while the list below them
+  // takes whatever height is left.
+  const filters = el(
+    "div",
+    { class: "explore__filters" },
     labelled("Search", search),
     labelled("Difficulty", minDifficulty, el("span", { class: "explore__to", text: "to" }), maxDifficulty, unrated),
     labelled("Pieces", minPieces, el("span", { class: "explore__to", text: "to" }), maxPieces),
     labelled("Set", setSlot),
     labelled("Author", authorSlot),
     labelled("Sort by", sort),
-    el("div", { class: "btnrow" }, random, reset, close),
+  );
+
+  const element = panel(
+    "Explore",
+    { class: "explore" },
+    filters,
+    el("div", { class: "btnrow explore__actions" }, random, reset, close),
     count,
     list,
   );
@@ -199,8 +211,11 @@ export function createExplorer(callbacks: ExplorerCallbacks): Explorer {
       maxDifficulty.value = String(next.maxDifficulty);
       minPieces.value = String(next.minPieces);
       maxPieces.value = String(next.maxPieces);
-      unrated.textContent = next.includeUnrated ? "Unrated: shown" : "Unrated: hidden";
       unrated.classList.toggle("spec__toggle--on", next.includeUnrated);
+      unrated.title = next.includeUnrated
+        ? "Unrated puzzles are shown. Click to hide them."
+        : "Unrated puzzles are hidden. Click to show them.";
+      unrated.setAttribute("aria-pressed", String(next.includeUnrated));
       if (setSelect) setSelect.value = next.sets[0] ?? "";
       if (authorSelect) authorSelect.value = next.authors[0] ?? "";
       sort.value = next.sort;
