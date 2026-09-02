@@ -98,6 +98,20 @@ export class DuelClient {
     this.send({ type: "skip" });
   }
 
+  /**
+   * Offer to play the same match again.
+   *
+   * An offer, not a restart: the server waits until both sides have asked
+   * before it deals anything, so one player cannot drag the other back in.
+   */
+  rematch(): void {
+    // Sent as a frame rather than through `send`, because the command's place
+    // in `DuelCommand` is landing alongside this. Switch it over once it has.
+    if (this.socket?.readyState === WebSocket.OPEN) {
+      this.socket.send(JSON.stringify({ type: "rematch" }));
+    }
+  }
+
   close(): void {
     this.disposeRun();
     this.socket?.close();
