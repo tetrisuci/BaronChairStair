@@ -158,15 +158,21 @@ export class DuelClient {
         this.callbacks.onState(event.duel);
         return;
       case "round":
-        this.startRound(event.puzzle, event.round);
+        // Screen first, board second, and the order is the whole of it.
+        //
+        // `startRound` paints the opening position synchronously, and it is
+        // `onRound` that puts the playfield on the page. Painting first put
+        // that frame onto a playfield nobody was looking at yet, so the round
+        // opened showing whatever had been drawn there last — the previous
+        // round, the daily, or nothing at all. A puzzle has no gravity, so no
+        // further frame came to correct it until the player pressed a key.
         this.callbacks.onRound(event.round, event.puzzle, event.endsAt, event.duel);
+        this.startRound(event.puzzle, event.round);
         return;
       case "rush":
         // Each player walks the shared stack at their own pace, so this is
         // addressed to one of them; a `round` is the thing both are racing on
         // and a rush has none.
-        if (event.puzzle) this.startRound(event.puzzle, event.index);
-        else this.disposeRun();
         this.callbacks.onRushPuzzle(
           event.puzzle,
           event.endsAt,
@@ -174,6 +180,9 @@ export class DuelClient {
           event.skipsLeft,
           event.duel,
         );
+        // Second, for the reason the `round` case gives.
+        if (event.puzzle) this.startRound(event.puzzle, event.index);
+        else this.disposeRun();
         return;
       case "opponent":
         this.callbacks.onOpponent(event.progress);
