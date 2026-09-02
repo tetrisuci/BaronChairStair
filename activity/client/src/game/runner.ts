@@ -78,6 +78,19 @@ export class PuzzleRun {
   private clears: ClearName[] = [];
   private resets = 0;
   private firstInputFrame: number | null = null;
+  /**
+   * How long the log was after each placement locked.
+   *
+   * Undo cuts the log back to a placement boundary and replays what is left,
+   * which is why undo needs no server support at all: a shortened log is still
+   * an ordinary log, and the server verifies it the way it verifies every
+   * other one. There is nothing to tell it about.
+   */
+  private checkpoints: number[] = [];
+  /** Segments undo removed, newest last, so redo can put them back. */
+  private undone: InputEvent[][] = [];
+  /** True while the log is being fed back in, to keep the replay silent. */
+  private replaying = false;
   private finishedAt: number | null = null;
 
   private flashRows: number[] = [];
@@ -136,12 +149,22 @@ export class PuzzleRun {
       this.piecesPlaced++;
       this.attack += lock.garbage.reduce((total, value) => total + value, 0);
       const clear = nameClear(lock, this.engine.board.perfectClear);
-      if (clear) {
-        this.clears.push(clear);
-        this.flashRows = this.pendingFlash;
-        this.flashUntil = performance.now() + FLASH_MS;
+      if (clear) this.clears.push(clear);
+      // Only a live placement moves the boundary. During a replay the log is
+      // already whole, so `events.length` is its total rather than the
+      // position reached — recording it would collapse every checkpoint onto
+      // the same value and the second undo would truncate nothing.
+      if (!this.replaying) this.checkpoints.push(this.events.length);
+      // A replay is re-reaching a position the player already saw. Flashing
+      // every line it clears again, and calling back for each, would replay
+      // the noise as well as the placements.
+      if (!this.replaying) {
+        if (clear) {
+          this.flashRows = this.pendingFlash;
+          this.flashUntil = performance.now() + FLASH_MS;
+        }
+        this.callbacks.onLock(clear, this.attack);
       }
-      this.callbacks.onLock(clear, this.attack);
       this.checkForEnd();
     });
   }
@@ -173,10 +196,87 @@ export class PuzzleRun {
     this.attack = 0;
     this.piecesPlaced = 0;
     this.clears = [];
+    this.checkpoints = [];
+    this.undone = [];
     this.firstInputFrame = null;
     this.phase = "ready";
     this.flashRows = [];
     this.build();
+    this.renderOnce();
+  }
+
+  // ── Undo and redo ──────────────────────────────────────────────────────────
+
+  get canUndo(): boolean {
+    return this.checkpoints.length > 0 && this.phase !== "solved" && this.phase !== "failed";
+  }
+
+  get canRedo(): boolean {
+    return this.undone.length > 0 && this.phase !== "solved" && this.phase !== "failed";
+  }
+
+  /** Takes back the last placement. Returns false when there is none. */
+  undo(): boolean {
+    if (!this.canUndo) return false;
+    this.checkpoints.pop();
+    const target = this.checkpoints[this.checkpoints.length - 1] ?? 0;
+    this.undone.push(this.events.splice(target));
+    this.rebuildFromLog();
+    return true;
+  }
+
+  /** Puts back the placement undo took, if nothing has been played since. */
+  redo(): boolean {
+    if (!this.canRedo) return false;
+    this.events.push(...this.undone.pop()!);
+    // One undone segment is exactly one placement, so restoring it restores
+    // exactly one boundary.
+    this.checkpoints.push(this.events.length);
+    this.rebuildFromLog();
+    return true;
+  }
+
+  /**
+   * Rebuilds the position from the log, the way the server would.
+   *
+   * A fresh engine fed the whole log is the only rewind that cannot drift:
+   * unwinding the board in place would mean undoing a line clear, a spin
+   * bonus and a hold swap by hand, and any one of those getting it slightly
+   * wrong would put the player on a board the server does not agree exists.
+   * Replaying costs well under a millisecond at this length.
+   */
+  private rebuildFromLog(): void {
+    this.stopLoop();
+    this.attack = 0;
+    this.piecesPlaced = 0;
+    this.clears = [];
+    this.pending = [];
+    this.held.clear();
+    this.flashRows = [];
+    this.phase = "ready";
+    this.build();
+
+    this.replaying = true;
+    try {
+      let cursor = 0;
+      while (cursor < this.events.length && this.engine.frame <= MAX_FRAMES) {
+        const batch: InputEvent[] = [];
+        while (cursor < this.events.length && this.events[cursor]!.frame === this.engine.frame) {
+          batch.push(this.events[cursor]!);
+          cursor++;
+        }
+        this.engine.tick(batch as never);
+      }
+    } finally {
+      this.replaying = false;
+    }
+
+    if (this.phase === "ready" && this.events.length > 0) {
+      this.phase = "playing";
+      this.lastTimestamp = performance.now();
+      this.accumulator = 0;
+      this.startLoop();
+    }
     this.renderOnce();
   }
 
@@ -234,6 +334,9 @@ export class PuzzleRun {
       type: down ? "keydown" : "keyup",
       data: { key, subframe: Number(subframe.toFixed(3)) },
     };
+    // Playing on after an undo is the player choosing this line over the one
+    // they took back, so there is no longer a forward to redo into.
+    this.undone = [];
     this.events.push(event);
     this.pending.push(event);
   }

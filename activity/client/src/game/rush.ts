@@ -189,6 +189,11 @@ export class RushSession {
 
   // ── What the player does ───────────────────────────────────────────────────
 
+  /** The run in front of the player, so undo and redo can reach it. */
+  get currentRun(): PuzzleRun | null {
+    return this.advancing ? null : this.run;
+  }
+
   input(key: GameKey, down: boolean): void {
     if (this.phase === "over" || this.advancing) return;
     this.run?.input(key, down);

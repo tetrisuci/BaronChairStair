@@ -178,7 +178,16 @@ export function buildEngineParams(handling: Handling = DEFAULT_HANDLING): Engine
     misc: {
       movement: { infinite: false, lockResets: 15, lockTime: 30, may20G: true },
       allowed: { spin180: true, hardDrop: true, hold: true, undo: false, retry: false },
-      infiniteHold: false,
+      /**
+     * Hold as often as you like, rather than once per piece.
+     *
+     * A puzzle is a placement problem, not a dexterity test: the pieces are
+     * fixed and known, so rationing the swap only makes the player re-derive
+     * an order they could have seen by trying it. The ledger still decides
+     * what may be played, so an unlimited swap cannot conjure a piece the
+     * puzzle does not owe.
+     */
+    infiniteHold: true,
       stride: false,
       username: "puzzle",
     },

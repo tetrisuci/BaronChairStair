@@ -48,7 +48,10 @@ const TOAST_MS = 2200;
 export class App {
   private readonly masthead = createMasthead();
   private readonly credits = createCredits();
-  private readonly hud = createHud();
+  private readonly hud = createHud({
+    onUndo: () => this.stepHistory("undo"),
+    onRedo: () => this.stepHistory("redo"),
+  });
   private readonly badge = createVerdictBadge();
   private readonly leaderboard = createLeaderboardPanel();
   private readonly canvas = el("canvas", {
@@ -390,6 +393,8 @@ export class App {
           this.renderer.draw(view);
           this.hud.update(run);
           this.rushPanel.update(snapshot, this.rushSkips);
+          const live = this.rush?.currentRun;
+          this.hud.setHistory(live?.canUndo ?? false, live?.canRedo ?? false);
         },
         onPuzzle: (puzzle) => {
           this.hud.setPuzzle(puzzle);
@@ -548,11 +553,13 @@ export class App {
         this.hud.update(snapshot);
       },
       onFinish: (snapshot, events) => void this.finishRun(snapshot, events),
-      onLock: () => undefined,
+      // A placement is the only thing that changes what there is to undo.
+      onLock: () => this.hud.setHistory(this.run?.canUndo ?? false, this.run?.canRedo ?? false),
     },
     carriedResets,
     this.sheetOpenedAt);
 
+    this.hud.setHistory(false, false);
     const { hold, progress, goal, meter, queue } = this.hud.panels;
     replaceChildren(this.hud.left, hold, progress);
     replaceChildren(this.hud.right, goal, meter, queue);
@@ -739,11 +746,32 @@ export class App {
       case "skip":
         this.skipPuzzle();
         return;
+      case "undo":
+        this.stepHistory("undo");
+        return;
+      case "redo":
+        this.stepHistory("redo");
+        return;
       default: {
         const unreachable: never = action;
         throw new Error(`Unhandled local action: ${String(unreachable)}`);
       }
     }
+  }
+
+  /**
+   * Takes a placement back, or puts it back.
+   *
+   * Works wherever a run is live, daily included. It is a gentler restart, and
+   * a restart already undoes everything at once, so this opens no door that
+   * was not already wide open — it just costs the player less to walk through.
+   */
+  private stepHistory(direction: "undo" | "redo"): void {
+    const run = this.rush ? this.rush.currentRun : this.run;
+    if (!run) return;
+    const moved = direction === "undo" ? run.undo() : run.redo();
+    if (!moved) this.toast(direction === "undo" ? "Nothing to undo" : "Nothing to redo");
+    this.hud.setHistory(run.canUndo, run.canRedo);
   }
 
   /** Rush only. In the daily there is nothing after the puzzle you are on. */
