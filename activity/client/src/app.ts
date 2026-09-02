@@ -403,7 +403,10 @@ export class App {
         onFinish: (summary) => void this.finishRush(summary),
       });
 
-      replaceChildren(this.hud.left, this.rushPanel.element);
+      // Hold belongs in a rush as much as in the daily — more, since the pieces
+      // are unfamiliar and there is a clock. `hud.update` has been keeping the
+      // bay painted all along; it was simply never put on the rail.
+      replaceChildren(this.hud.left, this.rushPanel.element, this.hud.panels.hold);
       replaceChildren(this.hud.right, this.hud.panels.goal, this.hud.panels.meter, this.hud.panels.queue);
       this.showPlayfield();
       this.input.setGameInputEnabled(true);
