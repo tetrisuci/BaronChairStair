@@ -43,6 +43,7 @@ import { PuzzleArchive } from "./puzzles";
 import {
   type SocketData,
   duelSocket,
+  puzzlesInPlayFor,
   openDuelSocket,
   sweepDuels,
   useArchive,
@@ -369,6 +370,9 @@ app.get("/api/rush/standings", (c) => {
  * and because filing a deliberately empty run would otherwise buy the answer.
  */
 function maySeeSolution(session: Session, puzzleId: number): boolean {
+  // Never the puzzle they are on right now: a duel round names its puzzle, and
+  // this route would otherwise answer with the way to win it.
+  if (puzzlesInPlayFor(session.player.id).has(puzzleId)) return false;
   const { day, puzzle } = archive.today();
   if (puzzle.id !== puzzleId) return true;
   return store.runFor(day, session.player.id)?.solved === true;
