@@ -59,7 +59,7 @@ import {
 } from "../shared/duel";
 import { decodeBoard, ENGINE_ROWS, meetsTarget, type Puzzle, toPrompt } from "../shared/puzzle";
 import { isRushEligible, RUSH_SKIPS, rushSequence } from "../shared/rush";
-import { DEFAULT_HANDLING } from "../shared/tetris/handling";
+import { type Handling, sanitizeHandling } from "../shared/tetris/handling";
 import { InvalidRunError, parseInputLog, verifyRun } from "../shared/tetris/verify";
 
 /** Frames larger than this never reach a handler. */
@@ -89,6 +89,15 @@ interface Seat {
   score: number;
   /** Progress as last reported. Cosmetic; never trusted for anything. */
   progress: DuelProgress | null;
+  /**
+   * The handling this seat is judged under, agreed when they sat down.
+   *
+   * A log is replayed under this, so it has to be the handling the player
+   * actually played with — judging a tuned player's log under the defaults
+   * fails every one of them. Frozen at seat time so a mid-match change cannot
+   * re-judge a round already lost.
+   */
+  readonly handling: Handling;
   /** Rush only: how far into the shared stack this player has got. */
   position: number;
   /** Rush only: skips still in hand. Dealt when the match starts. */
@@ -97,12 +106,17 @@ interface Seat {
   wantsRematch: boolean;
 }
 
-function takeSeat(player: PlayerProfile, socket: ServerWebSocket<SocketData>): Seat {
+function takeSeat(
+  player: PlayerProfile,
+  socket: ServerWebSocket<SocketData>,
+  handling: Handling,
+): Seat {
   return {
     player,
     socket,
     score: 0,
     progress: null,
+    handling,
     position: 0,
     skipsLeft: 0,
     wantsRematch: false,
@@ -327,6 +341,11 @@ function dropRematch(duel: Duel): void {
 function awardClaim(duel: Duel, playerId: string, rawEvents: unknown): void {
   const round = duel.round;
   if (!round || round.winnerId !== null) return;
+  // Judged under the handling this player sat down with. Replaying a tuned
+  // player's log under the defaults fails every one of them, which is a player
+  // who can never win a round rather than a player who was beaten.
+  const seat = seatOf(duel, playerId);
+  if (!seat) return;
   // Admitted late, never reordered: the check above means a claim inside the
   // grace can never take a round the opponent has already won.
   if (Date.now() > round.endsAt + DUEL_CLAIM_GRACE_MS) return;
@@ -337,7 +356,7 @@ function awardClaim(duel: Duel, playerId: string, rawEvents: unknown): void {
       queue: round.puzzle.queue,
       hold: round.puzzle.hold,
     },
-    DEFAULT_HANDLING,
+    seat.handling,
     parseInputLog(rawEvents),
   );
   if (!meetsTarget(verified.attack, round.puzzle.targetAttack)) {
@@ -435,7 +454,7 @@ function awardRushClaim(duel: Duel, seat: Seat, rawEvents: unknown): void {
       queue: puzzle.queue,
       hold: puzzle.hold,
     },
-    DEFAULT_HANDLING,
+    seat.handling,
     parseInputLog(rawEvents),
   );
   if (!meetsTarget(verified.attack, puzzle.targetAttack)) {
@@ -551,7 +570,7 @@ function handle(socket: ServerWebSocket<SocketData>, command: DuelCommand): void
         hostId: session.player.id,
         createdAt: Date.now(),
         phase: "lobby",
-        seats: [takeSeat(session.player, socket)],
+        seats: [takeSeat(session.player, socket, sanitizeHandling(command.handling))],
         round: null,
         rush: null,
         roundsPlayed: 0,
@@ -572,7 +591,7 @@ function handle(socket: ServerWebSocket<SocketData>, command: DuelCommand): void
       if (seatOf(duel, session.player.id)) throw new InvalidRunError("You are already in it");
 
       releaseFinished(socket, current);
-      duel.seats.push(takeSeat(session.player, socket));
+      duel.seats.push(takeSeat(session.player, socket, sanitizeHandling(command.handling)));
       socket.data.duelId = duel.id;
       broadcast(duel, { type: "duel", duel: view(duel) });
       return;
