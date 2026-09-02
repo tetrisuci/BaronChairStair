@@ -11,9 +11,15 @@
  * The second rule is about what comes back. A board part-way through a puzzle
  * is a partial solution to that puzzle, so the opponent's board is never
  * mirrored — only how far along they are. Losing must not come with a hint.
+ *
+ * Rush changes who a message is addressed to, never what a claim means. Both
+ * players work one shared stack of puzzles, but each at their own pace, so the
+ * puzzle a player is on is sent to that player alone. A `round` names the
+ * puzzle both are racing on and a rush has no such thing.
  */
 
 import type { PuzzlePrompt } from "./puzzle";
+import { RUSH_DURATION_MS, RUSH_SEQUENCE_LENGTH } from "./rush";
 import type { InputEvent } from "./tetris/verify";
 
 /** Best-of counts a host may pick. Odd, so a decided match cannot tie. */
@@ -75,7 +81,7 @@ export interface DuelView {
   readonly settings: DuelSettings;
   readonly hostId: string;
   readonly players: readonly DuelPlayerView[];
-  /** From 1. Zero while still in the lobby. */
+  /** From 1. Zero in the lobby, and for all of a rush, which has no rounds. */
   readonly round: number;
 }
 
@@ -98,8 +104,10 @@ export type DuelCommand =
   | { readonly type: "join"; readonly duelId: string }
   | { readonly type: "leave" }
   | { readonly type: "ready" }
-  /** The log that solves this round's puzzle. The only claim there is. */
+  /** The log that solves the puzzle this player is on. The only claim there is. */
   | { readonly type: "claim"; readonly events: readonly InputEvent[] }
+  /** Rush only: give up on this puzzle and take the next one. Bounded. */
+  | { readonly type: "skip" }
   | { readonly type: "progress"; readonly progress: DuelProgress };
 
 // ── Server to client ─────────────────────────────────────────────────────────
@@ -113,6 +121,24 @@ export type DuelEvent =
       readonly puzzle: PuzzlePrompt;
       /** Server clock. The client shows a countdown; the server enforces it. */
       readonly endsAt: number;
+      readonly duel: DuelView;
+    }
+  /**
+   * Rush only: the puzzle this player is on now, sent to them and nobody else.
+   *
+   * Arrives once when the match opens and once each time they leave a puzzle
+   * behind, so a client never needs to know the stack to stay on it.
+   */
+  | {
+      readonly type: "rush";
+      /** Position in the shared stack, from 0. */
+      readonly index: number;
+      /** Null once the stack is spent — nothing left to play, clock still running. */
+      readonly puzzle: PuzzlePrompt | null;
+      /** Server clock for the whole match, not for this puzzle. */
+      readonly endsAt: number;
+      readonly solved: number;
+      readonly skipsLeft: number;
       readonly duel: DuelView;
     }
   | { readonly type: "opponent"; readonly progress: DuelProgress }
@@ -158,4 +184,19 @@ export function sanitizeSettings(input: unknown): DuelSettings {
 /** Rounds one player must take to win, so a decided match can stop early. */
 export function roundsToWin(rounds: number): number {
   return Math.floor(rounds / 2) + 1;
+}
+
+/**
+ * How many puzzles a rush duel stacks up.
+ *
+ * The single-player rush sizes its stack for its own five minutes, and a duel
+ * host may buy twice that. Pinning the stack to that constant would let a fast
+ * player in a long match run off the end of it with time still on the clock and
+ * nothing left to play, so the stack is sized to the clock the host chose.
+ *
+ * Skips are not scaled the same way and should not be: a longer match is more
+ * puzzles, but two skips is a decision either way.
+ */
+export function rushDuelLength(durationMs: number): number {
+  return Math.ceil((durationMs / RUSH_DURATION_MS) * RUSH_SEQUENCE_LENGTH);
 }

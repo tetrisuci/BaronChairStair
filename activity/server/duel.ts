@@ -9,7 +9,8 @@
  * whole race resolution: no lock, no timestamp comparison, no trust in either
  * client's clock. One `await` between reading `round.winnerId` and setting it
  * — a signature check, a database write, anything — lets two claims in the
- * same tick both through. {@link awardClaim} says so where it matters.
+ * same tick both through. {@link awardClaim} says so where it matters, and
+ * {@link awardRushClaim} carries the rule for the same reason.
  *
  * **Identity is resolved at the handshake, never from a message.** A frame
  * carries no id and is never asked for one; the socket knows who it belongs to
@@ -18,6 +19,10 @@
  * **Frames are unpoliced by everything else.** `limitBodySize`, all five rate
  * limiters and `maxRequestBodySize` are Hono HTTP middleware, and a WebSocket
  * frame meets none of them. Every bound a duel gets, it gets here.
+ *
+ * Two modes share all of it. A puzzle duel is rounds: one puzzle, both players,
+ * first to solve takes the round. A rush is one clock over one shared stack of
+ * puzzles that each player walks alone — see {@link RushMatch}.
  *
  * The registry is in memory, which makes it the first server state in this
  * codebase a restart destroys. That is unavoidable — a duel is two people
@@ -42,10 +47,11 @@ import {
   type DuelView,
   type RoundEnd,
   roundsToWin,
+  rushDuelLength,
   sanitizeSettings,
 } from "../shared/duel";
 import { decodeBoard, ENGINE_ROWS, meetsTarget, type Puzzle, toPrompt } from "../shared/puzzle";
-import { isRushEligible } from "../shared/rush";
+import { isRushEligible, RUSH_SKIPS, rushSequence } from "../shared/rush";
 import { DEFAULT_HANDLING } from "../shared/tetris/handling";
 import { InvalidRunError, parseInputLog, verifyRun } from "../shared/tetris/verify";
 
@@ -72,9 +78,18 @@ const LOBBY_LIST_SIZE = 20;
 interface Seat {
   readonly player: PlayerProfile;
   socket: ServerWebSocket<SocketData> | null;
+  /** Rounds won in a puzzle duel, puzzles solved in a rush. */
   score: number;
   /** Progress as last reported. Cosmetic; never trusted for anything. */
   progress: DuelProgress | null;
+  /** Rush only: how far into the shared stack this player has got. */
+  position: number;
+  /** Rush only: skips still in hand. Dealt when the match starts. */
+  skipsLeft: number;
+}
+
+function takeSeat(player: PlayerProfile, socket: ServerWebSocket<SocketData>): Seat {
+  return { player, socket, score: 0, progress: null, position: 0, skipsLeft: 0 };
 }
 
 interface Round {
@@ -94,7 +109,10 @@ interface Duel {
   readonly createdAt: number;
   phase: "lobby" | "playing" | "over";
   seats: Seat[];
+  /** Set for a puzzle duel only; a rush has no rounds. */
   round: Round | null;
+  /** Set for a rush only; a puzzle duel has no shared stack. */
+  rush: RushMatch | null;
   roundsPlayed: number;
 }
 
@@ -221,7 +239,9 @@ function endRound(duel: Duel, winnerId: string | null, reason: RoundEnd): void {
 function finish(duel: Duel, winnerId: string | null, reason: RoundEnd): void {
   duel.phase = "over";
   if (duel.round?.timer) clearTimeout(duel.round.timer);
+  if (duel.rush?.timer) clearTimeout(duel.rush.timer);
   duel.round = null;
+  duel.rush = null;
   broadcast(duel, { type: "matchOver", winnerId, reason, duel: view(duel) });
   duels.delete(duel.id);
   for (const seat of duel.seats) {
@@ -262,6 +282,134 @@ function awardClaim(duel: Duel, playerId: string, rawEvents: unknown): void {
   endRound(duel, playerId, "solved");
 }
 
+// ── Rush ─────────────────────────────────────────────────────────────────────
+
+/**
+ * A rush duel: one stack of puzzles, one clock, two players moving through it
+ * at their own pace.
+ *
+ * The stack is derived from a seed this process picks and never sends, and
+ * puzzles leave it one at a time, so neither player can see what is coming —
+ * the same property {@link pickPuzzle} gets from choosing late. Deriving it
+ * with `rushSequence` is also what makes "the same puzzles for both" a fact
+ * rather than an intention: there is one array, and two positions into it.
+ */
+interface RushMatch {
+  readonly sequence: readonly Puzzle[];
+  /** One deadline for the whole match. A rush has no per-puzzle clock. */
+  readonly endsAt: number;
+  timer: ReturnType<typeof setTimeout> | null;
+}
+
+function startRushMatch(duel: Duel): void {
+  const seed = (Math.random() * 0x1_0000_0000) >>> 0;
+  const rush: RushMatch = {
+    sequence: rushSequence(puzzlePool, seed, rushDuelLength(duel.settings.durationMs)),
+    endsAt: Date.now() + duel.settings.durationMs,
+    timer: null,
+  };
+  duel.rush = rush;
+  duel.phase = "playing";
+  for (const seat of duel.seats) {
+    seat.progress = null;
+    seat.position = 0;
+    seat.skipsLeft = RUSH_SKIPS;
+  }
+
+  rush.timer = setTimeout(() => endRushMatch(duel), duel.settings.durationMs);
+  // Sent one seat at a time, not broadcast: from the second solve onwards the
+  // two are on different puzzles, and this is the message that says which.
+  for (const seat of duel.seats) sendRushPuzzle(duel, seat);
+}
+
+/** The puzzle this player is on, addressed to them and to nobody else. */
+function sendRushPuzzle(duel: Duel, seat: Seat): void {
+  const rush = duel.rush;
+  if (!rush) return;
+  const puzzle = rush.sequence[seat.position];
+  send(seat.socket, {
+    type: "rush",
+    index: seat.position,
+    // Null rather than an ending: the stack is spent but the clock is not, and
+    // the opponent can still be catching up.
+    puzzle: puzzle ? toPrompt(puzzle) : null,
+    endsAt: rush.endsAt,
+    solved: seat.score,
+    skipsLeft: seat.skipsLeft,
+    duel: view(duel),
+  });
+}
+
+function advanceRush(duel: Duel, seat: Seat): void {
+  seat.position++;
+  seat.progress = null;
+  sendRushPuzzle(duel, seat);
+}
+
+/**
+ * Reads a rush claim against the puzzle that player is on, and moves them on.
+ *
+ * Nothing in here may await, for {@link awardClaim}'s reason and one of its
+ * own: the deadline is checked here and enforced by a timer, so an await
+ * between the check and the increment would let a solve be counted after
+ * `matchOver` had already gone out with the final score in it.
+ *
+ * A rush claim never ends the match. Only the clock does.
+ */
+function awardRushClaim(duel: Duel, seat: Seat, rawEvents: unknown): void {
+  const rush = duel.rush;
+  if (!rush) return;
+  if (Date.now() > rush.endsAt + DUEL_CLAIM_GRACE_MS) return;
+  const puzzle = rush.sequence[seat.position];
+  if (!puzzle) return;
+
+  const verified = verifyRun(
+    {
+      board: decodeBoard(puzzle.board, ENGINE_ROWS),
+      queue: puzzle.queue,
+      hold: puzzle.hold,
+    },
+    DEFAULT_HANDLING,
+    parseInputLog(rawEvents),
+  );
+  if (!meetsTarget(verified.attack, puzzle.targetAttack)) {
+    throw new InvalidRunError("That log does not solve this puzzle");
+  }
+
+  seat.score++;
+  advanceRush(duel, seat);
+  // The opponent is owed the score and nothing more. Which puzzle this player
+  // reached would tell them what is coming, and their board is never sent.
+  send(opponentOf(duel, seat.player.id)?.socket ?? null, { type: "duel", duel: view(duel) });
+}
+
+/**
+ * Gives up on a puzzle and takes the next one.
+ *
+ * Bounded, because it is the only way off a puzzle a player cannot see the
+ * answer to, and unbounded it would be a way to riffle the stack for the easy
+ * ones. {@link RUSH_SKIPS} is the same allowance a single-player rush gives,
+ * for the same reason.
+ */
+function skipRushPuzzle(duel: Duel, seat: Seat): void {
+  const rush = duel.rush;
+  if (!rush || seat.position >= rush.sequence.length) return;
+  if (seat.skipsLeft <= 0) throw new InvalidRunError(`A rush allows ${RUSH_SKIPS} skips`);
+  seat.skipsLeft--;
+  advanceRush(duel, seat);
+}
+
+/** Most solves takes it; equal counts is a draw. */
+function rushLeader(duel: Duel): string | null {
+  const [first, second] = [...duel.seats].sort((a, b) => b.score - a.score);
+  if (!first) return null;
+  return second && second.score === first.score ? null : first.player.id;
+}
+
+function endRushMatch(duel: Duel): void {
+  finish(duel, rushLeader(duel), "expired");
+}
+
 // ── Commands ─────────────────────────────────────────────────────────────────
 
 function handle(socket: ServerWebSocket<SocketData>, command: DuelCommand): void {
@@ -282,8 +430,9 @@ function handle(socket: ServerWebSocket<SocketData>, command: DuelCommand): void
         hostId: session.player.id,
         createdAt: Date.now(),
         phase: "lobby",
-        seats: [{ player: session.player, socket, score: 0, progress: null }],
+        seats: [takeSeat(session.player, socket)],
         round: null,
+        rush: null,
         roundsPlayed: 0,
       };
       duels.set(duel.id, duel);
@@ -300,7 +449,7 @@ function handle(socket: ServerWebSocket<SocketData>, command: DuelCommand): void
       if (duel.seats.length >= DUEL_PLAYERS) throw new InvalidRunError("That lobby is full");
       if (seatOf(duel, session.player.id)) throw new InvalidRunError("You are already in it");
 
-      duel.seats.push({ player: session.player, socket, score: 0, progress: null });
+      duel.seats.push(takeSeat(session.player, socket));
       socket.data.duelId = duel.id;
       broadcast(duel, { type: "duel", duel: view(duel) });
       return;
@@ -311,13 +460,27 @@ function handle(socket: ServerWebSocket<SocketData>, command: DuelCommand): void
       if (current.hostId !== session.player.id) throw new InvalidRunError("Only the host starts it");
       if (current.phase !== "lobby") throw new InvalidRunError("It has already started");
       if (current.seats.length < DUEL_PLAYERS) throw new InvalidRunError("Nobody has joined yet");
-      startRound(current);
+      if (current.settings.mode === "rush") startRushMatch(current);
+      else startRound(current);
       return;
     }
 
     case "claim": {
       if (!current || current.phase !== "playing") return;
-      awardClaim(current, session.player.id, command.events);
+      if (current.settings.mode !== "rush") {
+        awardClaim(current, session.player.id, command.events);
+        return;
+      }
+      const seat = seatOf(current, session.player.id);
+      if (seat) awardRushClaim(current, seat, command.events);
+      return;
+    }
+
+    case "skip": {
+      if (!current || current.phase !== "playing") return;
+      if (current.settings.mode !== "rush") return;
+      const seat = seatOf(current, session.player.id);
+      if (seat) skipRushPuzzle(current, seat);
       return;
     }
 
@@ -463,7 +626,10 @@ export function sweepLobbies(now = Date.now()): number {
 
 /** Test seam: the registry is process-local and otherwise unreachable. */
 export function resetDuels(): void {
-  for (const duel of duels.values()) if (duel.round?.timer) clearTimeout(duel.round.timer);
+  for (const duel of duels.values()) {
+    if (duel.round?.timer) clearTimeout(duel.round.timer);
+    if (duel.rush?.timer) clearTimeout(duel.rush.timer);
+  }
   duels.clear();
   socketsByPlayer.clear();
 }
