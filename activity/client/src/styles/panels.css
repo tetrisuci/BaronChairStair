@@ -132,9 +132,26 @@
   /* Long puzzles run to seventy pieces; the panel stays put and the list scrolls. */
   max-height: 250px;
   overflow-y: auto;
+  overscroll-behavior: contain;
   min-height: 0;
   scrollbar-width: thin;
   scrollbar-color: var(--ink-line) transparent;
+}
+
+/*
+ * When a rail is shorter than its panels, the panels that already scroll are
+ * the ones that give way.
+ *
+ * Shrinking the next queue or the leaderboard costs nothing that was not
+ * already behind a scroll, and it keeps what you actually need in view — the
+ * goal you are aiming at, and the verdict and share slip after a run — pinned
+ * where they are. Without the `min-height` a column flex item refuses to
+ * shrink below its content, and the whole rail scrolls instead, taking those
+ * off the top with it.
+ */
+.rail > .panel:has(.queue),
+.rail > .panel:has(.board-list) {
+  min-height: 0;
 }
 
 .queue__row {

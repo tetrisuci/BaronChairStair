@@ -155,10 +155,15 @@
   position: fixed;
   inset: 0;
   z-index: 20;
-  display: grid;
-  place-items: center;
+  display: flex;
   padding: 18px;
   background: rgb(46 21 51 / 0.55);
+  /*
+   * A last resort, for a viewport too short even for the head and foot alone.
+   * The sheet caps itself below, so normally nothing overflows and no scrollbar
+   * appears here.
+   */
+  overflow: auto;
 }
 
 .spec[hidden] { display: none; }
@@ -166,6 +171,18 @@
 .spec__sheet {
   width: min(780px, 100%);
   max-height: 100%;
+  /*
+   * Centred with auto margins rather than `place-items` on the parent.
+   *
+   * As a grid item the sheet sized its own row, so this `max-height: 100%`
+   * resolved against the sheet's own height and bound nothing: on a short
+   * viewport it simply ran off the bottom of the screen, taking the footer and
+   * everything below the fold with it. A flex item's percentage height
+   * resolves against the container, which is a real number. Auto margins also
+   * centre without the trap `align-items: center` sets — when an item does
+   * overflow they collapse instead of pushing its top out of reach.
+   */
+  margin: auto;
   display: flex;
   flex-direction: column;
   border: var(--edge) solid var(--ink);
@@ -181,6 +198,8 @@
 
 .spec__head {
   display: flex;
+  /* The columns absorb every pixel the sheet gives up; the bars stay put. */
+  flex: none;
   align-items: center;
   gap: 12px;
   padding: 12px 16px;
@@ -204,7 +223,10 @@
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(290px, 1fr));
   overflow-y: auto;
+  overscroll-behavior: contain;
   min-height: 0;
+  scrollbar-width: thin;
+  scrollbar-color: var(--ink-line) transparent;
 }
 
 .spec__col { padding: 14px 16px 18px; }
@@ -301,6 +323,7 @@
 
 .spec__foot {
   display: flex;
+  flex: none;
   align-items: center;
   justify-content: space-between;
   gap: 12px;

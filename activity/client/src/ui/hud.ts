@@ -72,7 +72,7 @@ export function createHud(): Hud {
   const queueList = el("div", { class: "queue" });
   const queuePanel = panel("Next", {}, queueList);
 
-  const right = el("div", { class: "rail rail--right" }, goalPanel, meterPanel, queuePanel);
+  const right = el("div", { class: "rail" }, goalPanel, meterPanel, queuePanel);
 
   function paintMeter(attack: number, target: number): void {
     const ratio = target === 0 ? 0 : Math.min(1, attack / target);
