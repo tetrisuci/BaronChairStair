@@ -9,6 +9,11 @@
 import { DEFAULT_HANDLING, type Handling, sanitizeHandling } from "@shared/tetris/handling";
 import type { Api } from "./api";
 import { DEFAULT_KEYBINDS, type Keybinds, sanitizeKeybinds } from "@shared/keybinds";
+import {
+  type ArchiveFilter,
+  DEFAULT_ARCHIVE_FILTER,
+  sanitizeArchiveFilter,
+} from "@shared/archive-filter";
 
 /**
  * Bumped when the meaning of a stored value changes, not just its shape.
@@ -17,13 +22,32 @@ import { DEFAULT_KEYBINDS, type Keybinds, sanitizeKeybinds } from "@shared/keybi
  * anything older is discarded rather than reinterpreted.
  */
 const SETTINGS_VERSION = 2;
-const STORAGE_KEY = `puzzle.settings.v${SETTINGS_VERSION}`;
+
+/**
+ * Local settings are stored per player, not per browser.
+ *
+ * `localStorage` is scoped to the origin, and the activity has one origin for
+ * everybody, so a single unqualified key is shared by every Discord account
+ * that has ever opened the activity in this browser. Because local settings win
+ * on load, the second player to sit down would inherit the first player's
+ * bindings — and then, on their first change, sync those over their own saved
+ * settings on the server. The player id keeps the two apart.
+ *
+ * Players who had settings under the old shared key fall through to their
+ * server copy, which is written automatically on every change, so in practice
+ * only somebody who has never once been online loses anything.
+ */
+function storageKey(playerId: string): string {
+  return `puzzle.settings.v${SETTINGS_VERSION}.${playerId}`;
+}
 /** Wait for a lull before syncing, so dragging a slider is one request. */
 const SYNC_DEBOUNCE_MS = 800;
 
 export interface Settings {
   readonly handling: Handling;
   readonly keybinds: Keybinds;
+  /** What the explorer is showing, and what a random puzzle is drawn from. */
+  readonly filter: ArchiveFilter;
 }
 
 /** What travels to and from the server, so a stale copy can be recognised. */
@@ -34,6 +58,7 @@ interface StoredSettings extends Settings {
 export const DEFAULT_SETTINGS: Settings = {
   handling: DEFAULT_HANDLING,
   keybinds: DEFAULT_KEYBINDS,
+  filter: DEFAULT_ARCHIVE_FILTER,
 };
 
 function parse(raw: unknown): Settings {
@@ -41,12 +66,13 @@ function parse(raw: unknown): Settings {
   return {
     handling: sanitizeHandling(value.handling),
     keybinds: sanitizeKeybinds(value.keybinds),
+    filter: sanitizeArchiveFilter(value.filter),
   };
 }
 
-function readLocal(): Settings | null {
+function readLocal(key: string): Settings | null {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(key);
     return raw ? parse(JSON.parse(raw)) : null;
   } catch {
     // Private-mode browsers and blocked storage both land here; defaults are fine.
@@ -54,9 +80,9 @@ function readLocal(): Settings | null {
   }
 }
 
-function writeLocal(settings: Settings): void {
+function writeLocal(key: string, settings: Settings): void {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+    localStorage.setItem(key, JSON.stringify(settings));
   } catch {
     // Nothing to do — the in-memory copy still works for this session.
   }
@@ -69,6 +95,7 @@ export class SettingsStore {
 
   private constructor(
     private readonly api: Api,
+    private readonly key: string,
     initial: Settings,
   ) {
     this.current = initial;
@@ -81,9 +108,10 @@ export class SettingsStore {
    * no way to tell which is newer, and the copy on this machine is the one the
    * player last touched here.
    */
-  static async load(api: Api): Promise<SettingsStore> {
-    const local = readLocal();
-    const store = new SettingsStore(api, local ?? DEFAULT_SETTINGS);
+  static async load(api: Api, playerId: string): Promise<SettingsStore> {
+    const key = storageKey(playerId);
+    const local = readLocal(key);
+    const store = new SettingsStore(api, key, local ?? DEFAULT_SETTINGS);
     if (!local) {
       try {
         const { preferences } = await api.preferences();
@@ -117,7 +145,7 @@ export class SettingsStore {
 
   private replace(next: Settings, { sync }: { sync: boolean }): void {
     this.current = next;
-    writeLocal(next);
+    writeLocal(this.key, next);
     for (const listener of this.listeners) listener(next);
     if (sync) this.scheduleSync();
   }

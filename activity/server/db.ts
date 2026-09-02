@@ -26,6 +26,41 @@ export interface RunResult {
   readonly clears: readonly string[];
 }
 
+/** One rush, as it goes on the board. */
+export interface RushResult {
+  readonly solved: number;
+  /** Puzzles started, including the one the buzzer interrupted. */
+  readonly attempted: number;
+  readonly skipsUsed: number;
+  /**
+   * Time to the last solve, which is what separates two players on the same
+   * count. Bounded by the server's own measurement of the run; see the note in
+   * the rush route.
+   */
+  readonly timeToLastSolveMs: number;
+  /** The whole run, as measured between the server's two timestamps. */
+  readonly elapsedMs: number;
+}
+
+export interface StoredRushRun extends RushResult {
+  readonly day: number;
+  readonly player: PlayerProfile;
+  readonly createdAt: number;
+}
+
+interface RushRow {
+  day: number;
+  player_id: string;
+  username: string;
+  avatar_url: string | null;
+  solved: number;
+  attempted: number;
+  skips_used: number;
+  time_to_last_ms: number;
+  elapsed_ms: number;
+  created_at: number;
+}
+
 export interface StoredRun extends RunResult {
   readonly day: number;
   readonly puzzleId: number;
@@ -77,6 +112,26 @@ CREATE TABLE IF NOT EXISTS runs (
 
 CREATE INDEX IF NOT EXISTS runs_by_day    ON runs (day, guild_id);
 CREATE INDEX IF NOT EXISTS runs_by_player ON runs (player_id, day);
+-- A server's streak asks the opposite question to the two above — one guild
+-- across every day, rather than one day across every guild — and neither of
+-- them leads with guild_id, so without this it walks the table backwards and
+-- pays for every other server's history on the way.
+CREATE INDEX IF NOT EXISTS runs_by_guild  ON runs (guild_id, solved, day);
+
+CREATE TABLE IF NOT EXISTS rush_runs (
+  day             INTEGER NOT NULL,
+  player_id       TEXT NOT NULL REFERENCES players(id),
+  guild_id        TEXT,
+  solved          INTEGER NOT NULL,
+  attempted       INTEGER NOT NULL,
+  skips_used      INTEGER NOT NULL,
+  time_to_last_ms INTEGER NOT NULL,
+  elapsed_ms      INTEGER NOT NULL,
+  created_at      INTEGER NOT NULL,
+  PRIMARY KEY (day, player_id)
+);
+
+CREATE INDEX IF NOT EXISTS rush_by_day ON rush_runs (day, guild_id);
 
 CREATE TABLE IF NOT EXISTS preferences (
   player_id  TEXT PRIMARY KEY REFERENCES players(id),
@@ -101,6 +156,25 @@ function toStoredRun(row: RunRow): StoredRun {
     createdAt: row.created_at,
   };
 }
+
+function toStoredRushRun(row: RushRow): StoredRushRun {
+  return {
+    day: row.day,
+    player: { id: row.player_id, username: row.username, avatarUrl: row.avatar_url },
+    solved: row.solved,
+    attempted: row.attempted,
+    skipsUsed: row.skips_used,
+    timeToLastSolveMs: row.time_to_last_ms,
+    elapsedMs: row.elapsed_ms,
+    createdAt: row.created_at,
+  };
+}
+
+const RUSH_COLUMNS = `
+  rush_runs.day, rush_runs.player_id, players.username, players.avatar_url,
+  rush_runs.solved, rush_runs.attempted, rush_runs.skips_used,
+  rush_runs.time_to_last_ms, rush_runs.elapsed_ms, rush_runs.created_at
+`;
 
 const RUN_COLUMNS = `
   runs.day, runs.puzzle_id, runs.player_id, players.username, players.avatar_url,
@@ -291,6 +365,66 @@ export class Store {
     return streak;
   }
 
+  /**
+   * Consecutive days ending at `day` on which somebody in the server solved.
+   *
+   * Deliberately stricter than {@link streak}. That one forgives a missing
+   * anchor day, because the player may simply not have played yet today; a
+   * recap only ever asks about a day that is already over, so the same
+   * forgiveness would congratulate a server on a run it had just broken. Here
+   * a gap is a gap.
+   *
+   * `DISTINCT` because a day holds one row per member who played it. Without
+   * it the limit would bound rows rather than days, and three friends solving
+   * together would cost the streak two days of reach.
+   */
+  guildStreak(guildId: string, day: number): number {
+    const rows = this.db
+      .query<{ day: number }, [string, number]>(
+        `SELECT DISTINCT day FROM runs
+         WHERE guild_id = ?1 AND solved = 1 AND day <= ?2
+         ORDER BY day DESC LIMIT 400`,
+      )
+      .all(guildId, day);
+
+    let streak = 0;
+    let expected = day;
+    for (const row of rows) {
+      if (row.day !== expected) break;
+      streak++;
+      expected--;
+    }
+    return streak;
+  }
+
+  /**
+   * How many of a server's members filed a run for a day.
+   *
+   * A recap names everybody, but the board it reads is capped. This is what
+   * tells it that it is about to leave people out, rather than silently
+   * shortening the list.
+   */
+  dayCount(day: number, guildId: string): number {
+    return (
+      this.db
+        .query<{ n: number }, [number, string]>(
+          "SELECT COUNT(*) AS n FROM runs WHERE day = ?1 AND guild_id = ?2",
+        )
+        .get(day, guildId)?.n ?? 0
+    );
+  }
+
+  /** The same, for the rush board. */
+  rushDayCount(day: number, guildId: string): number {
+    return (
+      this.db
+        .query<{ n: number }, [number, string]>(
+          "SELECT COUNT(*) AS n FROM rush_runs WHERE day = ?1 AND guild_id = ?2",
+        )
+        .get(day, guildId)?.n ?? 0
+    );
+  }
+
   /** How many players have solved a given day, across every server. */
   solvedCount(day: number): number {
     return (
@@ -307,6 +441,96 @@ export class Store {
       this.db
         .query<{ n: number }, [string]>(
           "SELECT COUNT(*) AS n FROM runs WHERE player_id = ?1 AND solved = 1",
+        )
+        .get(playerId)?.n ?? 0
+    );
+  }
+
+  /**
+   * Records a ranked rush. The first one of the day is the one that counts.
+   *
+   * `DO NOTHING` rather than the daily's conditional upsert: a rush cannot
+   * improve on itself the way an unsolved puzzle can later be solved, and the
+   * start ticket is deliberately stateless, so nothing but this stops a player
+   * opening rush after rush and keeping the best. Practice runs never reach
+   * here at all.
+   *
+   * @returns the rush now on file, which may be an earlier one.
+   */
+  recordRushRun(
+    day: number,
+    player: PlayerProfile,
+    guildId: string | null,
+    result: RushResult,
+  ): { run: StoredRushRun; isFirst: boolean } {
+    this.upsertPlayer(player);
+    const changes = this.db
+      .query(
+        `INSERT INTO rush_runs (day, player_id, guild_id, solved, attempted,
+                                skips_used, time_to_last_ms, elapsed_ms, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+         ON CONFLICT(day, player_id) DO NOTHING`,
+      )
+      .run(
+        day,
+        player.id,
+        guildId,
+        result.solved,
+        result.attempted,
+        result.skipsUsed,
+        result.timeToLastSolveMs,
+        result.elapsedMs,
+        Date.now(),
+      );
+
+    const run = this.rushRunFor(day, player.id);
+    if (!run) throw new Error("Rush run vanished immediately after being written");
+    return { run, isFirst: changes.changes > 0 };
+  }
+
+  rushRunFor(day: number, playerId: string): StoredRushRun | null {
+    const row = this.db
+      .query<RushRow, [number, string]>(
+        `SELECT ${RUSH_COLUMNS} FROM rush_runs
+         JOIN players ON players.id = rush_runs.player_id
+         WHERE rush_runs.day = ?1 AND rush_runs.player_id = ?2`,
+      )
+      .get(day, playerId);
+    return row ? toStoredRushRun(row) : null;
+  }
+
+  /**
+   * Rush board for a day: most solved first, then whoever got there soonest.
+   * Scoped to a guild when there is one.
+   */
+  rushLeaderboard(day: number, guildId: string | null, limit = 25): StoredRushRun[] {
+    const order = `ORDER BY rush_runs.solved DESC, rush_runs.time_to_last_ms ASC`;
+    const rows = guildId
+      ? this.db
+          .query<RushRow, [number, string, number]>(
+            `SELECT ${RUSH_COLUMNS} FROM rush_runs
+             JOIN players ON players.id = rush_runs.player_id
+             WHERE rush_runs.day = ?1 AND rush_runs.guild_id = ?2
+             ${order} LIMIT ?3`,
+          )
+          .all(day, guildId, limit)
+      : this.db
+          .query<RushRow, [number, number]>(
+            `SELECT ${RUSH_COLUMNS} FROM rush_runs
+             JOIN players ON players.id = rush_runs.player_id
+             WHERE rush_runs.day = ?1
+             ${order} LIMIT ?2`,
+          )
+          .all(day, limit);
+    return rows.map(toStoredRushRun);
+  }
+
+  /** A player's best rush ever, for the sign-off after a run. */
+  bestRush(playerId: string): number {
+    return (
+      this.db
+        .query<{ n: number }, [string]>(
+          "SELECT MAX(solved) AS n FROM rush_runs WHERE player_id = ?1",
         )
         .get(playerId)?.n ?? 0
     );

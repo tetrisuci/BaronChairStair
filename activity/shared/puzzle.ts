@@ -91,12 +91,59 @@ export interface Puzzle {
   };
 }
 
+/**
+ * A puzzle as it appears in a list, with no board and no answer.
+ *
+ * Small enough that the whole archive travels in one response, which is what
+ * lets the explorer and its filters run entirely in the browser.
+ */
+export interface ArchiveListing {
+  readonly id: number;
+  readonly title: string;
+  readonly author: string;
+  readonly difficulty: number;
+  readonly goal: string;
+  readonly set: string | null;
+  /**
+   * Pieces the player actually places, so a filter for short puzzles does not
+   * turn up ones that are a piece longer than they claim. The queue alone
+   * undercounts every puzzle that starts with something in hold.
+   */
+  readonly pieces: number;
+  readonly targetAttack: number;
+}
+
+export function toListing(puzzle: Puzzle): ArchiveListing {
+  return {
+    id: puzzle.id,
+    title: puzzle.title,
+    author: puzzle.author,
+    difficulty: puzzle.difficulty,
+    goal: puzzle.goal,
+    set: puzzle.set,
+    pieces: pieceBudget(puzzle),
+    targetAttack: puzzle.targetAttack,
+  };
+}
+
 /** What the client needs to play. Withholds the answer until the run is over. */
 export type PuzzlePrompt = Omit<Puzzle, "solution" | "source">;
 
 export function toPrompt(puzzle: Puzzle): PuzzlePrompt {
   const { solution: _solution, source: _source, ...prompt } = puzzle;
   return prompt;
+}
+
+/**
+ * Whether a run cleared the puzzle's bar.
+ *
+ * One definition, imported by the client that shows the verdict and the server
+ * that records it. Rush counts solves, so a rush and a daily disagreeing about
+ * whether the same replayed run counted would be a scoring bug, not a rounding
+ * one.
+ */
+export function meetsTarget(attack: number, targetAttack: number): boolean {
+  return attack >= targetAttack;
 }
 
 /** Total pieces a player may place — the queue, plus anything pre-held. */

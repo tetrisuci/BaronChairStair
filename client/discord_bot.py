@@ -38,6 +38,15 @@ The civil/mechanical job tracker these used to front was removed once bennxt
 got hired; the names and their descriptions are kept so old invocations still
 resolve and the command picker looks unchanged.
 
+Daily recap (backed by puzzle_recap.py; polled every 5 minutes):
+    Once the puzzle day turns over, the bot replies to that server's own
+    /puzzle play message with yesterday's results — solvers fastest first,
+    everyone who missed grouped after them, and the server's streak. Exactly
+    once per server per day: the claim is a (guild_id, day) primary key in
+    stats.db, not a timer, so a restart at any hour cannot double-post it.
+    A server that never ran /puzzle play gets no recap; there is nothing to
+    reply to. This is the one place the bot mentions people on purpose.
+
 Activity tracker (backed by presence_tracker.py; samples every 10 minutes):
     /activity graph [days] [breakdown] [guild_id]
                                            PNG graph of online users
@@ -46,53 +55,6 @@ Activity tracker (backed by presence_tracker.py; samples every 10 minutes):
 
 Both accept an optional guild_id to inspect any server the bot is in; the
 x-axis is labelled in Pacific time (PST/PDT).
-
-Tetris Impostor party game (backed by impostor.py, impostor_words.py,
-impostor_game.py, impostor_views.py, impostor_vote.py and
-impostor_commands.py).
-Everyone gets a word; the impostor gets a SIMILAR word from the same group
-("T-spin double" vs "T-spin triple") so they can bluff:
-    /impostor start [players] [delivery] [pack] [impostors] [category]
-                    [decoy] [blind] [guessing] [voting] [wordlist]
-                                           open a lobby, then Join / Deal.
-                                           players @mentions the roster up
-                                           front, skipping the Join step;
-                                           delivery defaults to an in-channel
-                                           "See my word" button (ephemeral,
-                                           needs no open DMs), delivery:dm
-                                           pushes a DM instead;
-                                           voting gives the crew a "Call a
-                                           vote" button — eject the impostor
-                                           to win, eject a crewmate to lose;
-                                           wordlist (on by default) posts the
-                                           board of possible words to the
-                                           channel — the same list the
-                                           impostor guesses from;
-                                           pack picks the category (tetris
-                                           terms, openers, players, ...);
-                                           decoy:false falls back to giving
-                                           the impostor no word at all;
-                                           blind:true does not tell them;
-                                           guessing:true (default) puts a
-                                           Guess button on the round message —
-                                           the impostor picks the crew's word
-                                           from a dropdown and wins outright
-                                           if right, loses if wrong
-    /impostor help [topic] [share]         rules, options, or word upkeep;
-                                           private unless share:true
-    /impostor myword                       re-read your own role privately
-    /impostor status                       who is in / is a round running
-    /impostor reveal                       end the round, show word + impostors
-    /impostor cancel                       scrap it without revealing
-    /impostor words list|add|remove|deletepack|import [scope]
-                                           maintain data/impostor_words.json.
-                                           scope:server (default) edits the
-                                           shared packs and needs Manage
-                                           Server; scope:mine makes a pack
-                                           tied to you that only you can
-                                           start a round with. Hand edits to
-                                           the JSON are picked up
-                                           automatically.
 
 Requires the privileged Server Members and Presence intents to be enabled in
 the Discord Developer Portal (Bot > Privileged Gateway Intents); without them
@@ -122,7 +84,8 @@ from teto_client import TetoClient, TetoError
 from build_snapshots import build_rounds
 from render import top_attack_bursts
 import presence_tracker
-from impostor_commands import impostor_group
+import puzzle_commands
+import puzzle_recap
 from puzzle_commands import puzzle_group
 
 log = logging.getLogger(__name__)
@@ -361,6 +324,17 @@ db.execute("""
 """)
 db.commit()
 
+# puzzle_plays, owned by client/puzzle_recap.py. Same policy as presence
+# below: if the table cannot be made, the daily recap turns itself off and the
+# /puzzle commands carry on without it.
+try:
+    puzzle_recap.init_db(db)
+    puzzle_commands.recap_db = db
+    recap_error = None
+except sqlite3.Error as e:
+    recap_error = f"{type(e).__name__}: {e}"
+    print(f"puzzle recap disabled: {recap_error}", file=sys.stderr)
+
 # presence_samples, owned by client/presence_tracker.py. A schema mismatch
 # disables presence tracking instead of taking the whole bot down with it --
 # same policy as the internship tracker below.
@@ -470,6 +444,8 @@ async def on_ready():
             internship_sweep.start()
     if presence_error is None and not presence_sample.is_running():
         presence_sample.start()
+    if recap_error is None and not puzzle_recap_post.is_running():
+        puzzle_recap_post.start()
     print(f"Logged in as {bot.user} (id: {bot.user.id})")
 
 
@@ -1316,6 +1292,75 @@ async def _presence_wait_ready():
     await bot.wait_until_ready()
 
 
+# The activity owns the calendar, so the only reliable question is "what day
+# is it now" — asked often enough that a restart at any hour still catches the
+# turnover, and cheaply enough that asking costs nothing.
+RECAP_POLL_MINUTES = 5
+# The one place this bot pings on purpose. Users only, so a recap naming
+# everyone who played can never reach @everyone through a display name.
+#
+# `replied_user=False` because a reply pings the author of what it replies to
+# by default, and what this replies to is the bot's own announcement — so the
+# default is a notification aimed at nobody. Stated rather than inherited: a
+# live test showed the bot in the posted message's own mention list.
+RECAP_MENTIONS = discord.AllowedMentions(
+    everyone=False, roles=False, users=True, replied_user=False)
+
+
+async def _post_recap(play: puzzle_recap.Play) -> None:
+    """
+    Reply to one server's announcement with how the day went.
+
+    The board is fetched before the claim is taken, so an activity outage
+    leaves the day owed and tries again on the next tick. The claim is taken
+    before the message is sent, so a send that fails costs that server that
+    day — which is the deliberate half of never posting twice.
+    """
+    payload = await puzzle_commands.recap_payload(play.guild_id, play.day)
+    text = puzzle_recap.format_recap(payload)
+    if not text:
+        # Announced, and then nobody played it. Claim anyway, or every tick for
+        # the rest of the day asks the same question and gets the same nothing.
+        puzzle_recap.claim(db, play.guild_id, play.day)
+        return
+    if not puzzle_recap.claim(db, play.guild_id, play.day):
+        return
+    channel = bot.get_channel(play.channel_id) or await bot.fetch_channel(play.channel_id)
+    message = await channel.fetch_message(play.message_id)
+    await message.reply(text, allowed_mentions=RECAP_MENTIONS)
+
+
+@tasks.loop(minutes=RECAP_POLL_MINUTES)
+async def puzzle_recap_post():
+    """Post yesterday's results, once per server, as a reply to its own play.
+
+    Each server gets its own try for the same reason presence_sample does: an
+    unhandled exception would permanently stop the tasks.loop, and a server
+    whose channel was deleted must not starve the servers after it.
+    """
+    today = await puzzle_commands.current_day()
+    if today is None:
+        return
+    yesterday = today - 1
+
+    for play in puzzle_recap.pending(db, yesterday):
+        try:
+            await _post_recap(play)
+        except Exception as e:
+            print(f"recap failed for guild {play.guild_id} day {play.day}: "
+                  f"{type(e).__name__}: {e}", file=sys.stderr)
+
+    try:
+        puzzle_recap.prune(db, yesterday - puzzle_recap.RETAIN_DAYS)
+    except sqlite3.Error as e:
+        print(f"recap prune failed: {type(e).__name__}: {e}", file=sys.stderr)
+
+
+@puzzle_recap_post.before_loop
+async def _recap_wait_ready():
+    await bot.wait_until_ready()
+
+
 activity = app_commands.Group(name="activity",
                               description="Server online-activity tracker")
 
@@ -1428,7 +1473,6 @@ async def activity_now(interaction: discord.Interaction,
 
 
 bot.tree.add_command(activity)
-bot.tree.add_command(impostor_group)
 bot.tree.add_command(puzzle_group)
 
 

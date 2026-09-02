@@ -8,6 +8,8 @@
  * every other one has been played.
  */
 
+import { shuffledIndices } from "./rng";
+
 const MS_PER_DAY = 86_400_000;
 
 /** Day 1 of the game, as a local calendar date. Puzzle numbers count from here. */
@@ -109,27 +111,6 @@ export function nextResetAt(now: Date | number = Date.now(), options: DayOptions
   const wall = wallClock(instant, timeZone);
   // Date.UTC normalises a day past the end of the month.
   return localMidnight(wall.year, wall.month, wall.day + 1, timeZone);
-}
-
-/** Mulberry32 — small, fast, and stable across runtimes, which is what matters. */
-function randomFrom(seed: number): () => number {
-  let state = seed >>> 0;
-  return () => {
-    state = (state + 0x6d2b79f5) >>> 0;
-    let t = Math.imul(state ^ (state >>> 15), 1 | state);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4_294_967_296;
-  };
-}
-
-function shuffledIndices(count: number, seed: number): number[] {
-  const order = Array.from({ length: count }, (_, i) => i);
-  const random = randomFrom(seed);
-  for (let i = count - 1; i > 0; i--) {
-    const j = Math.floor(random() * (i + 1));
-    [order[i], order[j]] = [order[j]!, order[i]!];
-  }
-  return order;
 }
 
 /**

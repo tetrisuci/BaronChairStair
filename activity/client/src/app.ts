@@ -10,10 +10,13 @@
 import { BOARD_HEIGHT, type PuzzlePrompt, type SolutionStep } from "@shared/puzzle";
 import type { InputEvent } from "@shared/tetris/verify";
 import type { Connection } from "./discord";
-import type { ArchiveEntry, DailyResponse, StoredRun } from "./api";
+import type { DailyResponse, RushState, StoredRun } from "./api";
+import type { ArchiveListing } from "@shared/puzzle";
+import { filterArchive } from "@shared/archive-filter";
 import { ApiError } from "./api";
 import { InputRouter } from "./game/input";
-import type { LocalAction } from "@shared/keybinds";
+import { type LocalAction, keyName } from "@shared/keybinds";
+import { RushSession, type RushSummary } from "./game/rush";
 import { PuzzleRun, type RunSnapshot } from "./game/runner";
 import { SolutionPlayer } from "./game/solution-player";
 import { BoardRenderer } from "./render/board";
@@ -27,6 +30,13 @@ import {
   createVerdictPanel,
   createWalkthroughPanel,
 } from "./ui/results";
+import { createExplorer } from "./ui/explorer";
+import {
+  createRushBoard,
+  createRushIntro,
+  createRushPanel,
+  createRushResultCard,
+} from "./ui/rush";
 import { createSettingsDialog } from "./ui/settings-dialog";
 import type { ShareFields } from "./ui/share";
 
@@ -47,6 +57,12 @@ export class App {
   });
   private readonly renderer = new BoardRenderer(this.canvas);
   private readonly stage = el("div", { class: "stage" }, this.canvas, this.badge.element);
+  /**
+   * The play area. Rush borrows it whole for its intro and its sign-off, where
+   * there is no board to look at and a card marooned in one rail beside an
+   * empty stage reads as something having gone wrong.
+   */
+  private readonly deck = el("div", { class: "deck" });
   private readonly toastNode = el("div", { class: "toast", attrs: { hidden: true } });
 
   private readonly input: InputRouter;
@@ -54,7 +70,24 @@ export class App {
   private readonly verdict;
   private readonly walkthrough = createWalkthroughPanel();
 
+  private readonly rushPanel = createRushPanel(() => this.rush?.giveUp());
+  private readonly rushBoard = createRushBoard();
+  private readonly rushIntro;
+  private readonly rushResult;
+  private readonly explorer;
+
   private run: PuzzleRun | null = null;
+  /**
+   * The rush in progress, if any. While it exists it owns the board, the input,
+   * and the clock, and the daily's own run is put away — the two modes share one
+   * stage and must never both be driving it.
+   */
+  private rush: RushSession | null = null;
+  private rushTicket: string | null = null;
+  private rushSkips = 0;
+  private rushRanked = true;
+  private rushState: RushState | null = null;
+  private mode: "daily" | "rush" | "explore" = "daily";
   private solutionPlayer: SolutionPlayer | null = null;
   private daily: DailyResponse | null = null;
   private submitting = false;
@@ -76,7 +109,7 @@ export class App {
   private sheetOpenedAt = Date.now();
   /** Keeps the clock moving before the first input and between attempts. */
   private clockTimer: ReturnType<typeof setInterval> | null = null;
-  private archive: readonly ArchiveEntry[] | null = null;
+  private archive: readonly ArchiveListing[] | null = null;
 
   constructor(
     private readonly root: HTMLElement,
@@ -84,7 +117,10 @@ export class App {
     private readonly settings: SettingsStore,
   ) {
     this.input = new InputRouter(settings.value.keybinds, {
-      onGameKey: (key, down) => this.run?.input(key, down),
+      onGameKey: (key, down) => {
+        if (this.rush) this.rush.input(key, down);
+        else this.run?.input(key, down);
+      },
       onLocalAction: (action) => this.handleLocalAction(action),
     });
 
@@ -108,6 +144,28 @@ export class App {
       onToggleLeaderboard: () => this.toggleLeaderboard(),
       onPractice: () => void this.startPractice(),
       onBackToDaily: () => this.returnToDaily(),
+    });
+
+    this.rushIntro = createRushIntro(
+      {
+        onStart: (practice) => void this.beginRush(practice),
+        onBack: () => this.leaveRush(),
+      },
+      this.skipKeyName(),
+    );
+    this.rushResult = createRushResultCard(
+      () => void this.beginRush(true),
+      () => this.leaveRush(),
+    );
+
+    this.explorer = createExplorer({
+      onChange: (filter) => {
+        this.settings.update({ filter });
+        this.paintExplorer();
+      },
+      onPlay: (id) => void this.openArchivePuzzle(id),
+      onRandom: () => void this.startPractice(),
+      onClose: () => this.leaveExplorer(),
     });
 
     this.settings.subscribe((next) => this.input.setKeybinds(next.keybinds));
@@ -145,23 +203,88 @@ export class App {
   // ── Practice ───────────────────────────────────────────────────────────────
 
   /** Picks a sheet from the archive at random and plays it unscored. */
+  /**
+   * Today's puzzle, while it is still the player's to file.
+   *
+   * Practising it before filing would be a free rehearsal for the one run that
+   * counts, so it is kept out of the shuffle and shown greyed in the explorer
+   * until the daily is on the board. Afterwards it is just another puzzle.
+   */
+  private lockedPuzzleId(): number | null {
+    if (!this.daily || this.daily.run) return null;
+    return this.daily.puzzle.id;
+  }
+
+  private async loadArchive(): Promise<readonly ArchiveListing[]> {
+    this.archive ??= (await this.connection.api.archive()).puzzles;
+    return this.archive;
+  }
+
   private async startPractice(): Promise<void> {
     try {
-      this.archive ??= (await this.connection.api.archive()).puzzles;
-      const choices = this.archive.filter((entry) => entry.id !== this.sheet?.puzzle.id);
+      const archive = await this.loadArchive();
+      const locked = this.lockedPuzzleId();
+      const choices = filterArchive(archive, this.settings.value.filter).filter(
+        // Never the puzzle already on the table, so "random" always changes it.
+        (entry) => entry.id !== locked && entry.id !== this.sheet?.puzzle.id,
+      );
       const pick = choices[Math.floor(Math.random() * choices.length)];
       if (!pick) {
-        this.toast("The archive has nothing else to draw");
+        this.toast("Nothing matches your filters");
         return;
       }
-      const { puzzle, solution } = await this.connection.api.archivePuzzle(pick.id);
-      this.sheet = { puzzle, solution, scored: false };
-      this.credits.update({ day: this.daily?.day ?? 0, puzzle });
-      this.startRun();
-      this.toast(`Practice · ${puzzle.title || `sheet ${puzzle.id}`}`);
+      await this.openArchivePuzzle(pick.id);
     } catch (error) {
       this.toast(error instanceof ApiError ? error.message : "Could not open the archive");
     }
+  }
+
+  private async openArchivePuzzle(id: number): Promise<void> {
+    if (id === this.lockedPuzzleId()) {
+      this.toast("That is today's puzzle — play it on the daily first");
+      return;
+    }
+    try {
+      const { puzzle, solution } = await this.connection.api.archivePuzzle(id);
+      this.sheet = { puzzle, solution, scored: false };
+      this.credits.update({ day: this.daily?.day ?? 0, puzzle });
+      if (this.mode === "explore") this.mode = "daily";
+      replaceChildren(this.hud.left, this.hud.panels.hold, this.hud.panels.progress);
+      this.showPlayfield();
+      this.startRun();
+      this.toast(`Practice · ${puzzle.title || `sheet ${puzzle.id}`}`);
+    } catch (error) {
+      this.toast(error instanceof ApiError ? error.message : "Could not open that puzzle");
+    }
+  }
+
+  // ── Explorer ───────────────────────────────────────────────────────────────
+
+  private enterExplorer(): void {
+    if (this.mode === "explore") return;
+    this.mode = "explore";
+    this.run?.dispose();
+    this.run = null;
+    this.runningPuzzleId = null;
+    this.badge.hide();
+    this.input.setGameInputEnabled(false);
+    this.paintExplorer();
+    this.showScreen({ wide: true, fill: true }, this.explorer.element);
+    void this.loadArchive().then(() => this.paintExplorer()).catch((error) => {
+      this.toast(error instanceof ApiError ? error.message : "Could not load the archive");
+    });
+  }
+
+  private paintExplorer(): void {
+    this.explorer.update(this.archive ?? [], this.settings.value.filter, this.lockedPuzzleId());
+  }
+
+  private leaveExplorer(): void {
+    this.mode = "daily";
+    replaceChildren(this.hud.left, this.hud.panels.hold, this.hud.panels.progress);
+    this.showPlayfield();
+    this.input.setGameInputEnabled(true);
+    this.returnToDaily();
   }
 
   private returnToDaily(): void {
@@ -176,21 +299,211 @@ export class App {
     }
   }
 
+  /** The three-column play layout: rails either side of the board. */
+  private showPlayfield(): void {
+    this.deck.classList.remove("deck--screen");
+    replaceChildren(this.deck, this.hud.left, this.stage, this.hud.right);
+    this.relayout();
+  }
+
+  /** One centred column, for a moment when there is nothing to play. */
+  private showScreen(
+    options: { wide?: boolean; fill?: boolean },
+    ...cards: HTMLElement[]
+  ): void {
+    this.deck.classList.add("deck--screen");
+    const modifiers = [options.wide && "screen--wide", options.fill && "screen--fill"]
+      .filter(Boolean)
+      .join(" ");
+    replaceChildren(this.deck, el("div", { class: `screen ${modifiers}`.trim() }, ...cards));
+  }
+
+  // ── Rush ───────────────────────────────────────────────────────────────────
+
+  /** What the skip binding is currently on, for the intro to name. */
+  private skipKeyName(): string {
+    const bound = this.settings.value.keybinds.skip[0];
+    return bound ? keyName(bound) : "the unbound skip key";
+  }
+
+  /**
+   * Puts the rush intro on the table.
+   *
+   * The daily's run is disposed rather than paused. A rush takes over the board
+   * and the keyboard for five minutes, and a half-live daily attempt underneath
+   * it would keep its own frame loop running and its own clock ticking against
+   * a puzzle nobody is looking at.
+   */
+  private enterRush(): void {
+    if (this.mode === "rush") return;
+    this.mode = "rush";
+    this.run?.dispose();
+    this.run = null;
+    this.runningPuzzleId = null;
+    this.badge.hide();
+    this.input.setGameInputEnabled(false);
+
+    this.rushIntro.update({
+      durationMs: this.rushState?.durationMs ?? 300_000,
+      skips: this.rushState?.skips ?? 2,
+      best: this.rushState?.best ?? 0,
+      playedToday: this.rushState?.run ?? null,
+    });
+    this.showScreen({}, this.rushIntro.element, this.rushBoard.element);
+    void this.loadRushState();
+  }
+
+  private async loadRushState(): Promise<void> {
+    try {
+      const state = await this.connection.api.rush();
+      this.rushState = state;
+      this.rushBoard.update(state.leaderboard, this.connection.player.id);
+      if (this.mode === "rush" && !this.rush) {
+        this.rushIntro.update({
+          durationMs: state.durationMs,
+          skips: state.skips,
+          best: state.best,
+          playedToday: state.run,
+        });
+      }
+    } catch (error) {
+      this.toast(error instanceof ApiError ? error.message : "Could not load the rush board");
+    }
+  }
+
+  private async beginRush(practice: boolean): Promise<void> {
+    if (this.rush) return;
+    this.rushIntro.setBusy(true);
+    try {
+      const start = await this.connection.api.startRush(practice);
+      this.rushTicket = start.ticket;
+      this.rushSkips = start.skips;
+      this.rushRanked = start.ranked;
+      this.mode = "rush";
+
+      // The handling is frozen for the whole rush, not per puzzle: the server
+      // replays every segment under the one it is given, so a mid-rush change
+      // would rescore puzzles the player already finished.
+      const handling = this.settings.value.handling;
+      this.rush = new RushSession(start.puzzles, handling, start.durationMs, start.skips, {
+        onFrame: (view, run, snapshot) => {
+          this.renderer.draw(view);
+          this.hud.update(run);
+          this.rushPanel.update(snapshot, this.rushSkips);
+        },
+        onPuzzle: (puzzle) => {
+          this.hud.setPuzzle(puzzle);
+          this.credits.update({ day: start.day, puzzle });
+          this.relayout();
+        },
+        onSolved: (snapshot) => {
+          this.badge.show(true, `${snapshot.solved} solved`);
+          window.setTimeout(() => this.badge.hide(), 380);
+        },
+        onFinish: (summary) => void this.finishRush(summary),
+      });
+
+      // Hold belongs in a rush as much as in the daily — more, since the pieces
+      // are unfamiliar and there is a clock. `hud.update` has been keeping the
+      // bay painted all along; it was simply never put on the rail.
+      replaceChildren(this.hud.left, this.rushPanel.element, this.hud.panels.hold);
+      replaceChildren(this.hud.right, this.hud.panels.goal, this.hud.panels.meter, this.hud.panels.queue);
+      this.showPlayfield();
+      this.input.setGameInputEnabled(true);
+      this.toast(practice ? "Practice rush — go" : "Today's rush — go");
+    } catch (error) {
+      this.toast(error instanceof ApiError ? error.message : "Could not start a rush");
+      // A refused start means the clock never began, so the intro is still the
+      // honest thing to be looking at.
+      void this.loadRushState();
+    } finally {
+      this.rushIntro.setBusy(false);
+    }
+  }
+
+  private async finishRush(summary: RushSummary): Promise<void> {
+    const ticket = this.rushTicket;
+    this.input.setGameInputEnabled(false);
+    this.badge.show(summary.solved > 0, `${summary.solved} solved`);
+    if (!ticket) return;
+
+    try {
+      const response = await this.connection.api.submitRush({
+        ticket,
+        handling: this.settings.value.handling,
+        segments: summary.segments.map((segment) => ({ events: segment.events })),
+        timeToLastSolveMs: summary.timeToLastSolveMs,
+        skipsUsed: summary.skipsUsed,
+      });
+      this.rushResult.update({
+        run: response.run,
+        ranked: response.ranked,
+        isFirst: response.isFirst,
+        best: response.best,
+      });
+      this.rushBoard.update(response.leaderboard, this.connection.player.id);
+      if (response.ranked) this.rushState = null;
+    } catch (error) {
+      // The run happened even if filing it did not, so the player still sees
+      // what they did rather than an error where their score should be.
+      this.rushResult.update({
+        run: {
+          solved: summary.solved,
+          attempted: summary.segments.length,
+          skipsUsed: summary.skipsUsed,
+          timeToLastSolveMs: summary.timeToLastSolveMs,
+        },
+        ranked: false,
+        isFirst: false,
+        best: this.rushState?.best ?? summary.solved,
+      });
+      this.toast(error instanceof ApiError ? error.message : "Could not file the rush");
+    } finally {
+      this.rush?.dispose();
+      this.rush = null;
+      this.rushTicket = null;
+      this.showScreen({}, this.rushResult.element, this.rushBoard.element);
+    }
+  }
+
+  /** Leaves rush for the daily, abandoning a run in progress if there is one. */
+  private leaveRush(): void {
+    this.rush?.dispose();
+    this.rush = null;
+    this.rushTicket = null;
+    this.mode = "daily";
+    this.badge.hide();
+    this.input.setGameInputEnabled(true);
+    replaceChildren(this.hud.left, this.hud.panels.hold, this.hud.panels.progress);
+    this.showPlayfield();
+    this.returnToDaily();
+  }
+
   private mount(): void {
-    const deck = el(
-      "div",
-      { class: "deck" },
-      this.hud.left,
-      this.stage,
-      this.hud.right,
-    );
+    this.showPlayfield();
     replaceChildren(
       this.root,
       this.masthead.element,
-      deck,
+      this.deck,
       this.credits.element,
       this.settingsDialog.element,
       this.toastNode,
+    );
+    this.masthead.mountControl(
+      el("button", {
+        class: "btn",
+        text: "Explore",
+        title: "Browse the whole archive",
+        on: { click: () => this.enterExplorer() },
+      }),
+    );
+    this.masthead.mountControl(
+      el("button", {
+        class: "btn",
+        text: "Rush",
+        title: "Five minutes, as many puzzles as you can",
+        on: { click: () => this.enterRush() },
+      }),
     );
     this.masthead.mountControl(
       el("button", {
@@ -401,14 +714,43 @@ export class App {
 
   // ── Chrome ─────────────────────────────────────────────────────────────────
 
+  /**
+   * Dispatched per action rather than by falling through to restart.
+   *
+   * The fallthrough was fine while `reset` and `settings` were the only local
+   * actions, but it meant any action added later silently wiped the board
+   * instead of doing nothing — and the types could not catch it, because every
+   * `LocalAction` reached the same statement.
+   */
   private handleLocalAction(action: LocalAction): void {
     if (action === "settings") {
       if (this.settingsDialog.isOpen) this.settingsDialog.close();
       else this.openSettings();
       return;
     }
+    // A dialog is on top; the keys under it belong to whoever is typing in it.
     if (this.settingsDialog.isOpen) return;
-    this.restartAttempt();
+
+    switch (action) {
+      case "reset":
+        if (this.rush) this.rush.restart();
+        else this.restartAttempt();
+        return;
+      case "skip":
+        this.skipPuzzle();
+        return;
+      default: {
+        const unreachable: never = action;
+        throw new Error(`Unhandled local action: ${String(unreachable)}`);
+      }
+    }
+  }
+
+  /** Rush only. In the daily there is nothing after the puzzle you are on. */
+  private skipPuzzle(): void {
+    if (!this.rush) return;
+    if (this.rush.skip()) return;
+    this.toast("No skips left");
   }
 
   /**

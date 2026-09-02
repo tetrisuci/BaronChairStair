@@ -3,7 +3,8 @@
 One modern Tetris puzzle a day, played inside Discord as an
 [Activity](https://discord.com/developers/docs/activities/overview). Everyone
 in the server gets the same puzzle, it changes at midnight, and the result
-pastes into a channel as a spoiler-light grid.
+pastes into a channel as a spoiler-light grid. Alongside it runs puzzle rush:
+five minutes, one sequence everyone shares, as many puzzles as you can solve.
 
 The puzzles come from the Tetris at UCI puzzle archive, which stores each one as
 a pair of [Blueprint](https://bp.tali.software) codes — the position and the
@@ -24,8 +25,10 @@ tmp/*.csv ──► tools/build-puzzles.ts ──► data/puzzles.json ──►
 | `shared/tetris/` | One engine configuration, a placement pathfinder, and the run verifier |
 | `shared/puzzle.ts` | The puzzle data model, shared by the build, the server, and the client |
 | `shared/daily.ts` | Which puzzle belongs to which day |
+| `shared/rush.ts` | Which puzzles a rush deals out, and in what order |
+| `shared/rng.ts` | Seeded shuffling, so both of those derive rather than store |
 | `tools/` | The build pipeline and its diagnostics |
-| `server/` | Hono + Bun: OAuth exchange, daily puzzle, run verification, SQLite |
+| `server/` | Hono + Bun: OAuth exchange, daily puzzle, puzzle rush, run verification, SQLite |
 | `client/` | The activity itself — canvas playfield and interface |
 | `client/public/fonts/` | Archivo and DM Mono, self-hosted (see below) |
 
@@ -91,9 +94,9 @@ client claims, and anyone could post into any server's standings.
 ### The bot commands
 
 `client/puzzle_commands.py` adds `/puzzle play`, `/puzzle standings`,
-and `/puzzle help` to the existing bot. It owns none of the game — it reads
-two endpoints on the activity server so the two can never disagree. Set these in
-the repo-root `.env`:
+`/puzzle rush`, and `/puzzle help` to the existing bot. It owns none of the
+game — it reads three endpoints on the activity server so the two can never
+disagree. Set these in the repo-root `.env`:
 
 ```
 PUZZLE_APP_ID=<the application id>
@@ -126,6 +129,102 @@ than the solving attempt provably took nor more than a day. The solving
 attempt's own duration *is* verified, by replaying its inputs. Whether a run
 solved the puzzle is fully verified; how fast is a friendly scoreboard.
 
+## Puzzle rush
+
+Five minutes, and as many puzzles as fit inside them. A rush deals out a
+sequence of forty and you work down it: solve one and the next arrives, or
+spend one of two skips on the one you cannot see. A dead board — every piece
+placed without reaching the target — ends nothing and deals the same puzzle
+again, so a failed attempt costs time and nothing else, and a puzzle is only
+ever left behind by being solved or by being skipped. Skip is a rebindable key
+like every other, `S` by default; in the daily it does nothing, because there
+is nothing to skip to.
+
+**Everyone gets the same sequence on the same day**, which is the only way the
+board compares like with like. That is the run that goes on the leaderboard,
+and the first one filed is the one that sticks: a rush cannot improve on itself
+the way an unsolved puzzle can be solved later, so nothing else would stop a
+player opening rush after rush and keeping the best. Once one is on the board
+the server will not open another ranked rush that day. Practice rushes are
+unlimited and never recorded, and they run on a seed the server draws itself,
+so nobody can re-roll for a gentle sequence without paying five minutes for it.
+Ranking is by solves, and between two players on the same count, by whoever
+reached their last solve soonest.
+
+**The sequence is derived, not stored**, from the day number alone — the same
+discipline as the daily rotation, for a stronger reason: the server has to be
+able to re-derive exactly what a player was given in order to check a run it
+never watched. Anything longer than twenty-four pieces is set aside first,
+which excludes exactly one of the 138; it runs to seventy-four, and meeting it
+inside five minutes would not be a puzzle in the rush, it would be the rush.
+The rest are shuffled by the day's seed, the first forty are taken, and only
+then are they sorted by difficulty, so a rush opens gently and ends somewhere
+nobody reaches. Sorting before taking rather than after would hand out the same
+forty easiest puzzles every single day with only their order changing.
+
+Unrated puzzles — `difficulty` 0 in the archive — are sorted as though they
+were 8. Unrated is not the same as easy: the unrated ones ask for things like
+"2 TSS, 3 TSD" over a dozen-odd pieces, and taking their zero at face value
+would open every rush with a wall.
+
+**The five minutes are measured, not claimed.** Starting a rush mints a signed
+ticket carrying the day, the seed, and the instant the server stamped it;
+handing the run in is the second instant, and the clock is the subtraction
+between the two. The ticket is signed under its own context, so a session token
+presented as one fails the signature check, and it is bound to the player it
+was minted for. Nothing is written down in between, so there is no clock for
+the client to move — only ten seconds of slack at the far end, for a round trip
+it does not control. What comes back is inputs and nothing else: one segment
+per puzzle attempted, each carrying its key log, with no puzzle id, no solved
+flag and no skip flag. Position in the re-derived sequence says which puzzle a
+segment was, replaying it says how it went, and skips are counted rather than
+believed: an unsolved segment is either a skip or the puzzle the buzzer caught,
+there can be only one of the latter, and a run leaving more than three behind
+is rejected. Counting by position instead — every unsolved segment but the last
+one — was wrong in both directions, excusing a final skip as the buzzer and
+quietly handing everybody a third. The two numbers the client still supplies
+are how many of those it meant as skips and when its last solve landed, and
+both are squeezed the way the daily's *total time on the puzzle* is: the skip
+count clamped to what the replay actually left unsolved and to the budget, the
+time never less than the play the server replayed to reach it and never more
+than the run the server timed.
+
+## The daily recap
+
+`GET /api/recap?guild=<id>&day=<n>` gives the bot everything it needs to look
+back on one finished day in one server: which puzzle it was, that server's
+board, its rush board, and how many consecutive days somebody there has
+solved. Gated on `BOT_API_KEY`, like the other two bot routes.
+
+It is a separate route rather than a `?day=` on the boards because a recap
+wants three things about the same day at the same instant, and a board that
+answered only the first would leave the streak with no home. The day is
+bounded to a *finished* one — a whole number between 1 and yesterday. That is
+not defensive habit: SQLite binds `NaN`, `1.5` and `-5` without complaint and
+answers every one of them with no rows, which a recap would go on to post as
+"nobody played" on a day that people played. Today is refused along with the
+future, because the streak counts a gap as a break, which is only honest once
+the day is over.
+
+The streak here is deliberately stricter than a player's. `Store.streak`
+forgives a missing anchor day, since the player may simply not have played yet;
+a recap only ever asks about a day that is already over, so the same
+forgiveness would congratulate a server on a run it had just broken.
+
+The board it returns is capped at a hundred rather than the interactive
+twenty-five, and carries a `total`. Misses sort last, so the smaller cap would
+have quietly deleted exactly the people a recap exists to tease.
+
+**What that proves, and what it does not.** `data/puzzles.json` is committed to
+a public repository, and `GET /api/archive/:id` hands any signed-in player the
+solution to every puzzle except today's, so the answers to a rush sequence are
+public knowledge before anybody runs it. The scheme therefore proves exactly
+one thing: that the submitted inputs legally solve those puzzles, in that
+order, inside five minutes the server measured itself. It does not prove a
+human made them, and a scripted client beats it. A fixed sequence per day also
+means whoever plays later knows what is coming — the daily's own trade, forty
+puzzles at a time.
+
 ## Controls
 
 Fully rebindable, with TETR.IO handling: DAS, ARR, DCD, SDF, safe lock, DAS
@@ -140,7 +239,8 @@ frames either: a DAS of 103ms really is 103ms. SDF stays a multiplier, because
 it is a speed rather than a time.
 
 Defaults: arrows to move and soft drop, space to hard drop, `Z`/`X` to rotate,
-`A` for 180, `C` to hold, `R` to restart, `Esc` for settings.
+`A` for 180, `C` to hold, `R` to restart, `S` to skip in a rush, `Esc` for
+settings.
 
 ## Look and feel
 
