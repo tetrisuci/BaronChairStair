@@ -10,8 +10,14 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { opponentRatio } from "../client/src/ui/duel";
-import type { DuelProgress } from "../shared/duel";
+import { opponentRatio, rulesForMode } from "../client/src/ui/duel";
+import {
+  DEFAULT_DUEL_SETTINGS,
+  DUEL_ROUND_MS_DEFAULT,
+  DUEL_RUSH_MS_DEFAULT,
+  type DuelProgress,
+  type DuelSettings,
+} from "../shared/duel";
 
 /** A frame as the type promises it, with any field replaced by anything. */
 function frame(patch: Record<string, unknown> = {}): DuelProgress {
@@ -46,6 +52,35 @@ describe("opponentRatio", () => {
     for (const junk of ["lots", {}, [], NaN, Infinity]) {
       expect(opponentRatio(frame({ attack: junk }))).toBe(0);
       expect(opponentRatio(frame({ targetAttack: junk }))).toBe(0);
+    }
+  });
+});
+
+describe("switching a room between modes", () => {
+  const puzzle: DuelSettings = { ...DEFAULT_DUEL_SETTINGS, rounds: 5 };
+
+  test("rush drops the round count and takes a rush clock", () => {
+    const rush = rulesForMode(puzzle, "rush", 5);
+    expect(rush.mode).toBe("rush");
+    expect(rush.durationMs).toBe(DUEL_RUSH_MS_DEFAULT);
+  });
+
+  test("coming back out of rush restores the best-of the host chose", () => {
+    // The referee pins rounds to 1 for a rush and says so in the frame it
+    // broadcasts, so this is what the form is holding when the host switches
+    // back. Reading that 1 as the host's choice is the bug.
+    const asServerSeesIt: DuelSettings = { ...puzzle, mode: "rush", rounds: 1 };
+    const back = rulesForMode(asServerSeesIt, "puzzle", 5);
+    expect(back.rounds).toBe(5);
+    expect(back.durationMs).toBe(DUEL_ROUND_MS_DEFAULT);
+  });
+
+  test("the difficulty band survives the trip either way", () => {
+    const banded: DuelSettings = { ...puzzle, minDifficulty: 6, maxDifficulty: 9 };
+    for (const mode of ["rush", "puzzle"] as const) {
+      const next = rulesForMode(banded, mode, 5);
+      expect(next.minDifficulty).toBe(6);
+      expect(next.maxDifficulty).toBe(9);
     }
   });
 });

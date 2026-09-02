@@ -19,9 +19,12 @@ import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  DEFAULT_DUEL_SETTINGS,
   DUEL_CLAIM_GRACE_MS,
   DUEL_REMATCH_TTL_MS,
   DUEL_ROUND_MS_MIN,
+  DUEL_MIN_POOL,
+  DUEL_RUSH_MS_MAX,
   DUEL_RUSH_MS_MIN,
   type DuelCommand,
   type DuelEvent,
@@ -31,6 +34,7 @@ import {
   type DuelView,
   roundsToWin,
 } from "../shared/duel";
+import { MAX_DIFFICULTY, MIN_DIFFICULTY } from "../shared/archive-filter";
 import {
   decodeBoard,
   ENGINE_ROWS,
@@ -319,12 +323,18 @@ function solvingLog(puzzle: Puzzle): InputEvent[] {
 // ── Lobbies ──────────────────────────────────────────────────────────────────
 
 const puzzleDuel = (rounds: number): DuelSettings => ({
+  ...DEFAULT_DUEL_SETTINGS,
   mode: "puzzle",
   rounds,
   durationMs: DUEL_ROUND_MS_MIN,
 });
 
-const rushDuel = (): DuelSettings => ({ mode: "rush", rounds: 1, durationMs: DUEL_RUSH_MS_MIN });
+const rushDuel = (): DuelSettings => ({
+  ...DEFAULT_DUEL_SETTINGS,
+  mode: "rush",
+  rounds: 1,
+  durationMs: DUEL_RUSH_MS_MIN,
+});
 
 interface Lobby {
   readonly host: Duellist;
@@ -1019,7 +1029,15 @@ describe("a rush duel is one stack walked at two paces", () => {
 // ── Rematches ────────────────────────────────────────────────────────────────
 
 /** Puzzles the duel that tests dealing without replacement may draw from. */
-const PINNED_POOL = 5;
+/**
+ * The smallest pool a room may legally draw from.
+ *
+ * Was five, chosen to sit just above a best-of-7's four rounds. The referee now
+ * refuses any rule set whose pool is smaller than DUEL_MIN_POOL, so five is no
+ * longer a lobby anyone can open — the floor is the tightest this test can
+ * squeeze the pool, and it still leaves the deal only three spare puzzles.
+ */
+const PINNED_POOL = DUEL_MIN_POOL;
 
 /** Plays a best-of-`rounds` match out, the host taking every round of it. */
 async function hostWinsMatch(rounds: number): Promise<Lobby> {
@@ -1142,10 +1160,10 @@ describe("a finished match is played again only if both ask", () => {
   });
 
   test("going again deals a puzzle neither of them has played", async () => {
-    // Pinned to a pool barely bigger than the match, because a repeat drawn
-    // from the whole archive is a one-in-a-hundred wait and a repeat drawn from
-    // five is the ordinary case: five puzzles dealt from five without one is
-    // the thing that cannot happen by luck.
+    // Pinned to the smallest pool the referee will accept, because a repeat
+    // drawn from the whole archive is a one-in-a-hundred wait: five puzzles
+    // dealt from eight without one is unlikely by luck and certain by the
+    // mechanism, which is the thing under test.
     const pinned = archive.filter(isRushEligible).slice(0, PINNED_POOL);
     useArchive(pinned);
     try {
@@ -1224,5 +1242,162 @@ describe("a rematch offer outlives neither the players nor the day", () => {
 
     guest.send({ type: "rematch" });
     expect((await guest.take("error")).message).toBe("There is no match to play again");
+  });
+});
+
+// ── The host's rules ─────────────────────────────────────────────────────────
+
+describe("the rules of a room are the host's, and only while it is a room", () => {
+  /** A difficulty the archive actually has, so a band of it is not empty. */
+  const ratedSample = () => {
+    const rated = archive.filter(isRushEligible).filter((puzzle) => puzzle.difficulty > 0);
+    const difficulty = rated[0]!.difficulty;
+    return { difficulty, matching: rated.filter((p) => p.difficulty === difficulty) };
+  };
+
+  test("a rule the host changes reaches the guest too", async () => {
+    const { host, guest } = await lobby(puzzleDuel(3));
+    host.send({
+      type: "configure",
+      settings: { ...puzzleDuel(5), minDifficulty: 4, maxDifficulty: 9 },
+    });
+    const mine = await host.take("duel");
+    expect(mine.duel.settings.rounds).toBe(5);
+    expect(mine.duel.settings.minDifficulty).toBe(4);
+    // The guest is not told the rules changed, they are told what the rules
+    // are — the same frame, so the two sides cannot hold different ones.
+    const theirs = await guest.take("duel");
+    expect(theirs.duel.settings).toEqual(mine.duel.settings);
+  });
+
+  test("a guest cannot set them", async () => {
+    const { guest } = await lobby(puzzleDuel(3));
+    guest.send({ type: "configure", settings: puzzleDuel(7) });
+    expect((await guest.take("error")).message).toBe("Only the host sets the rules");
+  });
+
+  test("not even the host can set them once the match is on", async () => {
+    // Otherwise a host losing a best-of could shorten it to a best-of-one they
+    // have already won, or widen the band the next round is drawn from.
+    const { host } = await playPuzzleDuel(3);
+    await host.take("round");
+    host.send({ type: "configure", settings: puzzleDuel(7) });
+    expect((await host.take("error")).message).toBe("It has already started");
+  });
+
+  test("a band no puzzle answers is refused, and nothing half-applies", async () => {
+    const { difficulty, matching } = ratedSample();
+    useArchive(matching);
+    try {
+      const { host } = await lobby({ ...puzzleDuel(3), minDifficulty: difficulty, maxDifficulty: difficulty });
+      const elsewhere = difficulty === MAX_DIFFICULTY ? MIN_DIFFICULTY : MAX_DIFFICULTY;
+      host.send({
+        type: "configure",
+        settings: {
+          ...puzzleDuel(7),
+          minDifficulty: elsewhere,
+          maxDifficulty: elsewhere,
+          includeUnrated: false,
+        },
+      });
+      expect((await host.take("error")).message).toBe(
+        "No puzzle in the archive matches those rules",
+      );
+
+      // The refused frame carried a new round count as well as the bad band.
+      // If any of it had landed, this next view would show 7.
+      host.send({ type: "configure", settings: { ...puzzleDuel(1), minDifficulty: difficulty, maxDifficulty: difficulty } });
+      const after = await host.take("duel");
+      expect(after.duel.settings.rounds).toBe(1);
+      expect(after.duel.settings.minDifficulty).toBe(difficulty);
+    } finally {
+      useArchive(archive);
+    }
+  });
+
+  /** A rating the archive has too few of to fill a match. */
+  const scarceBand = () => {
+    const rated = archive.filter(isRushEligible).filter((puzzle) => puzzle.difficulty > 0);
+    const counts = new Map<number, number>();
+    for (const puzzle of rated) {
+      counts.set(puzzle.difficulty, (counts.get(puzzle.difficulty) ?? 0) + 1);
+    }
+    const scarce = [...counts.entries()].find(([, n]) => n < DUEL_MIN_POOL);
+    if (!scarce) throw new Error("no rating in the archive is scarce enough for this test");
+    return { difficulty: scarce[0], count: scarce[1] };
+  };
+
+  test("a band the match would run out of is refused, not dealt twice", async () => {
+    // The whole point of the gate. A best-of-7 drawn from one puzzle deals that
+    // puzzle seven times, and the log that solved it the first time solves it
+    // every time — the match is won in six socket frames without playing.
+    const { difficulty } = scarceBand();
+    const host = await connect("alice", GUILD);
+    await host.take("welcome");
+    host.send({
+      type: "open",
+      settings: {
+        ...puzzleDuel(7),
+        minDifficulty: difficulty,
+        maxDifficulty: difficulty,
+        includeUnrated: false,
+      },
+    });
+    const refusal = (await host.take("error")).message;
+    expect(refusal).toContain("puzzles and leave");
+    expect(refusal).toContain(String(DUEL_MIN_POOL));
+  });
+
+  test("a rush clock the band cannot fill is refused", async () => {
+    // A stack shorter than the clock is not a shorter rush, it is a rush that
+    // ends early and leaves both players staring at a running timer.
+    const { difficulty } = scarceBand();
+    const host = await connect("alice", GUILD);
+    await host.take("welcome");
+    host.send({
+      type: "open",
+      settings: {
+        ...rushDuel(),
+        durationMs: DUEL_RUSH_MS_MAX,
+        minDifficulty: difficulty,
+        maxDifficulty: difficulty,
+        includeUnrated: false,
+      },
+    });
+    expect((await host.take("error")).message).toContain("puzzles and leave");
+  });
+
+  test("the view says what the rules need as well as what they leave", async () => {
+    const { host } = await lobby(puzzleDuel(3));
+    const seen = framesOfType(host.received, "duel");
+    const last = seen[seen.length - 1]!.duel;
+    expect(last.poolNeeded).toBe(DUEL_MIN_POOL);
+    expect(last.poolSize).toBeGreaterThanOrEqual(last.poolNeeded);
+  });
+
+  test("the pool count is the referee's, counted off what it deals", async () => {
+    const { difficulty, matching } = ratedSample();
+    const { host } = await lobby({
+      ...puzzleDuel(3),
+      minDifficulty: difficulty,
+      maxDifficulty: difficulty,
+      includeUnrated: false,
+    });
+    const seen = framesOfType(host.received, "duel");
+    expect(seen[seen.length - 1]!.duel.poolSize).toBe(matching.length);
+  });
+
+  test("rounds are dealt from inside the band and nowhere else", async () => {
+    const { difficulty } = ratedSample();
+    const { host } = await lobby({
+      ...puzzleDuel(3),
+      minDifficulty: difficulty,
+      maxDifficulty: difficulty,
+      includeUnrated: false,
+    });
+    host.send({ type: "ready" });
+    const round = await host.take("round");
+    const dealt = archive.find((puzzle) => puzzle.id === round.puzzle.id);
+    expect(dealt?.difficulty).toBe(difficulty);
   });
 });

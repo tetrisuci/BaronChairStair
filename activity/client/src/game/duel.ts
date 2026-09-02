@@ -93,6 +93,18 @@ export class DuelClient {
     this.send({ type: "join", duelId, handling: this.handling });
   }
 
+  /**
+   * Host only: rewrite the room's rules while it is still a lobby.
+   *
+   * Sent optimistically and not applied locally — the form shows whatever the
+   * next `duel` frame carries, so a rule the referee bounds or refuses is
+   * corrected on screen rather than lingering as a setting only one side
+   * believes in.
+   */
+  configure(settings: DuelSettings): void {
+    this.send({ type: "configure", settings });
+  }
+
   ready(): void {
     this.send({ type: "ready" });
   }

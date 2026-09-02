@@ -27,6 +27,7 @@
  * asked, so a client cannot show one without the other.
  */
 
+import { MAX_DIFFICULTY, MIN_DIFFICULTY } from "./archive-filter";
 import type { PuzzlePrompt } from "./puzzle";
 import type { Handling } from "./tetris/handling";
 import { RUSH_DURATION_MS, RUSH_SEQUENCE_LENGTH } from "./rush";
@@ -83,6 +84,19 @@ export interface DuelSettings {
   readonly rounds: number;
   /** Per-round clock for puzzle, whole-match clock for rush. */
   readonly durationMs: number;
+  /**
+   * The band of the archive this room draws from, inclusive at both ends.
+   *
+   * The same range the explorer uses, so "difficulty 8" means one thing in this
+   * app. A narrow band is the point rather than a risk — two players who both
+   * want a hard match should be able to ask for one — but it is the host's only
+   * way to make the pool small, so the server checks a band actually matches
+   * something before it accepts it, rather than finding out when it deals.
+   */
+  readonly minDifficulty: number;
+  readonly maxDifficulty: number;
+  /** Unrated puzzles carry difficulty 0 and are in or out on their own say-so. */
+  readonly includeUnrated: boolean;
 }
 
 export interface DuelPlayerView {
@@ -94,6 +108,21 @@ export interface DuelPlayerView {
   /** Has asked to go again. Only ever true while the match is over. */
   readonly wantsRematch: boolean;
 }
+
+/**
+ * What a room opens with: best of three, ninety seconds, the whole archive.
+ *
+ * Spread from rather than retyped, so a field added to {@link DuelSettings}
+ * cannot leave a caller quietly constructing a rule set that is missing it.
+ */
+export const DEFAULT_DUEL_SETTINGS: DuelSettings = {
+  mode: "puzzle",
+  rounds: 3,
+  durationMs: DUEL_ROUND_MS_DEFAULT,
+  minDifficulty: MIN_DIFFICULTY,
+  maxDifficulty: MAX_DIFFICULTY,
+  includeUnrated: true,
+};
 
 export type DuelPhase = "lobby" | "playing" | "over";
 
@@ -115,6 +144,16 @@ export interface DuelView {
    * on its own timer and says so late.
    */
   readonly rematchEndsAt: number | null;
+  /**
+   * How many puzzles the current rules leave to draw from.
+   *
+   * Counted by the referee off the archive it actually deals from, not by the
+   * client off a listing it may have filtered differently. It is the only
+   * feedback a host gets that a band is too narrow before they start.
+   */
+  readonly poolSize: number;
+  /** How many that rule set consumes. The lobby shows both, so a refusal reads. */
+  readonly poolNeeded: number;
 }
 
 /** How far along the opponent is. Never their board — see the note above. */
@@ -144,6 +183,16 @@ export type DuelCommand =
   | { readonly type: "open"; readonly settings: DuelSettings; readonly handling?: Handling }
   | { readonly type: "join"; readonly duelId: string; readonly handling?: Handling }
   | { readonly type: "leave" }
+  /**
+   * The host changing the room's rules while both players watch.
+   *
+   * Whole settings rather than a patch: the host's form holds every field
+   * anyway, and a patch would have to say what "unset" means for three numbers
+   * that all have legitimate zero-ish values. Refused from anyone but the host
+   * and refused once the match is on, so the rules a round is played under are
+   * the rules that were on screen when it started.
+   */
+  | { readonly type: "configure"; readonly settings: DuelSettings }
   | { readonly type: "ready" }
   /**
    * The log that solves the puzzle this player is on. The only claim there is.
@@ -235,7 +284,40 @@ export function sanitizeSettings(input: unknown): DuelSettings {
     typeof claimed === "number" && Number.isFinite(claimed)
       ? Math.min(high, Math.max(low, Math.round(claimed)))
       : fallback;
-  return { mode, rounds: mode === "rush" ? 1 : rounds, durationMs };
+
+  // Taken in whichever order they arrive and put back the right way round: a
+  // host dragging the low end past the high end has said what they meant, and
+  // an empty band is the one shape the pool check downstream cannot rescue.
+  const a = clampDifficulty(raw.minDifficulty, MIN_DIFFICULTY);
+  const b = clampDifficulty(raw.maxDifficulty, MAX_DIFFICULTY);
+  return {
+    mode,
+    rounds: mode === "rush" ? 1 : rounds,
+    durationMs,
+    minDifficulty: Math.min(a, b),
+    maxDifficulty: Math.max(a, b),
+    includeUnrated: raw.includeUnrated !== false,
+  };
+}
+
+function clampDifficulty(value: unknown, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+  return Math.min(MAX_DIFFICULTY, Math.max(MIN_DIFFICULTY, Math.round(value)));
+}
+
+/**
+ * Does this puzzle belong to the band the host set?
+ *
+ * Here rather than in the referee because the lobby has to show the host how
+ * many puzzles their band leaves before they commit to it, and a count the
+ * client works out differently from the server is worse than no count.
+ */
+export function withinBand(
+  puzzle: { readonly difficulty: number },
+  settings: DuelSettings,
+): boolean {
+  if (puzzle.difficulty <= 0) return settings.includeUnrated;
+  return puzzle.difficulty >= settings.minDifficulty && puzzle.difficulty <= settings.maxDifficulty;
 }
 
 /**
@@ -276,6 +358,32 @@ const FRAMES_PER_SECOND = 60;
  */
 export function claimFrameCeiling(durationMs: number): number {
   return Math.ceil(((durationMs + DUEL_CLAIM_GRACE_MS) / 1000) * FRAMES_PER_SECOND);
+}
+
+/**
+ * The fewest puzzles a room may draw from, whatever its rules.
+ *
+ * A pool the size of the match is not enough on its own: every answer ships in
+ * a public repository, so a pool small enough to hold in your head is a pool
+ * whose next puzzle you can have a log ready for. This does not make a duel
+ * cheat-proof — nothing here does — it stops the rules themselves from handing
+ * a host the deal.
+ */
+export const DUEL_MIN_POOL = 8;
+
+/**
+ * How many distinct puzzles a set of rules actually consumes.
+ *
+ * The check that matters, and the one an empty-pool test misses: a best-of-7
+ * drawn from one puzzle deals that puzzle seven times, and the log that solved
+ * it the first time solves it every time. A stack a rush cannot fill is the
+ * same mistake wearing a clock — both players run out and the rest of the
+ * match is dead time.
+ */
+export function puzzlesNeededFor(settings: DuelSettings): number {
+  const consumed =
+    settings.mode === "rush" ? rushDuelLength(settings.durationMs) : settings.rounds;
+  return Math.max(DUEL_MIN_POOL, consumed);
 }
 
 /** Rounds one player must take to win, so a decided match can stop early. */

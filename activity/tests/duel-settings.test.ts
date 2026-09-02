@@ -23,6 +23,8 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import {
+  DEFAULT_DUEL_SETTINGS,
+  withinBand,
   DUEL_ROUND_MS_DEFAULT,
   DUEL_ROUND_MS_MAX,
   DUEL_ROUND_MS_MIN,
@@ -33,6 +35,7 @@ import {
   rushDuelLength,
   sanitizeSettings,
 } from "../shared/duel";
+import { MAX_DIFFICULTY, MIN_DIFFICULTY } from "../shared/archive-filter";
 import type { Puzzle } from "../shared/puzzle";
 import { isRushEligible, RUSH_DURATION_MS, RUSH_SEQUENCE_LENGTH, rushSequence } from "../shared/rush";
 
@@ -115,11 +118,7 @@ describe("sanitizeSettings", () => {
         mode === "rush" ? "rush" : "puzzle",
       );
     }
-    expect(sanitizeSettings(undefined)).toEqual({
-      mode: "puzzle",
-      rounds: 3,
-      durationMs: DUEL_ROUND_MS_DEFAULT,
-    });
+    expect(sanitizeSettings(undefined)).toEqual(DEFAULT_DUEL_SETTINGS);
   });
 });
 
@@ -166,5 +165,57 @@ describe("rushDuelLength", () => {
       expect(second).toEqual(first);
       expect(new Set(first).size).toBe(first.length);
     }
+  });
+});
+
+describe("the difficulty band a host sets", () => {
+  const band = (input: unknown) => sanitizeSettings(input);
+
+  test("is pulled inside the range the explorer uses", () => {
+    const wild = band({ minDifficulty: -400, maxDifficulty: 900 });
+    expect(wild.minDifficulty).toBe(MIN_DIFFICULTY);
+    expect(wild.maxDifficulty).toBe(MAX_DIFFICULTY);
+  });
+
+  test("is put back the right way round when the ends are crossed", () => {
+    // A host dragging the low end past the high end has said what they mean.
+    // The alternative is an empty band, which is the one shape the pool check
+    // downstream cannot rescue.
+    const crossed = band({ minDifficulty: 14, maxDifficulty: 3 });
+    expect(crossed.minDifficulty).toBe(3);
+    expect(crossed.maxDifficulty).toBe(14);
+  });
+
+  test("falls back to the whole archive when the numbers are not numbers", () => {
+    const junk = band({ minDifficulty: "8", maxDifficulty: Number.NaN });
+    expect(junk.minDifficulty).toBe(MIN_DIFFICULTY);
+    expect(junk.maxDifficulty).toBe(MAX_DIFFICULTY);
+  });
+
+  test("keeps unrated unless it is actually turned off", () => {
+    expect(band({}).includeUnrated).toBe(true);
+    expect(band({ includeUnrated: "no" }).includeUnrated).toBe(true);
+    expect(band({ includeUnrated: false }).includeUnrated).toBe(false);
+  });
+});
+
+describe("what the band admits", () => {
+  const rules = { ...DEFAULT_DUEL_SETTINGS, minDifficulty: 5, maxDifficulty: 9 };
+
+  test("takes both ends of the range", () => {
+    expect(withinBand({ difficulty: 5 }, rules)).toBe(true);
+    expect(withinBand({ difficulty: 9 }, rules)).toBe(true);
+  });
+
+  test("refuses either side of it", () => {
+    expect(withinBand({ difficulty: 4 }, rules)).toBe(false);
+    expect(withinBand({ difficulty: 10 }, rules)).toBe(false);
+  });
+
+  test("decides unrated on its own switch, never on the numbers", () => {
+    // Unrated carries difficulty 0, which sits below every band. Reading it as
+    // a rating would hide those puzzles for a reason no player could see.
+    expect(withinBand({ difficulty: 0 }, rules)).toBe(true);
+    expect(withinBand({ difficulty: 0 }, { ...rules, includeUnrated: false })).toBe(false);
   });
 });
