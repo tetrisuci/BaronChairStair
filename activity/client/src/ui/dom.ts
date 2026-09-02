@@ -92,3 +92,17 @@ export function formatCountdown(ms: number): string {
   const seconds = total % 60;
   return [hours, minutes, seconds].map((part) => String(part).padStart(2, "0")).join(":");
 }
+
+/**
+ * Puts an on/off button's state into its label.
+ *
+ * It used to be carried by colour alone — green for on, plain for off — which
+ * only reads if you already know the rule, and does not read at all if you
+ * cannot tell the two apart. The word is the state; `aria-pressed` says the
+ * same thing to a screen reader, and the two cannot drift because they are
+ * written here together.
+ */
+export function setToggleLabel(button: HTMLButtonElement, label: string, on: boolean): void {
+  button.textContent = `${label} ${on ? "ON" : "OFF"}`;
+  button.setAttribute("aria-pressed", String(on));
+}

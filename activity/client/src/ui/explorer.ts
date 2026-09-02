@@ -19,7 +19,7 @@ import {
   SORT_LABELS,
 } from "@shared/archive-filter";
 import type { ArchiveListing } from "@shared/puzzle";
-import { el, panel, replaceChildren } from "./dom";
+import { el, panel, replaceChildren, setToggleLabel } from "./dom";
 
 /** Rows drawn at once. Past this the list is scrolled, not paged. */
 const MAX_ROWS = 200;
@@ -88,10 +88,14 @@ export function createExplorer(callbacks: ExplorerCallbacks): Explorer {
   const minPieces = numberBox(MIN_PIECES, MAX_PIECES, (v) => patch({ minPieces: v }));
   const maxPieces = numberBox(MIN_PIECES, MAX_PIECES, (v) => patch({ maxPieces: v }));
 
-  // Just "Unrated", with the green doing the talking: spelling out the state
-  // pushed the button onto a second line and left the row a head taller than
-  // the one beside it.
-  const unrated = el("button", { class: "btn btn--small explore__toggle", text: "Unrated" });
+  // The state is spelled out. It was colour alone once, to keep the row on one
+  // line, but a green button only reads to someone who has been told what green
+  // means here — and to anyone who cannot separate it from the plain one, it
+  // reads as nothing at all. The button is held at a fixed width so ON and OFF
+  // do not reflow the row on every click; on a narrow viewport it may take a
+  // second line, which is the price and is worth it.
+  const unrated = el("button", { class: "btn btn--small explore__toggle" });
+  setToggleLabel(unrated, "Unrated", true);
   unrated.addEventListener("click", () => patch({ includeUnrated: !filter?.includeUnrated }));
 
   // Built once the archive arrives, since their options come from it.
@@ -211,11 +215,10 @@ export function createExplorer(callbacks: ExplorerCallbacks): Explorer {
       maxDifficulty.value = String(next.maxDifficulty);
       minPieces.value = String(next.minPieces);
       maxPieces.value = String(next.maxPieces);
-      unrated.classList.toggle("spec__toggle--on", next.includeUnrated);
+      setToggleLabel(unrated, "Unrated", next.includeUnrated);
       unrated.title = next.includeUnrated
         ? "Unrated puzzles are shown. Click to hide them."
         : "Unrated puzzles are hidden. Click to show them.";
-      unrated.setAttribute("aria-pressed", String(next.includeUnrated));
       if (setSelect) setSelect.value = next.sets[0] ?? "";
       if (authorSelect) authorSelect.value = next.authors[0] ?? "";
       sort.value = next.sort;
