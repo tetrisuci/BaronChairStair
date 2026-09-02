@@ -117,6 +117,20 @@ export class Api {
     this.token = token;
   }
 
+  /**
+   * The duel socket's address.
+   *
+   * Built here so the prefix and the token both stay private. The token goes in
+   * the query string because a browser cannot set a header on a WebSocket
+   * handshake, and the scheme follows the page's — a page served over https
+   * cannot open a plaintext socket, and inside Discord it always is.
+   */
+  socketUrl(path: string): string {
+    const scheme = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const token = encodeURIComponent(this.token ?? "");
+    return `${scheme}//${window.location.host}${this.prefix}${path}?token=${token}`;
+  }
+
   private async request<T>(path: string, init?: RequestInit): Promise<T> {
     const headers = new Headers(init?.headers);
     if (this.token) headers.set("Authorization", `Bearer ${this.token}`);
