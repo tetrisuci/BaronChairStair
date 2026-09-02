@@ -91,6 +91,10 @@ export class App {
   private readonly duelPanel = createDuelPanel();
   private duel: DuelClient | null = null;
   private duelState: import("@shared/duel").DuelView | null = null;
+  /** The puzzle of the round being played, kept so its reveal can be mounted. */
+  private duelPuzzle: PuzzlePrompt | null = null;
+  /** When the next round is dealt, while a duel is between rounds. */
+  private duelIntermissionAt: number | null = null;
   private duelEndsAt = 0;
   private duelTick: ReturnType<typeof setInterval> | null = null;
 
@@ -426,11 +430,23 @@ export class App {
           else this.duelPanel.say("Stack cleared — wait for the clock.");
         },
         onOpponent: (progress) => this.duelPanel.setOpponent(progress),
-        onRoundOver: (winnerId, duel) => {
+        onRoundOver: (winnerId, duel, solution, nextRoundAt) => {
           this.duelState = duel;
           this.input.setGameInputEnabled(false);
           this.badge.show(winnerId === self(), winnerId === self() ? "Round won" : "Round lost");
           window.setTimeout(() => this.badge.hide(), 900);
+          this.duelIntermissionAt = nextRoundAt;
+          // Both players watch it, the loser most of all: it is the only look
+          // they get at the puzzle that just beat them, on the board they were
+          // playing it on a second ago.
+          //
+          // Only when there is a pause to watch it in. The round that decides a
+          // match is followed by the result screen, which arrives in the same
+          // breath, so a reveal there would be mounted and torn down without
+          // ever being seen.
+          if (solution && nextRoundAt !== null && this.duelPuzzle) {
+            this.attachWalkthrough(this.duelPuzzle, solution);
+          }
         },
         onMatchOver: (winnerId, duel) => this.endDuel(winnerId, duel),
         onError: (message) => {
@@ -457,6 +473,12 @@ export class App {
   ): void {
     this.duelState = duel;
     this.duelEndsAt = endsAt;
+    this.duelPuzzle = puzzle;
+    // The pause is over, and with it the reveal. Dropped before the board is
+    // mounted, because relayout draws the solution player whenever there is
+    // one and would otherwise paint the last round's answer over this round.
+    this.duelIntermissionAt = null;
+    this.solutionPlayer = null;
     this.badge.hide();
     this.hud.setPuzzle(puzzle);
     this.credits.update({ day: this.daily?.day ?? 0, puzzle });
@@ -477,6 +499,9 @@ export class App {
         this.duel?.playerId ?? "",
         this.duelEndsAt - Date.now(),
       );
+      if (this.duelIntermissionAt === null) return;
+      const left = Math.max(0, this.duelIntermissionAt - Date.now());
+      this.duelPanel.say(`Next round in ${Math.ceil(left / 1000)}s`);
     }, CLOCK_TICK_MS);
   }
 
@@ -526,6 +551,11 @@ export class App {
     this.input.setGameInputEnabled(false);
     if (this.duelTick !== null) clearInterval(this.duelTick);
     this.duelTick = null;
+    // No round is coming, and nothing should still be holding the last one's
+    // answer: relayout draws the solution player whenever there is one.
+    this.duelIntermissionAt = null;
+    this.duelPuzzle = null;
+    this.solutionPlayer = null;
     const self = this.duel?.playerId ?? "";
     this.badge.hide();
     this.duelResult.update(duel, self, winnerId);

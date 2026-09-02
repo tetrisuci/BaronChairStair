@@ -28,7 +28,7 @@
  */
 
 import { MAX_DIFFICULTY, MIN_DIFFICULTY } from "./archive-filter";
-import type { PuzzlePrompt } from "./puzzle";
+import type { PuzzlePrompt, SolutionStep } from "./puzzle";
 import type { Handling } from "./tetris/handling";
 import { RUSH_DURATION_MS, RUSH_SEQUENCE_LENGTH } from "./rush";
 import type { InputEvent } from "./tetris/verify";
@@ -59,6 +59,15 @@ export const DUEL_RUSH_MS_DEFAULT = 300_000;
  * never take a round the opponent has already won.
  */
 export const DUEL_CLAIM_GRACE_MS = 1_000;
+
+/**
+ * How long a puzzle duel rests between rounds.
+ *
+ * Long enough to see how the round was meant to go and to take a breath,
+ * short enough that nobody goes looking for something else to do. Rush has no
+ * equivalent and should not: its whole shape is one unbroken clock.
+ */
+export const DUEL_INTERMISSION_MS = 6_000;
 
 /** Both players must be present before a match starts. */
 export const DUEL_PLAYERS = 2;
@@ -254,6 +263,17 @@ export type DuelEvent =
       readonly winnerId: string | null;
       readonly reason: RoundEnd;
       readonly duel: DuelView;
+      /**
+       * How the round was meant to go, sent to both players once it is over.
+       *
+       * Safe only because it is over: a duel never deals a puzzle it has
+       * already dealt, so this answer buys nothing for the rest of the match,
+       * and the archive still refuses the answer to a puzzle in play. It is
+       * also the only look either player gets at a puzzle they lost to.
+       */
+      readonly solution: readonly SolutionStep[] | null;
+      /** Server clock: when the next round is dealt. Null if that was the last. */
+      readonly nextRoundAt: number | null;
     }
   | {
       readonly type: "matchOver";

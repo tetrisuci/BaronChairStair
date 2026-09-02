@@ -44,6 +44,7 @@ import type { PlayerProfile } from "./db";
 import { type Session, readSession } from "./auth";
 import {
   DUEL_CLAIM_GRACE_MS,
+  DUEL_INTERMISSION_MS,
   DUEL_LOBBY_TTL_MS,
   DUEL_PLAYERS,
   DUEL_REMATCH_TTL_MS,
@@ -149,6 +150,8 @@ interface Duel {
   readonly guildId: string | null;
   /** Mutable: the host may rewrite these, but only while the duel is a lobby. */
   settings: DuelSettings;
+  /** Counting down to the next round. Null whenever a round is actually on. */
+  intermission: ReturnType<typeof setTimeout> | null;
   readonly hostId: string;
   readonly createdAt: number;
   phase: "lobby" | "playing" | "over";
@@ -191,6 +194,20 @@ const socketsByPlayer = new Map<string, ServerWebSocket<SocketData>>();
 
 /** Set once at startup, so this module does not load the archive itself. */
 let puzzlePool: readonly Puzzle[] = [];
+
+/**
+ * How long the pause between rounds lasts, in milliseconds.
+ *
+ * Injected the way the archive is, and for the same reason: a test that had to
+ * sit out a real six-second intermission for every round of every best-of
+ * would spend most of its life asleep, and a suite nobody waits for is a suite
+ * nobody runs.
+ */
+let intermissionMs: number = DUEL_INTERMISSION_MS;
+
+export function useIntermission(ms: number): void {
+  intermissionMs = ms;
+}
 
 export function useArchive(puzzles: readonly Puzzle[]): void {
   // Only puzzles short enough to lose a round to. The archive's longest runs to
@@ -325,15 +342,34 @@ function endRound(duel: Duel, winnerId: string | null, reason: RoundEnd): void {
     const seat = seatOf(duel, winnerId);
     if (seat) seat.score++;
   }
-  broadcast(duel, { type: "roundOver", round: round.index, winnerId, reason, duel: view(duel) });
-
   const needed = roundsToWin(duel.settings.rounds);
   const decided = duel.seats.find((seat) => seat.score >= needed);
-  if (decided || duel.roundsPlayed >= duel.settings.rounds) {
+  const last = Boolean(decided) || duel.roundsPlayed >= duel.settings.rounds;
+
+  broadcast(duel, {
+    type: "roundOver",
+    round: round.index,
+    winnerId,
+    reason,
+    duel: view(duel),
+    solution: round.puzzle.solution,
+    nextRoundAt: last ? null : Date.now() + intermissionMs,
+  });
+
+  if (last) {
     finish(duel, decided?.player.id ?? null, reason);
     return;
   }
-  startRound(duel);
+
+  // A pause, not a stall. The next round is dealt on this timer and nothing
+  // else starts it, so every path that ends a duel early has to clear it —
+  // see finish, sweepDuels and resetDuels.
+  duel.intermission = setTimeout(() => {
+    duel.intermission = null;
+    // The duel can have been finished, forfeited or swept while this waited.
+    if (duel.phase !== "playing" || !duels.has(duel.id)) return;
+    startRound(duel);
+  }, intermissionMs);
 }
 
 /**
@@ -350,6 +386,8 @@ function finish(duel: Duel, winnerId: string | null, reason: RoundEnd): void {
   duel.phase = "over";
   if (duel.round?.timer) clearTimeout(duel.round.timer);
   if (duel.rush?.timer) clearTimeout(duel.rush.timer);
+  if (duel.intermission) clearTimeout(duel.intermission);
+  duel.intermission = null;
   duel.round = null;
   duel.rush = null;
   for (const seat of duel.seats) seat.wantsRematch = false;
@@ -692,6 +730,7 @@ function handle(socket: ServerWebSocket<SocketData>, command: DuelCommand): void
         seats: [takeSeat(session.player, socket, sanitizeHandling(command.handling))],
         round: null,
         rush: null,
+        intermission: null,
         dealt: new Set(),
         roundsPlayed: 0,
         finishedAt: null,
@@ -767,6 +806,12 @@ function handle(socket: ServerWebSocket<SocketData>, command: DuelCommand): void
       if (!current || current.phase !== "playing") return;
       if (!withinClaimRate(socket)) throw new InvalidRunError("Too many claims at once");
       if (current.settings.mode !== "rush") {
+        // Between rounds there is no round to claim. Refused out loud rather
+        // than dropped, so a claim that lost the race is told it lost — and so
+        // "the referee read this and turned it down" stays distinguishable
+        // from "this never arrived", which is the only thing that makes a
+        // count of round endings worth anything.
+        if (!current.round) throw new InvalidRunError("That round is over");
         awardClaim(current, session.player.id, command.position, command.events);
         return;
       }
@@ -991,6 +1036,7 @@ export function resetDuels(): void {
   for (const duel of duels.values()) {
     if (duel.round?.timer) clearTimeout(duel.round.timer);
     if (duel.rush?.timer) clearTimeout(duel.rush.timer);
+    if (duel.intermission) clearTimeout(duel.intermission);
   }
   duels.clear();
   socketsByPlayer.clear();
