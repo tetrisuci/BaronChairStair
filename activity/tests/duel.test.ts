@@ -19,6 +19,7 @@ import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  DUEL_CLAIM_GRACE_MS,
   DUEL_REMATCH_TTL_MS,
   DUEL_ROUND_MS_MIN,
   DUEL_RUSH_MS_MIN,
@@ -37,11 +38,11 @@ import {
   type Puzzle,
   type PuzzlePrompt,
 } from "../shared/puzzle";
-import { RUSH_SKIPS } from "../shared/rush";
+import { isRushEligible, RUSH_SKIPS } from "../shared/rush";
 import { createPuzzleEngine, toLetter } from "../shared/tetris/engine";
 import { DEFAULT_HANDLING } from "../shared/tetris/handling";
 import { findPaths } from "../shared/tetris/pathfinder";
-import type { GameKey, InputEvent } from "../shared/tetris/verify";
+import { type GameKey, type InputEvent, MAX_FRAMES } from "../shared/tetris/verify";
 
 // ── The server under test ────────────────────────────────────────────────────
 
@@ -81,7 +82,11 @@ let server: ReturnType<typeof serveDuels>;
 let httpBase: string;
 let socketBase: string;
 let mintSession: AuthModule["mintSession"];
+/** The claim budget, read from the referee rather than repeated here. */
+let claimLimit: DuelModule["CLAIM_LIMIT"];
 let resetDuels: DuelModule["resetDuels"];
+/** Pins the pool a duel deals from, so a repeat is a certainty and not a wait. */
+let useArchive: DuelModule["useArchive"];
 /** Called with a time rather than waited for: the offer's TTL is two minutes. */
 let sweepDuels: DuelModule["sweepDuels"];
 
@@ -92,7 +97,9 @@ beforeAll(async () => {
   delete process.env.DISCORD_CLIENT_SECRET;
   const entry = (await import("../server/index")).default;
   ({ mintSession } = await import("../server/auth"));
-  ({ resetDuels, sweepDuels } = await import("../server/duel"));
+  ({ CLAIM_LIMIT: claimLimit, resetDuels, sweepDuels, useArchive } = await import(
+    "../server/duel"
+  ));
   server = serveDuels(entry);
   httpBase = `http://127.0.0.1:${server.port}`;
   socketBase = `ws://127.0.0.1:${server.port}`;
@@ -345,8 +352,22 @@ async function playPuzzleDuel(rounds: number): Promise<Lobby> {
   return seats;
 }
 
-function claim(player: Duellist, prompt: PuzzlePrompt): void {
-  player.send({ type: "claim", events: solvingLog(answerFor(prompt)) });
+type RoundFrame = Extract<DuelEvent, { type: "round" }>;
+
+/**
+ * Claims a round with the log that solves it.
+ *
+ * Sent against the round the prompt came in on, because that is what an honest
+ * client does: the frame that deals a puzzle says which puzzle of the match it
+ * is, and the claim hands that back so a log read late is refused rather than
+ * spent on whatever has replaced it.
+ */
+function claim(player: Duellist, round: RoundFrame): void {
+  player.send({
+    type: "claim",
+    position: round.round,
+    events: solvingLog(answerFor(round.puzzle)),
+  });
 }
 
 // ── The handshake ────────────────────────────────────────────────────────────
@@ -438,15 +459,59 @@ describe("a puzzle duel deals one puzzle to both players", () => {
     // A board part-way through a puzzle is a partial solution to it.
     expect(JSON.stringify(seen)).not.toContain("board");
   });
+
+  test("a progress frame is bounded before it is relayed", async () => {
+    const { host, guest } = await playPuzzleDuel(3);
+    await host.take("round");
+    await guest.take("round");
+
+    // The one thing one client sends and another draws, and a socket frame
+    // meets no middleware on the way through. Omitted entirely, it still has to
+    // arrive as something the opponent's renderer can read.
+    host.send({ type: "progress", progress: null } as unknown as DuelCommand);
+    const empty = await guest.take("opponent");
+    expect(empty.progress).toEqual({
+      piecesPlaced: 0,
+      pieceBudget: 0,
+      attack: 0,
+      targetAttack: 0,
+      solved: 0,
+    });
+
+    host.send({
+      type: "progress",
+      progress: {
+        piecesPlaced: -3,
+        pieceBudget: 4.6,
+        attack: Number.NaN,
+        targetAttack: "9",
+        solved: 1,
+        board: "x".repeat(2_000),
+      },
+    } as unknown as DuelCommand);
+    const bounded = await guest.take("opponent");
+
+    // Five numbers, and only those five: not a negative count, not a NaN the
+    // renderer would divide by, and not a payload the sender chose the size of.
+    expect(bounded.progress).toEqual({
+      piecesPlaced: 0,
+      pieceBudget: 5,
+      attack: 0,
+      targetAttack: 0,
+      solved: 1,
+    });
+    expect(Object.values(bounded.progress).every((value) => Number.isFinite(value))).toBe(true);
+    expect(JSON.stringify(bounded)).not.toContain("board");
+  });
 });
 
 describe("a round is won by a log that solves it", () => {
   test("a claim that does not solve it is refused, and takes no round", async () => {
     const { host, guest } = await playPuzzleDuel(3);
-    await host.take("round");
+    const round = await host.take("round");
     await guest.take("round");
 
-    host.send({ type: "claim", events: [] });
+    host.send({ type: "claim", position: round.round, events: [] });
     expect((await host.take("error")).message).toBe("That log does not solve this round");
 
     // Settled after the claim was answered, so a round it had somehow taken
@@ -456,12 +521,125 @@ describe("a round is won by a log that solves it", () => {
     expect(framesOfType(guest.received, "roundOver")).toHaveLength(0);
   });
 
+  test("a claim that names another puzzle is refused, and takes no round", async () => {
+    const { host, guest } = await playPuzzleDuel(3);
+    const round = await host.take("round");
+    await guest.take("round");
+
+    // The answer to the round being played, filed under the round after it:
+    // what a client that banks solved logs sends, and what two claims in the
+    // same tick produce by accident once the first has dealt the next round.
+    host.send({
+      type: "claim",
+      position: round.round + 1,
+      events: solvingLog(answerFor(round.puzzle)),
+    });
+    expect((await host.take("error")).message).toBe("That log was played on another puzzle");
+
+    await guest.settle();
+    expect(framesOfType(guest.received, "roundOver")).toHaveLength(0);
+
+    // And the same log, filed under the round it really was played on, still
+    // takes it: the position refuses a log, it never awards one.
+    claim(host, round);
+    expect((await host.take("roundOver")).winnerId).toBe(host.id);
+  });
+
+  test("a claim longer than the round is refused before it is replayed", async () => {
+    const { host, guest } = await playPuzzleDuel(3);
+    const round = await host.take("round");
+    await guest.take("round");
+
+    // A couple of hundred bytes with nothing in them to play. Nothing locks on
+    // its own in a puzzle, so whatever reads this ticks the engine every frame
+    // out to the far end — about ten milliseconds of a loop that is serving
+    // everything else. The shape `tests/server.test.ts` pins on the rush route.
+    const events: InputEvent[] = [
+      { frame: MAX_FRAMES - 1, type: "keydown", data: { key: "moveLeft", subframe: 0 } },
+      { frame: MAX_FRAMES - 1, type: "keyup", data: { key: "moveLeft", subframe: 0 } },
+    ];
+
+    const started = performance.now();
+    for (let sent = 0; sent < claimLimit; sent++) {
+      host.send({ type: "claim", position: round.round, events });
+    }
+    const refusals: string[] = [];
+    while (refusals.length < claimLimit) refusals.push((await host.take("error")).message);
+    const elapsed = performance.now() - started;
+
+    expect(new Set(refusals)).toEqual(new Set(["That log is longer than the round"]));
+    // Every one of them turned away before anything was replayed: a whole
+    // claim budget of these costs less than one replay of a single one.
+    expect(elapsed).toBeLessThan(100);
+
+    await guest.settle();
+    expect(framesOfType(guest.received, "roundOver")).toHaveLength(0);
+  });
+
+  test("claims are rationed apart from the messages that cost nothing", async () => {
+    const { host, guest } = await playPuzzleDuel(3);
+    const round = await host.take("round");
+    await guest.take("round");
+
+    // A claim is the only frame that buys a replay, so it has a budget of its
+    // own rather than sharing the message allowance, which is sized for the
+    // `progress` chatter of two players mid-round.
+    for (let sent = 0; sent <= claimLimit; sent++) {
+      host.send({ type: "claim", position: round.round, events: [] });
+    }
+    const messages: string[] = [];
+    while (messages.length <= claimLimit) messages.push((await host.take("error")).message);
+
+    expect(messages.slice(0, claimLimit)).toEqual(
+      Array.from({ length: claimLimit }, () => "That log does not solve this round"),
+    );
+    expect(messages.at(-1)).toBe("Too many claims at once");
+    // Refused, not closed. A client sending too many is a bug far more often
+    // than an attack, and closing the socket would forfeit the match over it.
+    expect(framesOfType(guest.received, "matchOver")).toHaveLength(0);
+  });
+
+  test("a solve made in time is still taken a moment after the buzzer", async () => {
+    const seats = await lobby(puzzleDuel(3));
+    jest.useFakeTimers();
+    try {
+      seats.host.send({ type: "ready" });
+      const first = await seats.host.take("round");
+      await seats.guest.take("round");
+
+      // Past the buzzer, inside the grace: the hop a player on a slow
+      // connection pays for a solve they genuinely made in time. The round has
+      // to outlive its own deadline to receive it, or the grace admits nothing.
+      jest.advanceTimersByTime(DUEL_ROUND_MS_MIN + 1);
+      expect(Date.now()).toBeGreaterThan(first.endsAt);
+      expect(Date.now()).toBeLessThanOrEqual(first.endsAt + DUEL_CLAIM_GRACE_MS);
+
+      // Asserted before the claim, and not by waiting for a frame that would
+      // never come: a round torn down on its buzzer has already dealt its
+      // replacement, and this is the cheap way to see that it has not.
+      await seats.host.settle();
+      expect(framesOfType(seats.host.received, "round")).toHaveLength(1);
+
+      claim(seats.host, first);
+      const over = await seats.host.take("roundOver");
+
+      // The round it was played on, not the one that would otherwise have
+      // replaced it by now.
+      expect(over.round).toBe(first.round);
+      expect(over.winnerId).toBe(seats.host.id);
+      expect(over.reason).toBe("solved");
+      expect(scoreOf(over.duel, seats.host.id)).toBe(1);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   test("a claim that solves it takes the round, and both are told", async () => {
     const { host, guest } = await playPuzzleDuel(3);
     const round = await host.take("round");
     await guest.take("round");
 
-    claim(host, round.puzzle);
+    claim(host, round);
     const forHost = await host.take("roundOver");
     const forGuest = await guest.take("roundOver");
 
@@ -485,7 +663,8 @@ describe("a round is won by a log that solves it", () => {
       const first = await seats.host.take("round");
       await seats.guest.take("round");
 
-      jest.advanceTimersByTime(DUEL_ROUND_MS_MIN + 1);
+      // The round outlives its buzzer by the grace, so this has to clear both.
+      jest.advanceTimersByTime(DUEL_ROUND_MS_MIN + DUEL_CLAIM_GRACE_MS + 1);
 
       const over = await seats.host.take("roundOver");
       expect(await seats.guest.take("roundOver")).toEqual(over);
@@ -508,7 +687,7 @@ describe("a round is won by a log that solves it", () => {
     for (let won = 0; won < needed; won++) {
       const round = await host.take("round");
       await guest.take("round");
-      claim(host, round.puzzle);
+      claim(host, round);
       await host.take("roundOver");
       await guest.take("roundOver");
     }
@@ -538,8 +717,8 @@ describe("a round is won by a log that solves it", () => {
     // socket client can arrange, and the arrangement the whole design turns on:
     // nothing in the claim path awaits, so the two are settled by the order the
     // socket delivered them and by nothing else.
-    host.send({ type: "claim", events });
-    guest.send({ type: "claim", events });
+    host.send({ type: "claim", position: first.round, events });
+    guest.send({ type: "claim", position: first.round, events });
 
     const [forHost, forGuest] = await Promise.all([
       host.take("roundOver"),
@@ -562,18 +741,18 @@ describe("a round is won by a log that solves it", () => {
     expect(second.round).toBe(2);
     expect(framesOfType(host.received, "matchOver")).toHaveLength(0);
 
-    // One claim, one round — unless the draw served the same puzzle twice, in
-    // which case the loser's log really is the answer to round two and taking
-    // it is a second win rather than the same win counted twice.
-    const decided = second.puzzle.id === first.puzzle.id ? 2 : 1;
-    expect(framesOfType(host.received, "roundOver")).toHaveLength(decided);
-    expect(framesOfType(guest.received, "roundOver")).toHaveLength(decided);
-    if (decided > 1) return;
+    // One claim, one round. Round two is a puzzle this duel has not dealt
+    // before, and the loser's log names round one either way, so there is no
+    // arrangement in which it also takes the round that has just started.
+    expect(second.puzzle.id).not.toBe(first.puzzle.id);
+    expect(framesOfType(host.received, "roundOver")).toHaveLength(1);
+    expect(framesOfType(guest.received, "roundOver")).toHaveLength(1);
 
     // And the losing claim was refused by the referee rather than dropped on
     // the way in, which is what makes the count above worth anything: it was
-    // read, against the round that had already started, and turned down there.
-    const refused = "That log does not solve this round";
+    // read, against a round it was not played on, and turned down there before
+    // it could be replayed against the wrong puzzle.
+    const refused = "That log was played on another puzzle";
     const loser = winnerId === host.id ? guest : host;
     const winner = winnerId === host.id ? host : guest;
     expect(framesOfType(loser.received, "error").map((frame) => frame.message)).toContain(refused);
@@ -640,7 +819,11 @@ type RushFrame = Extract<DuelEvent, { type: "rush" }>;
 /** Solves the puzzle a player is on and returns the one they are handed next. */
 async function solveRush(player: Duellist, frame: RushFrame): Promise<RushFrame> {
   if (!frame.puzzle) throw new Error(`${player.id} was dealt no puzzle to solve`);
-  player.send({ type: "claim", events: solvingLog(answerFor(frame.puzzle)) });
+  player.send({
+    type: "claim",
+    position: frame.index,
+    events: solvingLog(answerFor(frame.puzzle)),
+  });
   return player.take("rush");
 }
 
@@ -697,8 +880,15 @@ describe("a rush duel is one stack walked at two paces", () => {
 
     // The log that just worked, replayed against the next puzzle in the stack.
     if (!first.puzzle) throw new Error("the stack was empty");
-    host.send({ type: "claim", events: solvingLog(answerFor(first.puzzle)) });
+    const solvesTheFirst = solvingLog(answerFor(first.puzzle));
+    host.send({ type: "claim", position: second.index, events: solvesTheFirst });
     expect((await host.take("error")).message).toBe("That log does not solve this puzzle");
+
+    // And filed under the puzzle it really was played on, it is refused without
+    // being replayed at all: the stack has moved on, and a log that says so is
+    // a log from before a solve, a skip or a rematch.
+    host.send({ type: "claim", position: first.index, events: solvesTheFirst });
+    expect((await host.take("error")).message).toBe("That log was played on another puzzle");
 
     await host.settle();
     expect(framesOfType(host.received, "rush").at(-1)?.index).toBe(second.index);
@@ -746,7 +936,7 @@ describe("a rush duel is one stack walked at two paces", () => {
       await solveRush(guest, guestFirst);
       await host.take("duel");
 
-      jest.advanceTimersByTime(DUEL_RUSH_MS_MIN + 1);
+      jest.advanceTimersByTime(DUEL_RUSH_MS_MIN + DUEL_CLAIM_GRACE_MS + 1);
 
       const over = await host.take("matchOver");
       const forGuest = await guest.take("matchOver");
@@ -755,6 +945,47 @@ describe("a rush duel is one stack walked at two paces", () => {
       expect(forGuest.winnerId).toBe(host.id);
       expect(scoreOf(over.duel, host.id)).toBe(2);
       expect(scoreOf(over.duel, guest.id)).toBe(1);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test("a solve made in time still counts a moment after the buzzer", async () => {
+    const { host, guest } = await lobby(rushDuel());
+    jest.useFakeTimers();
+    try {
+      host.send({ type: "ready" });
+      const first = await host.take("rush");
+      await guest.take("rush");
+      if (!first.puzzle) throw new Error("the stack was empty");
+
+      // Solved before the buzzer, read a hop after it. Solo rush admits the
+      // same last-second solve at submit, and a duel is not the harsher clock.
+      jest.advanceTimersByTime(DUEL_RUSH_MS_MIN + 1);
+      expect(Date.now()).toBeGreaterThan(first.endsAt);
+      // The match is still here to be claimed against, and said nothing when
+      // the buzzer went: the final score is not out yet.
+      await host.settle();
+      expect(framesOfType(host.received, "matchOver")).toHaveLength(0);
+
+      host.send({
+        type: "claim",
+        position: first.index,
+        events: solvingLog(answerFor(first.puzzle)),
+      });
+
+      const told = await guest.take("duel");
+      expect(scoreOf(told.duel, host.id)).toBe(1);
+      // Counted, but nothing new dealt: the stack does not creep forward once
+      // the clock both players are watching has run out. Settled first, because
+      // a puzzle dealt to this player is a frame on this player's socket.
+      await host.settle();
+      expect(framesOfType(host.received, "rush")).toHaveLength(1);
+
+      jest.advanceTimersByTime(DUEL_CLAIM_GRACE_MS);
+      const over = await host.take("matchOver");
+      expect(over.winnerId).toBe(host.id);
+      expect(scoreOf(over.duel, host.id)).toBe(1);
     } finally {
       jest.useRealTimers();
     }
@@ -772,7 +1003,7 @@ describe("a rush duel is one stack walked at two paces", () => {
       await solveRush(guest, guestFirst);
       await host.take("duel");
 
-      jest.advanceTimersByTime(DUEL_RUSH_MS_MIN + 1);
+      jest.advanceTimersByTime(DUEL_RUSH_MS_MIN + DUEL_CLAIM_GRACE_MS + 1);
 
       const over = await host.take("matchOver");
       expect(over.winnerId).toBeNull();
@@ -787,13 +1018,16 @@ describe("a rush duel is one stack walked at two paces", () => {
 
 // ── Rematches ────────────────────────────────────────────────────────────────
 
+/** Puzzles the duel that tests dealing without replacement may draw from. */
+const PINNED_POOL = 5;
+
 /** Plays a best-of-`rounds` match out, the host taking every round of it. */
 async function hostWinsMatch(rounds: number): Promise<Lobby> {
   const seats = await playPuzzleDuel(rounds);
   for (let won = 0; won < roundsToWin(rounds); won++) {
     const round = await seats.host.take("round");
     await seats.guest.take("round");
-    claim(seats.host, round.puzzle);
+    claim(seats.host, round);
     await seats.host.take("roundOver");
     await seats.guest.take("roundOver");
   }
@@ -866,7 +1100,7 @@ describe("a finished match is played again only if both ask", () => {
     expect(forHost.duel.rematchEndsAt).toBeNull();
 
     // And it is a match, not a screen: the round can be taken like any other.
-    claim(guest, forHost.puzzle);
+    claim(guest, forHost);
     const round = await guest.take("roundOver");
     expect(round.winnerId).toBe(guest.id);
     expect(scoreOf(round.duel, guest.id)).toBe(1);
@@ -883,7 +1117,7 @@ describe("a finished match is played again only if both ask", () => {
       await solveRush(host, first);
       await guest.take("duel");
 
-      jest.advanceTimersByTime(DUEL_RUSH_MS_MIN + 1);
+      jest.advanceTimersByTime(DUEL_RUSH_MS_MIN + DUEL_CLAIM_GRACE_MS + 1);
       const over = await host.take("matchOver");
       await guest.take("matchOver");
       expect(scoreOf(over.duel, host.id)).toBe(1);
@@ -904,6 +1138,37 @@ describe("a finished match is played again only if both ask", () => {
       expect(again.endsAt).toBeGreaterThan(Date.now());
     } finally {
       jest.useRealTimers();
+    }
+  });
+
+  test("going again deals a puzzle neither of them has played", async () => {
+    // Pinned to a pool barely bigger than the match, because a repeat drawn
+    // from the whole archive is a one-in-a-hundred wait and a repeat drawn from
+    // five is the ordinary case: five puzzles dealt from five without one is
+    // the thing that cannot happen by luck.
+    const pinned = archive.filter(isRushEligible).slice(0, PINNED_POOL);
+    useArchive(pinned);
+    try {
+      const rounds = 7;
+      const { host, guest } = await hostWinsMatch(rounds);
+      const played = framesOfType(host.received, "round").map((frame) => frame.puzzle.id);
+      expect(played).toHaveLength(roundsToWin(rounds));
+      // A puzzle one of them has already solved is not a round, it is a memory
+      // test — and it is the one case in which a log banked on an earlier round
+      // would verify against a later one.
+      expect(new Set(played).size).toBe(played.length);
+
+      host.send({ type: "rematch" });
+      await guest.take("duel");
+      guest.send({ type: "rematch" });
+
+      // The one left over. A rematch keeps the dealt list rather than clearing
+      // it, which is what makes `restart`'s "a fresh puzzle" true.
+      const again = await host.take("round");
+      expect(played).not.toContain(again.puzzle.id);
+      expect(pinned.map((puzzle) => puzzle.id)).toContain(again.puzzle.id);
+    } finally {
+      useArchive(archive);
     }
   });
 

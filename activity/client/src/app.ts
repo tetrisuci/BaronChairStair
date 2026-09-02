@@ -136,8 +136,8 @@ export class App {
   ) {
     this.input = new InputRouter(settings.value.keybinds, {
       onGameKey: (key, down) => {
-        if (this.duel) this.duel.input(key, down);
-        else if (this.rush) this.rush.input(key, down);
+        if (this.mode === "duel") this.duel?.input(key, down);
+        else if (this.mode === "rush") this.rush?.input(key, down);
         else this.run?.input(key, down);
       },
       onLocalAction: (action) => this.handleLocalAction(action),
@@ -300,14 +300,41 @@ export class App {
     }
   }
 
+  // ── Modes ──────────────────────────────────────────────────────────────────
+
+  /**
+   * Puts away whatever was running, whichever mode it belonged to.
+   *
+   * The masthead buttons stay live on every screen, so any mode can be started
+   * from inside any other — and nothing left behind is idle. An abandoned rush
+   * keeps its own frame loop drawing to the shared canvas, disables the
+   * keyboard at its buzzer and files the truncated run, which for a ranked
+   * rush is the day's only one. An abandoned duel keeps the socket, the clock
+   * and first claim on every keystroke. Doing it in one place is what stops
+   * the next mode added from being the one that gets forgotten.
+   */
+  private disposeActiveMode(): void {
+    this.run?.dispose();
+    this.run = null;
+    this.runningPuzzleId = null;
+
+    this.rush?.dispose();
+    this.rush = null;
+    this.rushTicket = null;
+
+    if (this.duelTick !== null) clearInterval(this.duelTick);
+    this.duelTick = null;
+    this.duel?.close();
+    this.duel = null;
+    this.duelState = null;
+  }
+
   // ── Explorer ───────────────────────────────────────────────────────────────
 
   private enterExplorer(): void {
     if (this.mode === "explore") return;
+    this.disposeActiveMode();
     this.mode = "explore";
-    this.run?.dispose();
-    this.run = null;
-    this.runningPuzzleId = null;
     this.badge.hide();
     this.input.setGameInputEnabled(false);
     this.paintExplorer();
@@ -322,6 +349,7 @@ export class App {
   }
 
   private leaveExplorer(): void {
+    this.disposeActiveMode();
     this.mode = "daily";
     replaceChildren(this.hud.left, this.hud.panels.hold, this.hud.panels.progress);
     this.showPlayfield();
@@ -364,10 +392,8 @@ export class App {
 
   private enterDuel(): void {
     if (this.mode === "duel") return;
+    this.disposeActiveMode();
     this.mode = "duel";
-    this.run?.dispose();
-    this.run = null;
-    this.runningPuzzleId = null;
     this.badge.hide();
     this.input.setGameInputEnabled(false);
 
@@ -495,11 +521,7 @@ export class App {
   }
 
   private leaveDuel(): void {
-    if (this.duelTick !== null) clearInterval(this.duelTick);
-    this.duelTick = null;
-    this.duel?.close();
-    this.duel = null;
-    this.duelState = null;
+    this.disposeActiveMode();
     this.mode = "daily";
     this.badge.hide();
     replaceChildren(this.hud.left, this.hud.panels.hold, this.hud.panels.progress);
@@ -526,10 +548,8 @@ export class App {
    */
   private enterRush(): void {
     if (this.mode === "rush") return;
+    this.disposeActiveMode();
     this.mode = "rush";
-    this.run?.dispose();
-    this.run = null;
-    this.runningPuzzleId = null;
     this.badge.hide();
     this.input.setGameInputEnabled(false);
 
@@ -660,9 +680,7 @@ export class App {
 
   /** Leaves rush for the daily, abandoning a run in progress if there is one. */
   private leaveRush(): void {
-    this.rush?.dispose();
-    this.rush = null;
-    this.rushTicket = null;
+    this.disposeActiveMode();
     this.mode = "daily";
     this.badge.hide();
     this.input.setGameInputEnabled(true);
@@ -935,8 +953,8 @@ export class App {
 
     switch (action) {
       case "reset":
-        if (this.duel) this.duel.restart();
-        else if (this.rush) this.rush.restart();
+        if (this.mode === "duel") this.duel?.restart();
+        else if (this.mode === "rush") this.rush?.restart();
         else this.restartAttempt();
         return;
       case "skip":
@@ -963,7 +981,16 @@ export class App {
    * was not already wide open — it just costs the player less to walk through.
    */
   private stepHistory(direction: "undo" | "redo"): void {
-    const run = this.rush ? this.rush.currentRun : this.run;
+    // Keyed on the mode rather than on whichever session is still non-null, and
+    // deliberately not `??`: a rush between two puzzles has no live run, and
+    // that has to read as nothing to undo instead of reaching past it to the
+    // daily attempt waiting underneath.
+    const run =
+      this.mode === "duel"
+        ? this.duel?.currentRun
+        : this.mode === "rush"
+          ? this.rush?.currentRun
+          : this.run;
     if (!run) return;
     const moved = direction === "undo" ? run.undo() : run.redo();
     if (!moved) this.toast(direction === "undo" ? "Nothing to undo" : "Nothing to redo");
@@ -973,11 +1000,11 @@ export class App {
   /** Rush only. In the daily there is nothing after the puzzle you are on. */
   private skipPuzzle(): void {
     // A rush duel has skips too, bounded by the server rather than by us.
-    if (this.duel) {
-      this.duel.skip();
+    if (this.mode === "duel") {
+      this.duel?.skip();
       return;
     }
-    if (!this.rush) return;
+    if (this.mode !== "rush" || !this.rush) return;
     if (this.rush.skip()) return;
     this.toast("No skips left");
   }

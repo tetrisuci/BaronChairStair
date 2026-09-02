@@ -53,6 +53,13 @@ export class DuelClient {
   private lastProgressAt = 0;
   /** Set once a claim is away, so a restart cannot send it twice. */
   private claimed = false;
+  /**
+   * Which puzzle of the match the run in front of us is: the round number, or
+   * the place in the stack. Taken from the frame that dealt it and handed back
+   * with the claim, so a log the server reads late is refused rather than
+   * spent on whatever puzzle has replaced this one.
+   */
+  private position = 0;
 
   playerId = "";
 
@@ -139,14 +146,14 @@ export class DuelClient {
         this.callbacks.onState(event.duel);
         return;
       case "round":
-        this.startRound(event.puzzle);
+        this.startRound(event.puzzle, event.round);
         this.callbacks.onRound(event.round, event.puzzle, event.endsAt, event.duel);
         return;
       case "rush":
         // Each player walks the shared stack at their own pace, so this is
         // addressed to one of them; a `round` is the thing both are racing on
         // and a rush has none.
-        if (event.puzzle) this.startRound(event.puzzle);
+        if (event.puzzle) this.startRound(event.puzzle, event.index);
         else this.disposeRun();
         this.callbacks.onRushPuzzle(
           event.puzzle,
@@ -173,9 +180,10 @@ export class DuelClient {
     }
   }
 
-  private startRound(puzzle: PuzzlePrompt): void {
+  private startRound(puzzle: PuzzlePrompt, position: number): void {
     this.disposeRun();
     this.claimed = false;
+    this.position = position;
     this.run = new PuzzleRun(puzzle, this.handling, {
       onFrame: (view, snapshot) => {
         this.callbacks.onFrame(view, snapshot);
@@ -201,7 +209,7 @@ export class DuelClient {
     }
     if (this.claimed) return;
     this.claimed = true;
-    this.send({ type: "claim", events });
+    this.send({ type: "claim", position: this.position, events });
   }
 
   /** Throttled: the opponent needs a bar, not every frame. */

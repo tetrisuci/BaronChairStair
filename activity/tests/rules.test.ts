@@ -2,12 +2,15 @@
  * Rules that are easy to break and expensive to get wrong.
  *
  * Each of these pins a specific defect: the engine's queue padding leaking into
- * play, and a rebound key quietly reverting on the next reload.
+ * play, a rebound key quietly reverting on the next reload, and a held modifier
+ * silencing every other key.
  */
 
 import { describe, expect, test } from "bun:test";
+import { InputRouter } from "../client/src/game/input";
 import {
   DEFAULT_KEYBINDS,
+  type Keybinds,
   rebind,
   sanitizeKeybinds,
 } from "../shared/keybinds";
@@ -163,6 +166,130 @@ describe("keybinds", () => {
 
   test("junk is discarded rather than trusted", () => {
     expect(sanitizeKeybinds({ hold: [42, "F5", "KeyV"] }).hold).toEqual(["KeyV"]);
+  });
+});
+
+/** Which flag a browser raises while a given physical modifier is down. */
+const MODIFIER_FLAGS: Readonly<Record<string, "ctrlKey" | "altKey" | "shiftKey" | "metaKey">> = {
+  ControlLeft: "ctrlKey",
+  AltLeft: "altKey",
+  ShiftLeft: "shiftKey",
+  MetaLeft: "metaKey",
+};
+
+/**
+ * Drives the real router with no DOM: `attach` only wants somewhere to register
+ * its listeners, and those listeners only want objects shaped like key events.
+ *
+ * The modifier flags are derived from what is physically down, the way a
+ * browser reports them — a modifier's own keydown already carries its flag, and
+ * its keyup no longer does. Getting that wrong would test a keyboard nobody has.
+ */
+function keyboard(keybinds: Keybinds) {
+  const listeners = new Map<string, (event: KeyboardEvent) => void>();
+  const globals = globalThis as unknown as { window: unknown };
+  const outside = globals.window;
+  globals.window = {
+    addEventListener: (type: string, handler: (event: KeyboardEvent) => void) => {
+      listeners.set(type, handler);
+    },
+    removeEventListener: () => {},
+  };
+  const routed: string[] = [];
+  const router = new InputRouter(keybinds, {
+    onGameKey: (key, down) => routed.push(`${key}:${down ? "down" : "up"}`),
+    onLocalAction: (action) => routed.push(action),
+  });
+  router.attach();
+  globals.window = outside;
+
+  const down = new Set<string>();
+  const send = (type: "keydown" | "keyup", code: string): void => {
+    if (type === "keydown") down.add(code);
+    else down.delete(code);
+    const flags = { ctrlKey: false, altKey: false, shiftKey: false, metaKey: false };
+    for (const held of down) {
+      const flag = MODIFIER_FLAGS[held];
+      if (flag) flags[flag] = true;
+    }
+    listeners.get(type)?.({
+      ...flags,
+      code,
+      repeat: false,
+      target: null,
+      preventDefault: () => {},
+    } as unknown as KeyboardEvent);
+  };
+
+  return {
+    router,
+    routed,
+    press: (...codes: readonly string[]): void => {
+      for (const code of codes) send("keydown", code);
+    },
+    release: (...codes: readonly string[]): void => {
+      for (const code of codes) send("keyup", code);
+    },
+  };
+}
+
+describe("input router", () => {
+  test("a bare binding still fires while a modifier is held", () => {
+    // Hold is on shift by default, and a hold is followed by moves — so this is
+    // the stock configuration, not an exotic rebind.
+    const keys = keyboard(DEFAULT_KEYBINDS);
+    keys.press("ShiftLeft", "ArrowDown");
+    keys.release("ArrowDown", "ShiftLeft");
+    expect(keys.routed).toEqual(["hold:down", "softDrop:down", "softDrop:up", "hold:up"]);
+  });
+
+  test("a chord still beats the bare key underneath it", () => {
+    const keys = keyboard(DEFAULT_KEYBINDS);
+    keys.press("ControlLeft", "KeyZ");
+    keys.release("KeyZ", "ControlLeft");
+    expect(keys.routed).toEqual(["undo"]);
+  });
+
+  test("a chorded game key is released when the modifier goes first", () => {
+    const keys = keyboard(rebind(DEFAULT_KEYBINDS, "hardDrop", "Ctrl+Space"));
+    keys.press("ControlLeft", "Space");
+    keys.release("ControlLeft", "Space");
+    expect(keys.routed).toEqual(["hardDrop:down", "hardDrop:up"]);
+  });
+
+  test("a chorded game key is released when the key goes first", () => {
+    const keys = keyboard(rebind(DEFAULT_KEYBINDS, "hardDrop", "Ctrl+Space"));
+    keys.press("ControlLeft", "Space");
+    keys.release("Space", "ControlLeft");
+    expect(keys.routed).toEqual(["hardDrop:down", "hardDrop:up"]);
+  });
+
+  test("a chord over a key bound elsewhere releases the action it pressed", () => {
+    // Ctrl+Z hard drops while bare Z still rotates: resolving the binding again
+    // on the way up would find rotate-left and leave hard drop held down.
+    const keys = keyboard(rebind(DEFAULT_KEYBINDS, "hardDrop", "Ctrl+KeyZ"));
+    keys.press("ControlLeft", "KeyZ");
+    keys.release("KeyZ", "ControlLeft");
+    expect(keys.routed).toEqual(["hardDrop:down", "hardDrop:up"]);
+  });
+
+  test("a modifier tapped mid-press does not strand the key", () => {
+    const keys = keyboard(DEFAULT_KEYBINDS);
+    keys.press("KeyZ");
+    keys.press("ControlLeft");
+    keys.release("ControlLeft");
+    keys.release("KeyZ");
+    expect(keys.routed).toEqual(["rotateCCW:down", "rotateCCW:up"]);
+  });
+
+  test("suspending game input releases what is down exactly once", () => {
+    const keys = keyboard(DEFAULT_KEYBINDS);
+    keys.press("ArrowDown");
+    keys.router.setGameInputEnabled(false);
+    keys.release("ArrowDown");
+    keys.router.setGameInputEnabled(true);
+    keys.press("ArrowDown");
+    expect(keys.routed).toEqual(["softDrop:down", "softDrop:up", "softDrop:down"]);
   });
 });
 
