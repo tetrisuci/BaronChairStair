@@ -56,7 +56,9 @@ import {
   roundsToWin,
   rushDuelLength,
   sanitizeProgress,
+  puzzlesNeededFor,
   sanitizeSettings,
+  withinBand,
 } from "../shared/duel";
 import { decodeBoard, ENGINE_ROWS, meetsTarget, type Puzzle, toPrompt } from "../shared/puzzle";
 import { isRushEligible, RUSH_SKIPS, rushSequence } from "../shared/rush";
@@ -145,7 +147,8 @@ interface Round {
 interface Duel {
   readonly id: string;
   readonly guildId: string | null;
-  readonly settings: DuelSettings;
+  /** Mutable: the host may rewrite these, but only while the duel is a lobby. */
+  settings: DuelSettings;
   readonly hostId: string;
   readonly createdAt: number;
   phase: "lobby" | "playing" | "over";
@@ -202,6 +205,8 @@ function view(duel: Duel): DuelView {
     id: duel.id,
     phase: duel.phase,
     settings: duel.settings,
+    poolSize: poolSizeFor(duel.settings),
+    poolNeeded: puzzlesNeededFor(duel.settings),
     hostId: duel.hostId,
     round: duel.round?.index ?? 0,
     rematchEndsAt: duel.finishedAt === null ? null : duel.finishedAt + DUEL_REMATCH_TTL_MS,
@@ -250,6 +255,25 @@ function openLobbies(session: Session): DuelView[] {
 
 // ── Rounds ───────────────────────────────────────────────────────────────────
 
+/**
+ * The puzzles this room's rules leave to draw from.
+ *
+ * Never allowed to be empty by the time a match starts — "configure" and
+ * "open" both refuse a band that matches nothing, so the host learns in the
+ * lobby rather than at the buzzer. The fallback is still here because the
+ * archive is loaded once at startup and a band checked against yesterday's
+ * pool is not a promise about this one.
+ */
+function poolFor(duel: Duel): readonly Puzzle[] {
+  const banded = puzzlePool.filter((puzzle) => withinBand(puzzle, duel.settings));
+  return banded.length > 0 ? banded : puzzlePool;
+}
+
+/** How many puzzles a set of rules leaves. The lobby shows this to the host. */
+export function poolSizeFor(settings: DuelSettings): number {
+  return puzzlePool.filter((puzzle) => withinBand(puzzle, settings)).length;
+}
+
 function pickPuzzle(duel: Duel): Puzzle {
   // Chosen here, and the prompt travels in the round message, so there is no
   // seed a client could derive the coming puzzles from ahead of time.
@@ -257,8 +281,9 @@ function pickPuzzle(duel: Duel): Puzzle {
   // Drawn from what this duel has not dealt yet. The archive is far larger than
   // any match, so the fallback is for a pool trimmed down to nothing rather
   // than for a long duel.
-  const fresh = puzzlePool.filter((puzzle) => !duel.dealt.has(puzzle.id));
-  const pool = fresh.length > 0 ? fresh : puzzlePool;
+  const banded = poolFor(duel);
+  const fresh = banded.filter((puzzle) => !duel.dealt.has(puzzle.id));
+  const pool = fresh.length > 0 ? fresh : banded;
   return pool[Math.floor(Math.random() * pool.length)]!;
 }
 
@@ -447,7 +472,7 @@ interface RushMatch {
 function startRushMatch(duel: Duel): void {
   const seed = (Math.random() * 0x1_0000_0000) >>> 0;
   const rush: RushMatch = {
-    sequence: rushSequence(puzzlePool, seed, rushDuelLength(duel.settings.durationMs)),
+    sequence: rushSequence(poolFor(duel), seed, rushDuelLength(duel.settings.durationMs)),
     endsAt: Date.now() + duel.settings.durationMs,
     timer: null,
   };
@@ -620,6 +645,30 @@ function restart(duel: Duel): void {
 
 // ── Commands ─────────────────────────────────────────────────────────────────
 
+/**
+ * Bounds a rule set and refuses one no puzzle answers.
+ *
+ * The bounding is shared with the client; the pool check cannot be, because
+ * only this side holds the archive. Refusing here means "deals from an empty
+ * pool" is not a state the referee has to survive — every later reader of
+ * duel.settings is looking at rules something matched.
+ */
+function requirePlayableRules(input: unknown): DuelSettings {
+  const settings = sanitizeSettings(input);
+  const have = poolSizeFor(settings);
+  const need = puzzlesNeededFor(settings);
+  if (have < need) {
+    // Named numbers, because "no" is not actionable and the host has two ways
+    // out of this: widen the band, or ask for a shorter match.
+    throw new InvalidRunError(
+      have === 0
+        ? "No puzzle in the archive matches those rules"
+        : `Those rules need ${need} puzzles and leave ${have} — widen the band or shorten the match`,
+    );
+  }
+  return settings;
+}
+
 function handle(socket: ServerWebSocket<SocketData>, command: DuelCommand): void {
   const { session } = socket.data;
   const current = socket.data.duelId ? duels.get(socket.data.duelId) : undefined;
@@ -631,11 +680,12 @@ function handle(socket: ServerWebSocket<SocketData>, command: DuelCommand): void
       if (mine.length >= MAX_OPEN_PER_PLAYER) {
         throw new InvalidRunError("You already have too many lobbies open");
       }
+      const settings = requirePlayableRules(command.settings);
       releaseFinished(socket, current);
       const duel: Duel = {
         id: crypto.randomUUID().slice(0, 8),
         guildId: session.guildId,
-        settings: sanitizeSettings(command.settings),
+        settings,
         hostId: session.player.id,
         createdAt: Date.now(),
         phase: "lobby",
@@ -664,6 +714,31 @@ function handle(socket: ServerWebSocket<SocketData>, command: DuelCommand): void
       duel.seats.push(takeSeat(session.player, socket, sanitizeHandling(command.handling)));
       socket.data.duelId = duel.id;
       broadcast(duel, { type: "duel", duel: view(duel) });
+      return;
+    }
+
+    case "configure": {
+      // Host-only and lobby-only, in that order, so a guest poking at it is
+      // told they are not the host rather than that the match has begun.
+      if (!current) throw new InvalidRunError("You are not in a duel");
+      if (current.hostId !== session.player.id) {
+        throw new InvalidRunError("Only the host sets the rules");
+      }
+      if (current.phase !== "lobby") {
+        // Two different situations wearing one sentence otherwise: a match in
+        // progress, and one that is over and waiting on a rematch. The second
+        // is the one a host is actually likely to hit, having just watched the
+        // result and reached for the rules before asking to go again.
+        throw new InvalidRunError(
+          current.phase === "over"
+            ? "That match is over — the rules are set when the room opens"
+            : "It has already started",
+        );
+      }
+      // Replaced rather than edited in place: a half-applied rule set is a
+      // state no reader of this duel should ever be able to observe.
+      current.settings = requirePlayableRules(command.settings);
+      broadcast(current, { type: "duel", duel: view(current) });
       return;
     }
 

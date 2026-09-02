@@ -194,6 +194,7 @@ export class App {
     });
     this.duelLobby = createDuelLobby({
       onStart: () => this.duel?.ready(),
+      onConfigure: (settings) => this.duel?.configure(settings),
       onLeave: () => {
         this.duel?.leave();
         this.duelState = null;
@@ -432,7 +433,13 @@ export class App {
           window.setTimeout(() => this.badge.hide(), 900);
         },
         onMatchOver: (winnerId, duel) => this.endDuel(winnerId, duel),
-        onError: (message) => this.toast(message),
+        onError: (message) => {
+          this.toast(message);
+          // A refused rule change gets an error and no duel frame, so the form
+          // is left showing rules the referee never accepted — and would keep
+          // sending them. Put the last agreed rules back on screen.
+          if (this.duelState?.phase === "lobby") this.showDuelLobby(this.duelState);
+        },
         onClosed: () => {
           if (this.mode === "duel") this.toast("The duel connection closed");
         },
@@ -482,7 +489,13 @@ export class App {
   private showDuelLobby(duel: import("@shared/duel").DuelView): void {
     this.input.setGameInputEnabled(false);
     this.duelLobby.update(duel, this.duel?.playerId ?? "");
-    this.showScreen({ wide: true, fill: true }, this.duelLobby.element);
+    // Mounted once. Every accepted rule change broadcasts a duel frame, and
+    // re-running showScreen would move the lobby into a fresh container each
+    // time — which takes the focused control out of the document and hands
+    // focus back to the body, mid-edit, on every keystroke that lands.
+    if (!this.duelLobby.element.isConnected) {
+      this.showScreen({ wide: true, fill: true }, this.duelLobby.element);
+    }
   }
 
   /**

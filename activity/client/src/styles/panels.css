@@ -420,6 +420,13 @@
 .explore__to { font-family: var(--mono); font-size: 11px; color: var(--ink-faint); }
 /* Never the control that wraps: it is the shortest thing on its row. */
 .explore__toggle { white-space: nowrap; }
+
+/*
+ * The guest's copy of the host's rules: the same rows, visibly not theirs.
+ * Shown rather than hidden, because "what am I about to play" is the question
+ * the lobby exists to answer, and it is the guest's question too.
+ */
+.explore__filters--locked { opacity: 0.6; }
 .explore__slot { display: contents; }
 
 .explore__search,

@@ -222,6 +222,20 @@ one shared puzzle a round, first valid claim taking it and the clock expiring
 as a draw; rush duels are one clock and one shared stack walked independently,
 most solved winning.
 
+The room's rules belong to the host, and only while it is still a room. Mode,
+best-of count, clock and a difficulty band are set in the lobby with the guest
+watching the same values, and the referee refuses a change from anyone else and
+refuses any change once the match is on — otherwise a host losing a best-of
+could shorten it to a best-of-one they had already won. A band is checked against what
+the match actually consumes, not merely against being empty: a best-of-7 drawn
+from one puzzle deals that puzzle seven times, and the log that solved it the
+first time solves it every time, so the match is won without playing. Rules
+whose pool is smaller than the rounds they deal — or, in rush, than the stack
+the clock needs — are refused in the lobby with both numbers named. The lobby
+shows the host what their band leaves and what the match needs, counted by the
+referee off the pool it actually deals from rather than by the client off a
+listing it may have filtered differently.
+
 A client never says it solved something. It sends the log that solves it, and
 the server replays that log — verification is what reading a claim *means*,
 which is why a claim has no field on it to lie in. Replaying costs about a
