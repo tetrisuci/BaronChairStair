@@ -31,6 +31,8 @@ import {
   createWalkthroughPanel,
 } from "./ui/results";
 import { createExplorer } from "./ui/explorer";
+import { DuelClient } from "./game/duel";
+import { createDuelIntro, createDuelPanel } from "./ui/duel";
 import {
   createRushBoard,
   createRushIntro,
@@ -78,6 +80,12 @@ export class App {
   private readonly rushIntro;
   private readonly rushResult;
   private readonly explorer;
+  private readonly duelIntro;
+  private readonly duelPanel = createDuelPanel();
+  private duel: DuelClient | null = null;
+  private duelState: import("@shared/duel").DuelView | null = null;
+  private duelEndsAt = 0;
+  private duelTick: ReturnType<typeof setInterval> | null = null;
 
   private run: PuzzleRun | null = null;
   /**
@@ -90,7 +98,7 @@ export class App {
   private rushSkips = 0;
   private rushRanked = true;
   private rushState: RushState | null = null;
-  private mode: "daily" | "rush" | "explore" = "daily";
+  private mode: "daily" | "rush" | "explore" | "duel" = "daily";
   private solutionPlayer: SolutionPlayer | null = null;
   private daily: DailyResponse | null = null;
   private submitting = false;
@@ -121,7 +129,8 @@ export class App {
   ) {
     this.input = new InputRouter(settings.value.keybinds, {
       onGameKey: (key, down) => {
-        if (this.rush) this.rush.input(key, down);
+        if (this.duel) this.duel.input(key, down);
+        else if (this.rush) this.rush.input(key, down);
         else this.run?.input(key, down);
       },
       onLocalAction: (action) => this.handleLocalAction(action),
@@ -169,6 +178,18 @@ export class App {
       onPlay: (id) => void this.openArchivePuzzle(id),
       onRandom: () => void this.startPractice(),
       onClose: () => this.leaveExplorer(),
+    });
+
+    this.duelIntro = createDuelIntro({
+      onOpen: (settings) => this.duel?.open(settings),
+      onJoin: (id) => this.duel?.join(id),
+      onStart: () => this.duel?.ready(),
+      onLeave: () => {
+        this.duel?.leave();
+        this.duelState = null;
+        this.duelIntro.setCurrent(null, this.duel?.playerId ?? "");
+      },
+      onBack: () => this.leaveDuel(),
     });
 
     this.settings.subscribe((next) => this.input.setKeybinds(next.keybinds));
@@ -319,6 +340,115 @@ export class App {
       .filter(Boolean)
       .join(" ");
     replaceChildren(this.deck, el("div", { class: `screen ${modifiers}`.trim() }, ...cards));
+  }
+
+  // ── 1v1 ────────────────────────────────────────────────────────────────────
+
+  private enterDuel(): void {
+    if (this.mode === "duel") return;
+    this.mode = "duel";
+    this.run?.dispose();
+    this.run = null;
+    this.runningPuzzleId = null;
+    this.badge.hide();
+    this.input.setGameInputEnabled(false);
+
+    const self = () => this.duel?.playerId ?? "";
+    this.duel = new DuelClient(
+      this.connection.api.socketUrl("/api/duel"),
+      // Frozen for the match, like every other run: the server replays every
+      // claim under one handling and a change mid-match would rescore rounds
+      // already played.
+      this.settings.value.handling,
+      {
+        onFrame: (view, run) => {
+          this.renderer.draw(view);
+          this.hud.update(run);
+        },
+        onLobbies: (open) => this.duelIntro.setLobbies(open),
+        onState: (duel) => {
+          this.duelState = duel;
+          this.duelIntro.setCurrent(duel, self());
+        },
+        onRound: (_round, puzzle, endsAt, duel) => this.beginDuelRound(puzzle, endsAt, duel),
+        onRushPuzzle: (puzzle, endsAt, _solved, _skips, duel) => {
+          if (puzzle) this.beginDuelRound(puzzle, endsAt, duel);
+          else this.duelPanel.say("Stack cleared — wait for the clock.");
+        },
+        onOpponent: (progress) => this.duelPanel.setOpponent(progress),
+        onRoundOver: (winnerId, duel) => {
+          this.duelState = duel;
+          this.input.setGameInputEnabled(false);
+          this.badge.show(winnerId === self(), winnerId === self() ? "Round won" : "Round lost");
+          window.setTimeout(() => this.badge.hide(), 900);
+        },
+        onMatchOver: (winnerId, duel) => this.endDuel(winnerId, duel),
+        onError: (message) => this.toast(message),
+        onClosed: () => {
+          if (this.mode === "duel") this.toast("The duel connection closed");
+        },
+      },
+    );
+    this.duel.connect();
+    this.duelIntro.setCurrent(null, "");
+    this.showScreen({ wide: true, fill: true }, this.duelIntro.element);
+  }
+
+  /** A round started: put the board back and hand the keyboard over. */
+  private beginDuelRound(
+    puzzle: PuzzlePrompt,
+    endsAt: number,
+    duel: import("@shared/duel").DuelView,
+  ): void {
+    this.duelState = duel;
+    this.duelEndsAt = endsAt;
+    this.badge.hide();
+    this.hud.setPuzzle(puzzle);
+    this.credits.update({ day: this.daily?.day ?? 0, puzzle });
+    replaceChildren(this.hud.left, this.duelPanel.element, this.hud.panels.hold);
+    replaceChildren(this.hud.right, this.hud.panels.goal, this.hud.panels.meter, this.hud.panels.queue);
+    this.showPlayfield();
+    this.input.setGameInputEnabled(true);
+    this.startDuelClock();
+  }
+
+  /** The countdown is drawn here; the server is the one enforcing it. */
+  private startDuelClock(): void {
+    if (this.duelTick !== null) return;
+    this.duelTick = setInterval(() => {
+      if (!this.duelState) return;
+      this.duelPanel.update(
+        this.duelState,
+        this.duel?.playerId ?? "",
+        this.duelEndsAt - Date.now(),
+      );
+    }, CLOCK_TICK_MS);
+  }
+
+  private endDuel(winnerId: string | null, duel: import("@shared/duel").DuelView): void {
+    this.duelState = duel;
+    this.input.setGameInputEnabled(false);
+    if (this.duelTick !== null) clearInterval(this.duelTick);
+    this.duelTick = null;
+    const self = this.duel?.playerId ?? "";
+    this.badge.show(winnerId === self, winnerId === null ? "Draw" : winnerId === self ? "You win" : "You lose");
+    this.duelIntro.setCurrent(null, self);
+    this.duelIntro.setLobbies([]);
+    this.showScreen({ wide: true, fill: true }, this.duelIntro.element);
+  }
+
+  private leaveDuel(): void {
+    if (this.duelTick !== null) clearInterval(this.duelTick);
+    this.duelTick = null;
+    this.duel?.close();
+    this.duel = null;
+    this.duelState = null;
+    this.mode = "daily";
+    this.badge.hide();
+    replaceChildren(this.hud.left, this.hud.panels.hold, this.hud.panels.progress);
+    this.showPlayfield();
+    this.input.setGameInputEnabled(true);
+    this.returnToDaily();
   }
 
   // ── Rush ───────────────────────────────────────────────────────────────────
@@ -493,6 +623,14 @@ export class App {
       this.credits.element,
       this.settingsDialog.element,
       this.toastNode,
+    );
+    this.masthead.mountControl(
+      el("button", {
+        class: "btn",
+        text: "1v1",
+        title: "Play somebody in this server",
+        on: { click: () => this.enterDuel() },
+      }),
     );
     this.masthead.mountControl(
       el("button", {
@@ -740,7 +878,8 @@ export class App {
 
     switch (action) {
       case "reset":
-        if (this.rush) this.rush.restart();
+        if (this.duel) this.duel.restart();
+        else if (this.rush) this.rush.restart();
         else this.restartAttempt();
         return;
       case "skip":
@@ -776,6 +915,11 @@ export class App {
 
   /** Rush only. In the daily there is nothing after the puzzle you are on. */
   private skipPuzzle(): void {
+    // A rush duel has skips too, bounded by the server rather than by us.
+    if (this.duel) {
+      this.duel.skip();
+      return;
+    }
     if (!this.rush) return;
     if (this.rush.skip()) return;
     this.toast("No skips left");
