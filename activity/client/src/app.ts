@@ -269,7 +269,7 @@ export class App {
     this.badge.hide();
     this.input.setGameInputEnabled(false);
     this.paintExplorer();
-    this.showScreen({ wide: true }, this.explorer.element);
+    this.showScreen({ wide: true, fill: true }, this.explorer.element);
     void this.loadArchive().then(() => this.paintExplorer()).catch((error) => {
       this.toast(error instanceof ApiError ? error.message : "Could not load the archive");
     });
@@ -307,10 +307,15 @@ export class App {
   }
 
   /** One centred column, for a moment when there is nothing to play. */
-  private showScreen(options: { wide?: boolean }, ...cards: HTMLElement[]): void {
+  private showScreen(
+    options: { wide?: boolean; fill?: boolean },
+    ...cards: HTMLElement[]
+  ): void {
     this.deck.classList.add("deck--screen");
-    const screen = el("div", { class: `screen${options.wide ? " screen--wide" : ""}` }, ...cards);
-    replaceChildren(this.deck, screen);
+    const modifiers = [options.wide && "screen--wide", options.fill && "screen--fill"]
+      .filter(Boolean)
+      .join(" ");
+    replaceChildren(this.deck, el("div", { class: `screen ${modifiers}`.trim() }, ...cards));
   }
 
   // ── Rush ───────────────────────────────────────────────────────────────────
