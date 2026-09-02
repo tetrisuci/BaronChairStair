@@ -32,7 +32,12 @@ import {
 } from "./ui/results";
 import { createExplorer } from "./ui/explorer";
 import { DuelClient } from "./game/duel";
-import { createDuelIntro, createDuelPanel } from "./ui/duel";
+import {
+  createDuelIntro,
+  createDuelLobby,
+  createDuelPanel,
+  createDuelResult,
+} from "./ui/duel";
 import {
   createRushBoard,
   createRushIntro,
@@ -81,6 +86,8 @@ export class App {
   private readonly rushResult;
   private readonly explorer;
   private readonly duelIntro;
+  private readonly duelLobby;
+  private readonly duelResult;
   private readonly duelPanel = createDuelPanel();
   private duel: DuelClient | null = null;
   private duelState: import("@shared/duel").DuelView | null = null;
@@ -183,11 +190,22 @@ export class App {
     this.duelIntro = createDuelIntro({
       onOpen: (settings) => this.duel?.open(settings),
       onJoin: (id) => this.duel?.join(id),
+      onBack: () => this.leaveDuel(),
+    });
+    this.duelLobby = createDuelLobby({
       onStart: () => this.duel?.ready(),
       onLeave: () => {
         this.duel?.leave();
         this.duelState = null;
-        this.duelIntro.setCurrent(null, this.duel?.playerId ?? "");
+        this.showDuelIntro();
+      },
+    });
+    this.duelResult = createDuelResult({
+      onRematch: () => this.duel?.rematch(),
+      onNewRoom: () => {
+        this.duel?.leave();
+        this.duelState = null;
+        this.showDuelIntro();
       },
       onBack: () => this.leaveDuel(),
     });
@@ -368,7 +386,9 @@ export class App {
         onLobbies: (open) => this.duelIntro.setLobbies(open),
         onState: (duel) => {
           this.duelState = duel;
-          this.duelIntro.setCurrent(duel, self());
+          // A room of its own, rather than the create form with its middle
+          // hidden: setting a match up and waiting in one are different moments.
+          if (duel.phase === "lobby") this.showDuelLobby(duel);
         },
         onRound: (_round, puzzle, endsAt, duel) => this.beginDuelRound(puzzle, endsAt, duel),
         onRushPuzzle: (puzzle, endsAt, _solved, _skips, duel) => {
@@ -390,8 +410,7 @@ export class App {
       },
     );
     this.duel.connect();
-    this.duelIntro.setCurrent(null, "");
-    this.showScreen({ wide: true, fill: true }, this.duelIntro.element);
+    this.showDuelIntro();
   }
 
   /** A round started: put the board back and hand the keyboard over. */
@@ -425,16 +444,30 @@ export class App {
     }, CLOCK_TICK_MS);
   }
 
+  private showDuelIntro(): void {
+    this.duelState = null;
+    this.input.setGameInputEnabled(false);
+    this.showScreen({ wide: true, fill: true }, this.duelIntro.element);
+  }
+
+  private showDuelLobby(duel: import("@shared/duel").DuelView): void {
+    this.input.setGameInputEnabled(false);
+    this.duelLobby.update(duel, this.duel?.playerId ?? "");
+    this.showScreen({ wide: true, fill: true }, this.duelLobby.element);
+  }
+
+  /** The result, with the score both players can read and a way to go again. */
   private endDuel(winnerId: string | null, duel: import("@shared/duel").DuelView): void {
     this.duelState = duel;
     this.input.setGameInputEnabled(false);
     if (this.duelTick !== null) clearInterval(this.duelTick);
     this.duelTick = null;
     const self = this.duel?.playerId ?? "";
-    this.badge.show(winnerId === self, winnerId === null ? "Draw" : winnerId === self ? "You win" : "You lose");
-    this.duelIntro.setCurrent(null, self);
-    this.duelIntro.setLobbies([]);
-    this.showScreen({ wide: true, fill: true }, this.duelIntro.element);
+    this.badge.hide();
+    this.duelResult.update(duel, self, winnerId);
+    const opponent = duel.players.find((player) => player.id !== self);
+    this.duelResult.setRematch(false, false, opponent?.connected === true);
+    this.showScreen({ wide: true, fill: true }, this.duelResult.element);
   }
 
   private leaveDuel(): void {

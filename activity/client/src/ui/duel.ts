@@ -1,10 +1,14 @@
 /**
- * What a duel looks like: the card that opens or joins one, and the panel that
- * runs alongside a match.
+ * The three screens a duel passes through, and the panel beside a live match.
+ *
+ * They are separate screens rather than one card that hides parts of itself.
+ * Setting up a match, waiting in a room, and reading a result are three
+ * different moments, and a single panel toggling its own children made the
+ * room look like a half-empty version of the create form.
  *
  * The opponent appears as a bar and a score, never as a board. A board
- * part-way through a puzzle is a partial solution to it, so mirroring one would
- * show the answer to whichever player is losing.
+ * part-way through a puzzle is a partial solution to it, so mirroring one
+ * would show the answer to whichever player is losing.
  */
 
 import {
@@ -26,21 +30,6 @@ const URGENT_S = 30;
 const ROUND_SECONDS = [30, 60, 90, 120, 180];
 const RUSH_SECONDS = [60, 120, 180, 300, 600];
 
-export interface DuelIntroCallbacks {
-  readonly onOpen: (settings: DuelSettings) => void;
-  readonly onJoin: (duelId: string) => void;
-  readonly onStart: () => void;
-  readonly onLeave: () => void;
-  readonly onBack: () => void;
-}
-
-export interface DuelIntro {
-  readonly element: HTMLElement;
-  setLobbies(open: readonly DuelView[]): void;
-  /** The lobby this player is in, or null while browsing. */
-  setCurrent(duel: DuelView | null, selfId: string): void;
-}
-
 function choice<T extends string | number>(
   options: readonly T[],
   label: (value: T) => string,
@@ -57,12 +46,39 @@ function choice<T extends string | number>(
   return select;
 }
 
+function labelled(text: string, control: HTMLElement): HTMLElement {
+  return el(
+    "div",
+    { class: "explore__row" },
+    el("span", { class: "explore__label", text }),
+    el("div", { class: "explore__controls" }, control),
+  );
+}
+
+/** How a match is described in one line, wherever it needs describing. */
+function describe(settings: DuelSettings): string {
+  return settings.mode === "rush"
+    ? `Rush · ${Math.round(settings.durationMs / 60_000)} min · most solved wins`
+    : `Best of ${settings.rounds} · ${settings.durationMs / SECOND_MS}s a round`;
+}
+
+// ── Screen one: set one up, or join one ──────────────────────────────────────
+
+export interface DuelIntroCallbacks {
+  readonly onOpen: (settings: DuelSettings) => void;
+  readonly onJoin: (duelId: string) => void;
+  readonly onBack: () => void;
+}
+
+export interface DuelIntro {
+  readonly element: HTMLElement;
+  setLobbies(open: readonly DuelView[]): void;
+}
+
 export function createDuelIntro(callbacks: DuelIntroCallbacks): DuelIntro {
   let settings: DuelSettings = { mode: "puzzle", rounds: 3, durationMs: DUEL_ROUND_MS_DEFAULT };
 
   const durationSlot = el("span", { class: "explore__slot" });
-  const roundsRow = el("div", { class: "explore__row" });
-
   const rebuildDuration = () => {
     const seconds = settings.mode === "rush" ? RUSH_SECONDS : ROUND_SECONDS;
     const select = choice(
@@ -76,137 +92,230 @@ export function createDuelIntro(callbacks: DuelIntroCallbacks): DuelIntro {
     replaceChildren(durationSlot, select);
   };
 
-  const modeSelect = choice<DuelMode>(
-    ["puzzle", "rush"],
-    (value) => (value === "puzzle" ? "Puzzle — best of N" : "Rush — most solved"),
-    (mode) => {
-      settings = {
-        mode,
-        rounds: settings.rounds,
-        durationMs: mode === "rush" ? DUEL_RUSH_MS_DEFAULT : DUEL_ROUND_MS_DEFAULT,
-      };
-      // Rush is one clock for the whole match, so rounds mean nothing to it.
-      roundsRow.hidden = mode === "rush";
-      rebuildDuration();
-    },
+  const roundsRow = labelled(
+    "Rounds",
+    choice(
+      DUEL_ROUND_OPTIONS,
+      (value) => `Best of ${value}`,
+      (rounds) => {
+        settings = { ...settings, rounds };
+      },
+    ),
   );
 
-  const roundsSelect = choice(
-    DUEL_ROUND_OPTIONS,
-    (value) => `Best of ${value}`,
-    (rounds) => {
-      settings = { ...settings, rounds };
-    },
-  );
-  replaceChildren(
-    roundsRow,
-    el("span", { class: "explore__label", text: "Rounds" }),
-    el("div", { class: "explore__controls" }, roundsSelect),
+  const modeRow = labelled(
+    "Mode",
+    choice<DuelMode>(
+      ["puzzle", "rush"],
+      (value) => (value === "puzzle" ? "Puzzle — best of N" : "Rush — most solved"),
+      (mode) => {
+        settings = {
+          mode,
+          rounds: settings.rounds,
+          durationMs: mode === "rush" ? DUEL_RUSH_MS_DEFAULT : DUEL_ROUND_MS_DEFAULT,
+        };
+        // Rush is one clock for the whole match, so rounds mean nothing to it.
+        roundsRow.hidden = mode === "rush";
+        rebuildDuration();
+      },
+    ),
   );
 
-  const openButton = el("button", { class: "btn btn--primary", text: "Open a lobby" });
+  const openButton = el("button", { class: "btn btn--primary", text: "Open a room" });
   openButton.addEventListener("click", () => callbacks.onOpen(settings));
-  const startButton = el("button", { class: "btn btn--primary", text: "Start the match" });
-  startButton.addEventListener("click", () => callbacks.onStart());
-  const leaveButton = el("button", { class: "btn", text: "Leave the lobby" });
-  leaveButton.addEventListener("click", () => callbacks.onLeave());
   const backButton = el("button", { class: "btn", text: "Back to the daily" });
   backButton.addEventListener("click", () => callbacks.onBack());
 
-  const setupRows = el(
-    "div",
-    { class: "explore__filters" },
-    el(
-      "div",
-      { class: "explore__row" },
-      el("span", { class: "explore__label", text: "Mode" }),
-      el("div", { class: "explore__controls" }, modeSelect),
-    ),
-    roundsRow,
-    el(
-      "div",
-      { class: "explore__row" },
-      el("span", { class: "explore__label", text: "Clock" }),
-      el("div", { class: "explore__controls" }, durationSlot),
-    ),
-  );
-
-  const openRow = el("div", { class: "btnrow" }, openButton, backButton);
-  const lobbyState = el("div", {});
-  const lobbyList = el("div", { class: "explore__list" });
-  const listHeading = el("p", { class: "explore__count", text: "" });
+  const heading = el("p", { class: "explore__count", text: "" });
+  const list = el("div", { class: "explore__list" });
 
   const element = panel(
     "1v1",
     { class: "explore" },
-    setupRows,
-    openRow,
-    lobbyState,
-    listHeading,
-    lobbyList,
+    el("div", { class: "explore__filters" }, modeRow, roundsRow, labelled("Clock", durationSlot)),
+    el("div", { class: "btnrow" }, openButton, backButton),
+    heading,
+    list,
   );
   rebuildDuration();
 
   return {
     element,
-
     setLobbies(open) {
-      listHeading.textContent = open.length
-        ? `${open.length} open lobby${open.length === 1 ? "" : " lobbies"} in this server`
-        : "No lobbies open here yet — open one and wait.";
+      heading.textContent = open.length
+        ? `${open.length} open room${open.length === 1 ? "" : "s"} in this server`
+        : "No rooms open here. Open one and wait for somebody.";
       replaceChildren(
-        lobbyList,
+        list,
         ...open.map((duel) => {
-          const host = duel.players[0]?.username ?? "someone";
-          const detail =
-            duel.settings.mode === "rush"
-              ? `rush · ${Math.round(duel.settings.durationMs / 60000)} min`
-              : `best of ${duel.settings.rounds} · ${duel.settings.durationMs / 1000}s a round`;
           const row = el(
             "button",
             { class: "explore__item" },
             el("span", { class: "explore__id", text: "join" }),
-            el("span", { class: "explore__title", text: host }),
-            el("span", { class: "explore__meta", text: detail }),
+            el("span", { class: "explore__title", text: duel.players[0]?.username ?? "someone" }),
+            el("span", { class: "explore__meta", text: describe(duel.settings) }),
           );
           row.addEventListener("click", () => callbacks.onJoin(duel.id));
           return row;
         }),
       );
     },
+  };
+}
 
-    setCurrent(duel, selfId) {
-      const browsing = duel === null;
-      setupRows.hidden = !browsing;
-      openRow.hidden = !browsing;
-      listHeading.hidden = !browsing;
-      lobbyList.hidden = !browsing;
-      if (!duel) {
-        replaceChildren(lobbyState);
-        return;
-      }
-      const others = duel.players.filter((player) => player.id !== selfId);
-      const waiting = others.length === 0;
+// ── Screen two: the room ─────────────────────────────────────────────────────
+
+export interface DuelLobbyCallbacks {
+  readonly onStart: () => void;
+  readonly onLeave: () => void;
+}
+
+export interface DuelLobby {
+  readonly element: HTMLElement;
+  update(duel: DuelView, selfId: string): void;
+}
+
+export function createDuelLobby(callbacks: DuelLobbyCallbacks): DuelLobby {
+  const summary = el("p", { class: "rush__blurb", text: "" });
+  const roster = el("div", {});
+  const state = el("p", { class: "note", text: "" });
+  const start = el("button", { class: "btn btn--primary", text: "Start the match" });
+  start.addEventListener("click", () => callbacks.onStart());
+  const leave = el("button", { class: "btn", text: "Leave the room" });
+  leave.addEventListener("click", () => callbacks.onLeave());
+
+  const element = panel(
+    "Room",
+    {},
+    summary,
+    roster,
+    state,
+    el("div", { class: "btnrow" }, start, leave),
+  );
+
+  return {
+    element,
+    update(duel, selfId) {
+      summary.textContent = describe(duel.settings);
+      const opponent = duel.players.find((player) => player.id !== selfId);
       replaceChildren(
-        lobbyState,
-        el("p", {
-          class: "rush__blurb",
-          text: waiting
-            ? "Lobby open. Anybody in this server can join it from here."
-            : `${others[0]!.username} is in. Start when you are both ready.`,
-        }),
-        el(
-          "div",
-          { class: "btnrow" },
-          duel.hostId === selfId && !waiting ? startButton : null,
-          leaveButton,
+        roster,
+        ...duel.players.map((player) =>
+          el(
+            "div",
+            { class: "stat" },
+            el("span", {
+              class: "stat__key",
+              text: player.id === duel.hostId ? "host" : "challenger",
+            }),
+            el("span", {
+              class: "stat__value",
+              text: player.username + (player.id === selfId ? " (you)" : ""),
+            }),
+          ),
         ),
+        opponent
+          ? null
+          : el(
+              "div",
+              { class: "stat" },
+              el("span", { class: "stat__key", text: "challenger" }),
+              el("span", { class: "stat__value", text: "waiting…" }),
+            ),
       );
+
+      const host = duel.hostId === selfId;
+      state.textContent = !opponent
+        ? "Anybody in this server can join from the 1v1 screen."
+        : host
+          ? "Both in. Start when you are ready."
+          : "Both in. Waiting for the host to start.";
+      // Shown to the host either way, so it is obvious who the match is
+      // waiting on rather than the button simply not being there.
+      start.hidden = !host;
+      start.disabled = !opponent;
     },
   };
 }
 
-// ── The panel alongside a match ──────────────────────────────────────────────
+// ── Screen three: how it went ────────────────────────────────────────────────
+
+export interface DuelResultCallbacks {
+  readonly onRematch: () => void;
+  readonly onNewRoom: () => void;
+  readonly onBack: () => void;
+}
+
+export interface DuelResult {
+  readonly element: HTMLElement;
+  update(duel: DuelView, selfId: string, winnerId: string | null): void;
+  /** Whether each side has asked to go again. */
+  setRematch(asked: boolean, theyAsked: boolean, available: boolean): void;
+}
+
+export function createDuelResult(callbacks: DuelResultCallbacks): DuelResult {
+  const headline = el("p", { class: "rush__headline", text: "" });
+  const score = el("div", {});
+  const summary = el("p", { class: "note", text: "" });
+  const rematchNote = el("p", { class: "note", text: "" });
+  const rematch = el("button", { class: "btn btn--primary", text: "Ask for a rematch" });
+  rematch.addEventListener("click", () => callbacks.onRematch());
+  const newRoom = el("button", { class: "btn", text: "Back to 1v1" });
+  newRoom.addEventListener("click", () => callbacks.onNewRoom());
+  const back = el("button", { class: "btn", text: "Back to the daily" });
+  back.addEventListener("click", () => callbacks.onBack());
+
+  const element = panel(
+    "Match over",
+    {},
+    headline,
+    score,
+    summary,
+    rematchNote,
+    el("div", { class: "btnrow" }, rematch, newRoom, back),
+  );
+
+  return {
+    element,
+
+    update(duel, selfId, winnerId) {
+      headline.textContent =
+        winnerId === null ? "Draw" : winnerId === selfId ? "You win" : "You lose";
+      summary.textContent = describe(duel.settings);
+      // Both scores, always, and the loser's too — a result you cannot read is
+      // not a result.
+      replaceChildren(
+        score,
+        ...duel.players.map((player) =>
+          el(
+            "div",
+            { class: `stat${player.id === winnerId ? " board-list__row--self" : ""}` },
+            el("span", {
+              class: "stat__key",
+              text: player.username + (player.id === selfId ? " (you)" : ""),
+            }),
+            el("span", { class: "stat__value", text: String(player.score) }),
+          ),
+        ),
+      );
+    },
+
+    setRematch(asked, theyAsked, available) {
+      rematch.hidden = !available;
+      rematch.disabled = asked;
+      rematch.textContent = asked ? "Rematch asked" : "Ask for a rematch";
+      rematchNote.textContent = !available
+        ? "Your opponent has left, so there is nobody to play again."
+        : theyAsked && !asked
+          ? "They want a rematch. Accept and you go straight back in."
+          : asked && !theyAsked
+            ? "Waiting for them to accept…"
+            : "";
+    },
+  };
+}
+
+// ── The panel alongside a live match ─────────────────────────────────────────
 
 export interface DuelPanel {
   readonly element: HTMLElement;
