@@ -40,6 +40,13 @@ import { config } from "./config";
 import { Store } from "./db";
 import { callerKey, limitBodySize, MAX_BODY_BYTES, rateLimit } from "./limits";
 import { PuzzleArchive } from "./puzzles";
+import {
+  type SocketData,
+  duelSocket,
+  openDuelSocket,
+  sweepLobbies,
+  useArchive,
+} from "./duel";
 
 const LEADERBOARD_SIZE = 25;
 /**
@@ -724,9 +731,37 @@ console.log(
     (config.allowGuestPlay ? " (guest play enabled)" : ""),
 );
 
+useArchive(archive.puzzles);
+// Lobbies nobody joins would otherwise sit in memory until the process ends.
+setInterval(() => sweepLobbies(), 60_000).unref?.();
+
+const DUEL_PATH = "/api/duel";
+
+/**
+ * Whether a request is the duel upgrade, under either prefix.
+ *
+ * Recognised before Hono routing rather than as a route, because the `/.proxy`
+ * middleware re-dispatches through a copy of the request and Bun binds an
+ * upgrade to the object it was handed — so an upgrade that reaches a route via
+ * that path can never succeed.
+ */
+function isDuelPath(pathname: string): boolean {
+  const bare = pathname.startsWith("/.proxy") ? pathname.slice("/.proxy".length) : pathname;
+  return bare === DUEL_PATH;
+}
+
 export default {
   port: config.port,
-  fetch: app.fetch,
+  /**
+   * `server` is optional so the test suite, which drives `fetch` with one
+   * argument, still exercises every HTTP route.
+   */
+  fetch(request: Request, server?: import("bun").Server<SocketData>) {
+    const url = new URL(request.url);
+    if (isDuelPath(url.pathname)) return openDuelSocket(request, server, url);
+    return app.fetch(request, server);
+  },
+  websocket: duelSocket,
   idleTimeout: 60,
   // The Content-Length check in `limitBodySize` is a fast reject for honest
   // clients; a chunked request carries no length at all. This is the bound that
