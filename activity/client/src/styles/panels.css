@@ -327,13 +327,155 @@
  * column down the middle rather than cards stranded in a rail beside an empty
  * stage.
  */
-.deck--screen { grid-template-columns: minmax(0, 1fr); }
+/*
+ * Doubled up so this beats the plain `.deck` rules in narrow.css whichever
+ * stylesheet happens to load last. Those set three rows for the play layout —
+ * rails, board, rails — and a screen is one card: left alone it landed in the
+ * first row with two empty ones stacked below it, cut off at the fold.
+ */
+.deck.deck--screen {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  align-items: stretch;
+  overflow: hidden;
+}
 
+/*
+ * Scrolls, because a screen is not guaranteed to fit. The rush cards always
+ * did; the explorer, with its filters stacked above a list, does not — and a
+ * card cut off at the bottom of the window with no way to reach the rest is
+ * the failure this whole layout was rebuilt to stop.
+ *
+ * The padding is the cards' own hard offset shadow: asking for `overflow-y`
+ * forces the cross axis to `auto` too, and without the room the shadow is
+ * shaved off the side of every card.
+ */
 .screen {
   display: grid;
   gap: 14px;
   align-content: start;
   justify-self: center;
-  width: min(520px, 100%);
+  width: min(var(--screen-width, 520px), 100%);
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 0 var(--drop) var(--drop) 0;
+  scrollbar-width: thin;
+  scrollbar-color: var(--ink-line) transparent;
+}
+
+/* A list wants the room; a start card does not. */
+.screen--wide { --screen-width: 720px; }
+
+/* ── Explorer ─────────────────────────────────────────────────────────────── */
+
+.explore { gap: 10px; }
+
+.explore__row {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+}
+
+.explore__label {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+.explore__controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.explore__to { font-family: var(--mono); font-size: 11px; color: var(--ink-faint); }
+.explore__slot { display: contents; }
+
+.explore__search,
+.explore__number {
+  padding: 5px 8px;
+  border: var(--edge) solid var(--ink);
+  border-radius: var(--radius-sm);
+  background: var(--cream);
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink);
+  min-width: 0;
+}
+
+.explore__search { flex: 1 1 140px; }
+/* Wide enough for two digits and the browser's own stepper. */
+.explore__number { width: 68px; }
+.explore__select { flex: 1 1 140px; }
+
+.explore__search:focus-visible,
+.explore__number:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
+
+.explore__count {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-soft);
+}
+
+/*
+ * The list is the one part of this panel that grows without limit, so it is
+ * the part that scrolls — the filters stay put above it where they are being
+ * used.
+ */
+.explore__list {
+  display: grid;
+  gap: 3px;
+  max-height: min(38vh, 340px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--ink-line) transparent;
+}
+
+.explore__item {
+  display: grid;
+  grid-template-columns: 46px minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 10px;
+  padding: 6px 8px;
+  border: var(--edge) solid transparent;
+  border-radius: var(--radius-sm);
+  background: var(--cream-shade);
+  text-align: left;
+  font: inherit;
+  color: inherit;
+}
+
+.explore__item:hover:not(:disabled) { background: var(--sun); border-color: var(--ink); }
+.explore__item:active:not(:disabled) { transform: translate(1px, 1px); }
+
+/* Today's puzzle, until it has been filed. Visible, so its absence is not a mystery. */
+.explore__item--locked { opacity: 0.45; cursor: not-allowed; }
+
+.explore__id {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.explore__title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.explore__meta {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-soft);
+  white-space: nowrap;
 }

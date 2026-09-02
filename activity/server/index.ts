@@ -11,7 +11,8 @@ import { Hono } from "hono";
 import type { Context, Next } from "hono";
 import { serveStatic } from "hono/bun";
 import { HTTPException } from "hono/http-exception";
-import { decodeBoard, ENGINE_ROWS, meetsTarget } from "../shared/puzzle";
+import { decodeBoard, ENGINE_ROWS, meetsTarget, pieceBudget, toListing } from "../shared/puzzle";
+import { sanitizeArchiveFilter } from "../shared/archive-filter";
 
 import { sanitizeHandling } from "../shared/tetris/handling";
 import { sanitizeKeybinds } from "../shared/keybinds";
@@ -236,7 +237,7 @@ app.get("/api/today", (c) => {
       difficulty: puzzle.difficulty,
       goal: puzzle.goal,
       set: puzzle.set,
-      pieces: puzzle.queue.length,
+      pieces: pieceBudget(puzzle),
       targetAttack: puzzle.targetAttack,
     },
     solvedCount: store.solvedCount(day),
@@ -294,19 +295,7 @@ function maySeeSolution(session: Session, puzzleId: number): boolean {
 
 app.get("/api/archive", requireSession, (c) => {
   const today = archive.currentDay();
-  return c.json({
-    puzzles: archive.puzzles.map((puzzle) => ({
-      id: puzzle.id,
-      title: puzzle.title,
-      author: puzzle.author,
-      difficulty: puzzle.difficulty,
-      goal: puzzle.goal,
-      set: puzzle.set,
-      pieces: puzzle.queue.length,
-      targetAttack: puzzle.targetAttack,
-    })),
-    today,
-  });
+  return c.json({ puzzles: archive.puzzles.map(toListing), today });
 });
 
 app.get("/api/archive/:id", requireSession, (c) => {
@@ -327,7 +316,9 @@ app.get("/api/prefs", requireSession, (c) =>
 app.put("/api/prefs", requireSession, async (c) => {
   const session = c.get("session");
   const body = await c.req
-    .json<{ preferences?: { version?: unknown; handling?: unknown; keybinds?: unknown } }>()
+    .json<{
+      preferences?: { version?: unknown; handling?: unknown; keybinds?: unknown; filter?: unknown };
+    }>()
     .catch(() => {
       throw new HTTPException(400, { message: "Request body is not valid JSON" });
     });
@@ -341,6 +332,7 @@ app.put("/api/prefs", requireSession, async (c) => {
     version,
     handling: sanitizeHandling(body.preferences?.handling),
     keybinds: sanitizeKeybinds(body.preferences?.keybinds),
+    filter: sanitizeArchiveFilter(body.preferences?.filter),
   });
   return c.json({ ok: true });
 });
