@@ -77,12 +77,13 @@ export class DuelClient {
     if (this.socket?.readyState === WebSocket.OPEN) this.socket.send(JSON.stringify(command));
   }
 
+  // Sitting down declares the handling this seat plays — and is judged — under.
   open(settings: DuelSettings): void {
-    this.send({ type: "open", settings });
+    this.send({ type: "open", settings, handling: this.handling });
   }
 
   join(duelId: string): void {
-    this.send({ type: "join", duelId });
+    this.send({ type: "join", duelId, handling: this.handling });
   }
 
   ready(): void {

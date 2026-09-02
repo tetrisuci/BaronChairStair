@@ -26,6 +26,7 @@
  */
 
 import type { PuzzlePrompt } from "./puzzle";
+import type { Handling } from "./tetris/handling";
 import { RUSH_DURATION_MS, RUSH_SEQUENCE_LENGTH } from "./rush";
 import type { InputEvent } from "./tetris/verify";
 
@@ -129,8 +130,17 @@ export type RoundEnd = "solved" | "expired" | "forfeit";
 // ── Client to server ─────────────────────────────────────────────────────────
 
 export type DuelCommand =
-  | { readonly type: "open"; readonly settings: DuelSettings }
-  | { readonly type: "join"; readonly duelId: string }
+  /**
+   * Taking a seat declares the handling that seat will be judged under.
+   *
+   * Once, when you sit down, rather than on every claim: the server replays a
+   * log under whatever it is told, so a handling that could change mid-match
+   * would let a player re-judge a round they had already lost. Declaring it
+   * here buys nothing either, since a log only solves under the handling it
+   * was actually played with.
+   */
+  | { readonly type: "open"; readonly settings: DuelSettings; readonly handling?: Handling }
+  | { readonly type: "join"; readonly duelId: string; readonly handling?: Handling }
   | { readonly type: "leave" }
   | { readonly type: "ready" }
   /** The log that solves the puzzle this player is on. The only claim there is. */
