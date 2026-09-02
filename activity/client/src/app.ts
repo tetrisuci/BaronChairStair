@@ -10,7 +10,9 @@
 import { BOARD_HEIGHT, type PuzzlePrompt, type SolutionStep } from "@shared/puzzle";
 import type { InputEvent } from "@shared/tetris/verify";
 import type { Connection } from "./discord";
-import type { ArchiveEntry, DailyResponse, RushState, StoredRun } from "./api";
+import type { DailyResponse, RushState, StoredRun } from "./api";
+import type { ArchiveListing } from "@shared/puzzle";
+import { filterArchive } from "@shared/archive-filter";
 import { ApiError } from "./api";
 import { InputRouter } from "./game/input";
 import { type LocalAction, keyName } from "@shared/keybinds";
@@ -28,6 +30,7 @@ import {
   createVerdictPanel,
   createWalkthroughPanel,
 } from "./ui/results";
+import { createExplorer } from "./ui/explorer";
 import {
   createRushBoard,
   createRushIntro,
@@ -71,6 +74,7 @@ export class App {
   private readonly rushBoard = createRushBoard();
   private readonly rushIntro;
   private readonly rushResult;
+  private readonly explorer;
 
   private run: PuzzleRun | null = null;
   /**
@@ -83,7 +87,7 @@ export class App {
   private rushSkips = 0;
   private rushRanked = true;
   private rushState: RushState | null = null;
-  private mode: "daily" | "rush" = "daily";
+  private mode: "daily" | "rush" | "explore" = "daily";
   private solutionPlayer: SolutionPlayer | null = null;
   private daily: DailyResponse | null = null;
   private submitting = false;
@@ -105,7 +109,7 @@ export class App {
   private sheetOpenedAt = Date.now();
   /** Keeps the clock moving before the first input and between attempts. */
   private clockTimer: ReturnType<typeof setInterval> | null = null;
-  private archive: readonly ArchiveEntry[] | null = null;
+  private archive: readonly ArchiveListing[] | null = null;
 
   constructor(
     private readonly root: HTMLElement,
@@ -154,6 +158,16 @@ export class App {
       () => this.leaveRush(),
     );
 
+    this.explorer = createExplorer({
+      onChange: (filter) => {
+        this.settings.update({ filter });
+        this.paintExplorer();
+      },
+      onPlay: (id) => void this.openArchivePuzzle(id),
+      onRandom: () => void this.startPractice(),
+      onClose: () => this.leaveExplorer(),
+    });
+
     this.settings.subscribe((next) => this.input.setKeybinds(next.keybinds));
   }
 
@@ -189,23 +203,88 @@ export class App {
   // ── Practice ───────────────────────────────────────────────────────────────
 
   /** Picks a sheet from the archive at random and plays it unscored. */
+  /**
+   * Today's puzzle, while it is still the player's to file.
+   *
+   * Practising it before filing would be a free rehearsal for the one run that
+   * counts, so it is kept out of the shuffle and shown greyed in the explorer
+   * until the daily is on the board. Afterwards it is just another puzzle.
+   */
+  private lockedPuzzleId(): number | null {
+    if (!this.daily || this.daily.run) return null;
+    return this.daily.puzzle.id;
+  }
+
+  private async loadArchive(): Promise<readonly ArchiveListing[]> {
+    this.archive ??= (await this.connection.api.archive()).puzzles;
+    return this.archive;
+  }
+
   private async startPractice(): Promise<void> {
     try {
-      this.archive ??= (await this.connection.api.archive()).puzzles;
-      const choices = this.archive.filter((entry) => entry.id !== this.sheet?.puzzle.id);
+      const archive = await this.loadArchive();
+      const locked = this.lockedPuzzleId();
+      const choices = filterArchive(archive, this.settings.value.filter).filter(
+        // Never the puzzle already on the table, so "random" always changes it.
+        (entry) => entry.id !== locked && entry.id !== this.sheet?.puzzle.id,
+      );
       const pick = choices[Math.floor(Math.random() * choices.length)];
       if (!pick) {
-        this.toast("The archive has nothing else to draw");
+        this.toast("Nothing matches your filters");
         return;
       }
-      const { puzzle, solution } = await this.connection.api.archivePuzzle(pick.id);
-      this.sheet = { puzzle, solution, scored: false };
-      this.credits.update({ day: this.daily?.day ?? 0, puzzle });
-      this.startRun();
-      this.toast(`Practice · ${puzzle.title || `sheet ${puzzle.id}`}`);
+      await this.openArchivePuzzle(pick.id);
     } catch (error) {
       this.toast(error instanceof ApiError ? error.message : "Could not open the archive");
     }
+  }
+
+  private async openArchivePuzzle(id: number): Promise<void> {
+    if (id === this.lockedPuzzleId()) {
+      this.toast("That is today's puzzle — play it on the daily first");
+      return;
+    }
+    try {
+      const { puzzle, solution } = await this.connection.api.archivePuzzle(id);
+      this.sheet = { puzzle, solution, scored: false };
+      this.credits.update({ day: this.daily?.day ?? 0, puzzle });
+      if (this.mode === "explore") this.mode = "daily";
+      replaceChildren(this.hud.left, this.hud.panels.hold, this.hud.panels.progress);
+      this.showPlayfield();
+      this.startRun();
+      this.toast(`Practice · ${puzzle.title || `sheet ${puzzle.id}`}`);
+    } catch (error) {
+      this.toast(error instanceof ApiError ? error.message : "Could not open that puzzle");
+    }
+  }
+
+  // ── Explorer ───────────────────────────────────────────────────────────────
+
+  private enterExplorer(): void {
+    if (this.mode === "explore") return;
+    this.mode = "explore";
+    this.run?.dispose();
+    this.run = null;
+    this.runningPuzzleId = null;
+    this.badge.hide();
+    this.input.setGameInputEnabled(false);
+    this.paintExplorer();
+    this.showScreen({ wide: true }, this.explorer.element);
+    void this.loadArchive().then(() => this.paintExplorer()).catch((error) => {
+      this.toast(error instanceof ApiError ? error.message : "Could not load the archive");
+    });
+  }
+
+  private paintExplorer(): void {
+    this.explorer.update(this.archive ?? [], this.settings.value.filter, this.lockedPuzzleId());
+  }
+
+  private leaveExplorer(): void {
+    this.mode = "daily";
+    replaceChildren(this.hud.left, this.hud.panels.hold, this.hud.panels.progress);
+    this.showPlayfield();
+    this.input.setGameInputEnabled(true);
+    this.returnToDaily();
   }
 
   private returnToDaily(): void {
@@ -228,9 +307,10 @@ export class App {
   }
 
   /** One centred column, for a moment when there is nothing to play. */
-  private showScreen(...cards: HTMLElement[]): void {
+  private showScreen(options: { wide?: boolean }, ...cards: HTMLElement[]): void {
     this.deck.classList.add("deck--screen");
-    replaceChildren(this.deck, el("div", { class: "screen" }, ...cards));
+    const screen = el("div", { class: `screen${options.wide ? " screen--wide" : ""}` }, ...cards);
+    replaceChildren(this.deck, screen);
   }
 
   // ── Rush ───────────────────────────────────────────────────────────────────
@@ -264,7 +344,7 @@ export class App {
       best: this.rushState?.best ?? 0,
       playedToday: this.rushState?.run ?? null,
     });
-    this.showScreen(this.rushIntro.element, this.rushBoard.element);
+    this.showScreen({}, this.rushIntro.element, this.rushBoard.element);
     void this.loadRushState();
   }
 
@@ -374,7 +454,7 @@ export class App {
       this.rush?.dispose();
       this.rush = null;
       this.rushTicket = null;
-      this.showScreen(this.rushResult.element, this.rushBoard.element);
+      this.showScreen({}, this.rushResult.element, this.rushBoard.element);
     }
   }
 
@@ -400,6 +480,14 @@ export class App {
       this.credits.element,
       this.settingsDialog.element,
       this.toastNode,
+    );
+    this.masthead.mountControl(
+      el("button", {
+        class: "btn",
+        text: "Explore",
+        title: "Browse the whole archive",
+        on: { click: () => this.enterExplorer() },
+      }),
     );
     this.masthead.mountControl(
       el("button", {

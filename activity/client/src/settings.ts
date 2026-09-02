@@ -9,6 +9,11 @@
 import { DEFAULT_HANDLING, type Handling, sanitizeHandling } from "@shared/tetris/handling";
 import type { Api } from "./api";
 import { DEFAULT_KEYBINDS, type Keybinds, sanitizeKeybinds } from "@shared/keybinds";
+import {
+  type ArchiveFilter,
+  DEFAULT_ARCHIVE_FILTER,
+  sanitizeArchiveFilter,
+} from "@shared/archive-filter";
 
 /**
  * Bumped when the meaning of a stored value changes, not just its shape.
@@ -41,6 +46,8 @@ const SYNC_DEBOUNCE_MS = 800;
 export interface Settings {
   readonly handling: Handling;
   readonly keybinds: Keybinds;
+  /** What the explorer is showing, and what a random puzzle is drawn from. */
+  readonly filter: ArchiveFilter;
 }
 
 /** What travels to and from the server, so a stale copy can be recognised. */
@@ -51,6 +58,7 @@ interface StoredSettings extends Settings {
 export const DEFAULT_SETTINGS: Settings = {
   handling: DEFAULT_HANDLING,
   keybinds: DEFAULT_KEYBINDS,
+  filter: DEFAULT_ARCHIVE_FILTER,
 };
 
 function parse(raw: unknown): Settings {
@@ -58,6 +66,7 @@ function parse(raw: unknown): Settings {
   return {
     handling: sanitizeHandling(value.handling),
     keybinds: sanitizeKeybinds(value.keybinds),
+    filter: sanitizeArchiveFilter(value.filter),
   };
 }
 
