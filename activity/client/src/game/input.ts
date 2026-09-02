@@ -10,6 +10,7 @@
 import type { GameKey } from "@shared/tetris/verify";
 import {
   buildLookup,
+  chordOf,
   type BindableAction,
   type Keybinds,
   isBindable,
@@ -23,6 +24,16 @@ export interface InputHandlers {
 }
 
 /** Keys whose default browser behaviour would fight the game. */
+/**
+ * Keys that are only ever the front half of a chord. Capturing one on its own
+ * would bind an action to "Ctrl", and every chord using it would then fire the
+ * wrong thing on the way in.
+ */
+const MODIFIER_ONLY = new Set([
+  "ControlLeft", "ControlRight", "AltLeft", "AltRight",
+  "ShiftLeft", "ShiftRight", "MetaLeft", "MetaRight",
+]);
+
 const SWALLOWED_CODES = new Set([
   "ArrowLeft",
   "ArrowRight",
@@ -36,6 +47,8 @@ export class InputRouter {
   private lookup: ReadonlyMap<string, BindableAction>;
   private enabled = false;
   private captureResolver: ((code: string) => void) | null = null;
+  /** A modifier held during capture, not yet known to be a chord. */
+  private capturePending: string | null = null;
 
   constructor(
     keybinds: Keybinds,
@@ -81,6 +94,7 @@ export class InputRouter {
 
   cancelCapture(): void {
     this.captureResolver = null;
+    this.capturePending = null;
   }
 
   private readonly heldKeys = new Set<GameKey>();
@@ -90,18 +104,44 @@ export class InputRouter {
     this.heldKeys.clear();
   };
 
+  /**
+   * Whether the keystroke belongs to something the player is typing into.
+   *
+   * The explorer has a search box and the settings sheet has number fields,
+   * and a local action fires even while game input is switched off — so
+   * without this, typing "u" into a search box would undo a placement.
+   */
+  private static isTyping(event: KeyboardEvent): boolean {
+    const target = event.target as HTMLElement | null;
+    if (!target) return false;
+    const tag = target.tagName;
+    return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target.isContentEditable;
+  }
+
   private readonly onKeyDown = (event: KeyboardEvent): void => {
     if (this.captureResolver) {
       event.preventDefault();
-      if (isBindable(event.code)) {
+      // A chord is only finished when a non-modifier arrives: pressing Ctrl on
+      // the way to Ctrl+Z must not be captured as the binding by itself.
+      // A modifier alone is ambiguous: it could be the binding, or the front
+      // half of one. Hold it and see — a key after it makes a chord, letting
+      // it go makes it the binding.
+      if (MODIFIER_ONLY.has(event.code)) {
+        this.capturePending = event.code;
+        return;
+      }
+      this.capturePending = null;
+      const chord = chordOf(event);
+      if (isBindable(chord)) {
         const resolve = this.captureResolver;
         this.captureResolver = null;
-        resolve(event.code);
+        resolve(chord);
       }
       return;
     }
+    if (InputRouter.isTyping(event)) return;
 
-    const action = this.lookup.get(event.code);
+    const action = this.lookup.get(chordOf(event));
     if (!action) return;
     if (SWALLOWED_CODES.has(event.code)) event.preventDefault();
     if (event.repeat) return;
@@ -116,7 +156,19 @@ export class InputRouter {
   };
 
   private readonly onKeyUp = (event: KeyboardEvent): void => {
-    const action = this.lookup.get(event.code);
+    if (this.captureResolver) {
+      if (this.capturePending === event.code) {
+        // Let go with nothing pressed after it, so they meant the modifier.
+        const resolve = this.captureResolver;
+        this.captureResolver = null;
+        this.capturePending = null;
+        if (isBindable(event.code)) resolve(event.code);
+      }
+      return;
+    }
+    // Released against the bare key, not the chord: a modifier let go first
+    // would otherwise strand the key down forever.
+    const action = this.lookup.get(event.code) ?? this.lookup.get(chordOf(event));
     if (!action || !isGameKey(action)) return;
     if (SWALLOWED_CODES.has(event.code)) event.preventDefault();
     if (!this.heldKeys.delete(action)) return;
