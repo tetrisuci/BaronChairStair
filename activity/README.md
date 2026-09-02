@@ -215,6 +215,34 @@ The board it returns is capped at a hundred rather than the interactive
 twenty-five, and carries a `total`. Misses sort last, so the smaller cap would
 have quietly deleted exactly the people a recap exists to tease.
 
+## 1v1
+
+Two players in the same server, over a WebSocket. Puzzle duels are best of N on
+one shared puzzle a round, first valid claim taking it and the clock expiring
+as a draw; rush duels are one clock and one shared stack walked independently,
+most solved winning.
+
+A client never says it solved something. It sends the log that solves it, and
+the server replays that log — verification is what reading a claim *means*,
+which is why a claim has no field on it to lie in. Replaying costs about a
+fifth of a millisecond, so it happens inside one turn of the event loop, and
+that is the whole race resolution: two claims arriving together are decided by
+the order the socket delivered them, with no clock from either player involved.
+A single `await` in that path would quietly reopen it, which is why the
+function carrying it says so.
+
+The opponent is a bar and a score, never a board — a board part-way through a
+puzzle is a partial solution to it, and losing should not come with a hint. The
+archive likewise refuses the answer to a puzzle you are currently duelling on.
+
+**And none of that makes a duel cheat-proof.** `data/puzzles.json` is in this
+public repository, so every answer is already on disk for anyone who wants
+one, and the pathfinder that turns an answer into a keystroke log ships in the
+client bundle. The scheme proves a submitted log really solves the puzzle it
+claims; it cannot prove a human made it. That is the same trade the daily and
+rush make, and it costs more here, because what a scripted opponent takes is
+somebody's match rather than a place on a board.
+
 **What that proves, and what it does not.** `data/puzzles.json` is committed to
 a public repository, and `GET /api/archive/:id` hands any signed-in player the
 solution to every puzzle except today's, so the answers to a rush sequence are

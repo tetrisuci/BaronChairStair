@@ -827,3 +827,24 @@ export function resetDuels(): void {
   duels.clear();
   socketsByPlayer.clear();
 }
+
+/**
+ * Puzzles this player is being asked to solve right now.
+ *
+ * The archive hands out solutions freely and a round names its puzzle, so
+ * without this a duellist can look the answer up mid-round. It closes the lazy
+ * path and nothing more: `data/puzzles.json` ships in a public repository, so
+ * a determined player already has every answer on disk and never makes the
+ * request this blocks. Tidiness, not a boundary.
+ */
+export function puzzlesInPlayFor(playerId: string): ReadonlySet<number> {
+  const socket = socketsByPlayer.get(playerId);
+  const duel = socket?.data.duelId ? duels.get(socket.data.duelId) : undefined;
+  if (!duel || duel.phase !== "playing") return new Set();
+  if (duel.round) return new Set([duel.round.puzzle.id]);
+  const seat = seatOf(duel, playerId);
+  // A rush hides the stack ahead too: knowing what is coming is worth as much
+  // as knowing the answer to what is here.
+  const ahead = duel.rush?.sequence.slice(seat?.position ?? 0) ?? [];
+  return new Set(ahead.map((puzzle) => puzzle.id));
+}
