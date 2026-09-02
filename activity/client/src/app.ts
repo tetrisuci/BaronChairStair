@@ -1023,17 +1023,27 @@ export class App {
    * a restart already undoes everything at once, so this opens no door that
    * was not already wide open — it just costs the player less to walk through.
    */
+  /**
+   * The run the player is actually looking at, if there is one.
+   *
+   * Keyed on the mode rather than on whichever session is still non-null, and
+   * deliberately not `??`: a rush between two puzzles has no live run, and that
+   * has to read as nothing rather than reaching past it to the daily attempt
+   * waiting underneath.
+   *
+   * Every caller that repaints the board needs this rather than `this.run`.
+   * `this.run` is the daily's, and it is null for the whole of a duel or a
+   * rush — so anything that redraws through it draws nothing at all in the two
+   * modes that have their own runs.
+   */
+  private get activeRun(): PuzzleRun | null {
+    if (this.mode === "duel") return this.duel?.currentRun ?? null;
+    if (this.mode === "rush") return this.rush?.currentRun ?? null;
+    return this.run;
+  }
+
   private stepHistory(direction: "undo" | "redo"): void {
-    // Keyed on the mode rather than on whichever session is still non-null, and
-    // deliberately not `??`: a rush between two puzzles has no live run, and
-    // that has to read as nothing to undo instead of reaching past it to the
-    // daily attempt waiting underneath.
-    const run =
-      this.mode === "duel"
-        ? this.duel?.currentRun
-        : this.mode === "rush"
-          ? this.rush?.currentRun
-          : this.run;
+    const run = this.activeRun;
     if (!run) return;
     const moved = direction === "undo" ? run.undo() : run.redo();
     if (!moved) this.toast(direction === "undo" ? "Nothing to undo" : "Nothing to redo");
@@ -1073,9 +1083,15 @@ export class App {
     const box = this.stage.getBoundingClientRect();
     // The 200 matches `.stage { min-height }`; if it were larger the renderer
     // would draw a board the stage then clipped.
+    // Resizing the canvas clears it, so every layout has to be followed by a
+    // repaint of whatever should be on it. This runs from a ResizeObserver on
+    // the stage, which fires just after the playfield is mounted — so on the
+    // first puzzle of a duel or a rush it lands immediately after that puzzle
+    // was painted, wipes it, and used to redraw nothing, because the run it
+    // asked for was the daily's and the daily is not what is on screen.
     this.renderer.layout(Math.max(160, box.width), Math.max(200, box.height), rows);
     if (this.solutionPlayer) this.renderer.draw(this.solutionPlayer.view());
-    else this.run?.renderOnce();
+    else this.activeRun?.renderOnce();
   };
 
   private startCountdown(): void {
