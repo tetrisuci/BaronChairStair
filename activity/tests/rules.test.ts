@@ -87,33 +87,61 @@ describe("verifyRun piece budget", () => {
     expect(result.placements.map((placement) => placement.piece)).toEqual(["O", "S", "T"]);
   });
 
+  /**
+   * The banked piece is deliberately NOT an I.
+   *
+   * The engine pads the queue with I so that locking the final piece has
+   * something to spawn, and the ledger is a multiset keyed by piece type — so
+   * an I in hold and the padding behind it are the same piece as far as
+   * scoring is concerned. These tests were written with `hold: "I"` and passed
+   * for a whole release while the piece was never dealt at all: the padding
+   * spawned, the ledger accepted it as the banked I, and the placements read
+   * exactly as they should. Any piece but I makes the difference visible.
+   */
+  const banked = { ...setup, queue: ["T", "O"] as Mino[], hold: "Z" as Mino };
+
   test("a held piece is dealt automatically once the queue is spent", () => {
-    // No hold key anywhere in this log: the banked I is the only piece left, so
+    // No hold key anywhere in this log: the banked Z is the only piece left, so
     // it is simply the next one rather than something to rescue from behind the
     // engine's padding.
-    const withHold = { ...setup, queue: ["T", "O"] as Mino[], hold: "I" as Mino };
-    const result = verifyRun(withHold, DEFAULT_HANDLING, log(["hardDrop", "hardDrop", "hardDrop"]));
-    expect(result.placements.map((placement) => placement.piece)).toEqual(["T", "O", "I"]);
+    const result = verifyRun(banked, DEFAULT_HANDLING, log(["hardDrop", "hardDrop", "hardDrop"]));
+    expect(result.placements.map((placement) => placement.piece)).toEqual(["T", "O", "Z"]);
+  });
+
+  test("the piece dealt at the end is the banked one, never the padding", () => {
+    const result = verifyRun(banked, DEFAULT_HANDLING, log(["hardDrop", "hardDrop", "hardDrop"]));
+    const last = result.placements[result.placements.length - 1];
+    expect(last?.piece).toBe("Z");
+    expect(result.placements.map((placement) => placement.piece)).not.toContain("I");
+  });
+
+  test("a puzzle holding its last piece can still be finished", () => {
+    // The run ends when the ledger is empty. Handing the player padding instead
+    // of their banked piece leaves it owing one forever, so the puzzle becomes
+    // unfinishable however well it is played.
+    const result = verifyRun(banked, DEFAULT_HANDLING, log(["hardDrop", "hardDrop", "hardDrop"]));
+    expect(result.placements).toHaveLength(3);
   });
 
   test("nothing beyond the puzzle's own pieces is ever playable", () => {
-    const withHold = { ...setup, queue: ["T", "O"] as Mino[], hold: "I" as Mino };
     const result = verifyRun(
-      withHold,
+      banked,
       DEFAULT_HANDLING,
       log(["hardDrop", "hardDrop", "hardDrop", "hold", "hardDrop", "hardDrop"]),
     );
     expect(result.placements).toHaveLength(3);
+    expect(result.placements.map((placement) => placement.piece)).toEqual(["T", "O", "Z"]);
   });
 
-  test("a piece already in hold can still be swapped in at the end", () => {
-    const withHold = { ...setup, queue: ["T", "O"] as Mino[], hold: "I" as Mino };
+  test("pressing hold on the dealt last piece cannot swap the padding back in", () => {
+    // Once the banked piece has been dealt, hold contains the padding. Holding
+    // would trade a real piece for a phantom, so the key is taken away.
     const result = verifyRun(
-      withHold,
+      banked,
       DEFAULT_HANDLING,
       log(["hardDrop", "hardDrop", "hold", "hardDrop"]),
     );
-    expect(result.placements.map((placement) => placement.piece)).toEqual(["T", "O", "I"]);
+    expect(result.placements.map((placement) => placement.piece)).toEqual(["T", "O", "Z"]);
   });
 });
 
