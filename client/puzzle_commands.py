@@ -146,7 +146,7 @@ async def puzzle_play(interaction: discord.Interaction):
 
     try:
         today = await _get("/api/today")
-        puzzle = today["puzzle"]
+        puzzles = today["puzzles"]
         day = today["day"]
         solved = today["solvedCount"]
     except (PuzzleServerUnavailable, KeyError, TypeError) as exc:
@@ -157,15 +157,24 @@ async def puzzle_play(interaction: discord.Interaction):
         return
     embed = discord.Embed(
         title=f"Puzzle #{day}",
-        description=puzzle.get("goal") or "Match the reference solution.",
+        description="Three today — solving any one of them keeps your streak.",
         colour=PUZZLE_COLOUR,
         url=launch)
-    embed.add_field(name="Difficulty", value=_grade(puzzle.get("difficulty", 0)))
-    embed.add_field(name="Pieces", value=str(puzzle.get("pieces", "?")))
-    embed.add_field(name="Target", value=f"{puzzle.get('targetAttack', '?')} attack")
+    # One field per tier rather than three embeds: they are one day's puzzle,
+    # and splitting them would read as three announcements to scroll past.
+    for entry in puzzles:
+        tier = str(entry.get("tier", "")).title() or "Puzzle"
+        embed.add_field(
+            name=f"{tier} · {_grade(entry.get('difficulty', 0))}",
+            value=(f"{entry.get('goal') or 'Match the reference solution.'}\n"
+                   f"{entry.get('pieces', '?')} pieces · "
+                   f"{entry.get('targetAttack', '?')} attack\n"
+                   f"_“{entry.get('title', 'untitled')}” "
+                   f"by {entry.get('author', 'unknown')}_"),
+            inline=False)
+    # People, not results: the server counts players who solved anything today,
+    # so this does not treble now that a day holds three puzzles.
     embed.add_field(name="Solved by", value=f"{solved} so far", inline=False)
-    embed.set_footer(
-        text=f"“{puzzle.get('title', 'untitled')}” by {puzzle.get('author', 'unknown')}")
 
     # `wait=True` so the send comes back with a message: without it discord.py
     # returns None and there is nothing for tomorrow's recap to reply to.
@@ -267,7 +276,7 @@ async def puzzle_standings(interaction: discord.Interaction):
     try:
         data = await _get(f"/api/standings?guild={interaction.guild_id}",
                           api_key=api_key)
-        entries = data["entries"]
+        boards = data["boards"]
         day = data["day"]
     except PuzzleServerUnavailable as exc:
         await interaction.followup.send(str(exc))
@@ -277,25 +286,36 @@ async def puzzle_standings(interaction: discord.Interaction):
         await interaction.followup.send(UNEXPECTED_REPLY)
         return
 
-    if not entries:
+    if not any(board.get("entries") for board in boards):
         await interaction.followup.send(f"Nobody has solved #{day} yet. Be first.")
         return
 
     # Built inside its own guard: the interaction is already deferred, so an
     # unexpected shape here would leave the user watching a spinner forever.
     try:
-        lines = _standings_lines(entries, _daily_detail)
+        embed = discord.Embed(title=f"Puzzle #{day} — leaderboards",
+                              colour=PUZZLE_COLOUR)
+        for board in boards:
+            entries = board.get("entries") or []
+            tier = str(board.get("tier", "")).title() or "Puzzle"
+            # An empty tier is ordinary rather than an error — the hard one
+            # often has nobody on it while the easy one is busy — so it says so
+            # instead of being left out and looking like a missing board.
+            embed.add_field(
+                name=tier,
+                value=("\n".join(_standings_lines(entries, _daily_detail))
+                       if entries else "_nobody yet_"),
+                inline=False)
+            if len(entries) > STANDINGS_SHOWN:
+                embed.add_field(
+                    name="\u200b",
+                    value=f"_and {len(entries) - STANDINGS_SHOWN} more on {tier.lower()}_",
+                    inline=False)
     except (KeyError, TypeError) as exc:
         log.warning("puzzle standings entry unusable: %s", exc)
         await interaction.followup.send(UNEXPECTED_REPLY)
         return
 
-    embed = discord.Embed(
-        title=f"Puzzle #{day} — leaderboard",
-        description="\n".join(lines),
-        colour=PUZZLE_COLOUR)
-    if len(entries) > STANDINGS_SHOWN:
-        embed.set_footer(text=f"and {len(entries) - STANDINGS_SHOWN} more")
     await interaction.followup.send(embed=embed)
 
 
