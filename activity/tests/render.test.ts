@@ -17,6 +17,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { Window } from "happy-dom";
 import { activeRun } from "../client/src/game/active-run";
+import { createDailyMenu } from "../client/src/ui/daily-tiers";
 import { createRushResultCard } from "../client/src/ui/rush";
 import type { RushPlayed } from "../client/src/api";
 
@@ -211,5 +212,78 @@ describe("which run a repaint asks for", () => {
     // chain of `??` would do, and it would draw the daily's board over a rush.
     expect(activeRun("rush", { ...sessions, rush: null })).toBeNull();
     expect(activeRun("duel", { ...sessions, duel: undefined })).toBeNull();
+  });
+});
+
+describe("the day's chooser", () => {
+  const entry = (tier: string, id: number, solved: boolean | null) => ({
+    tier,
+    puzzle: {
+      id,
+      title: `sheet ${id}`,
+      author: "satilea",
+      difficulty: id,
+      goal: "Clear 1 TSD",
+      queue: ["T", "O", "S", "Z"],
+      hold: null,
+    },
+    run: solved === null ? null : { solved },
+    solution: null,
+  });
+
+  const menu = (entries: unknown[]) => {
+    const made = createDailyMenu(() => {});
+    window.document.body.append(made.element as never);
+    made.update(245, entries as never);
+    return made;
+  };
+
+  test("shows all three, with what the choice actually turns on", () => {
+    const made = menu([entry("easy", 2, true), entry("medium", 6, false), entry("hard", 11, null)]);
+    const rows = [...made.element.querySelectorAll(".explore__item")];
+    expect(rows).toHaveLength(3);
+    expect(rows.map((row) => row.querySelector(".explore__id")!.textContent)).toEqual([
+      "Easy",
+      "Medium",
+      "Hard",
+    ]);
+    // A filed miss and an untouched puzzle are different things, and the row is
+    // the only place a player can tell them apart before opening one.
+    const meta = rows.map((row) => row.querySelector(".explore__meta")!.textContent);
+    expect(meta[0]).toContain("solved");
+    expect(meta[1]).toContain("filed, not solved");
+    expect(meta[2]).toContain("not played");
+    // The length is part of the decision, so it is on the row.
+    expect(meta[0]).toContain("4 pieces");
+  });
+
+  test("says how the day is going without making you count", () => {
+    expect(
+      menu([entry("easy", 2, true), entry("medium", 6, null), entry("hard", 11, null)]).element
+        .querySelector(".explore__count")!.textContent,
+    ).toContain("1 of 3 solved");
+    expect(
+      menu([entry("easy", 2, true), entry("medium", 6, true), entry("hard", 11, true)]).element
+        .querySelector(".explore__count")!.textContent,
+    ).toContain("All three done");
+    // Any one of them keeps the streak, and a beginner should be told so.
+    expect(
+      menu([entry("easy", 2, null), entry("medium", 6, null), entry("hard", 11, null)]).element
+        .querySelector(".explore__count")!.textContent,
+    ).toContain("keeps your streak");
+  });
+
+  test("a row opens its own tier, not the one it sits at", () => {
+    const picked: string[] = [];
+    const made = createDailyMenu((tier) => picked.push(tier));
+    window.document.body.append(made.element as never);
+    made.update(245, [
+      entry("easy", 2, null),
+      entry("medium", 6, null),
+      entry("hard", 11, null),
+    ] as never);
+    const rows = [...made.element.querySelectorAll(".explore__item")];
+    (rows[2] as unknown as HTMLElement).click();
+    expect(picked).toEqual(["hard"]);
   });
 });

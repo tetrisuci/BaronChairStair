@@ -18,7 +18,7 @@ import { InputRouter } from "./game/input";
 import { type LocalAction, keyName } from "@shared/keybinds";
 import { RushSession, type RushSummary } from "./game/rush";
 import { PuzzleRun, type RunSnapshot } from "./game/runner";
-import { createTierPicker } from "./ui/daily-tiers";
+import { createDailyMenu, createTierPicker } from "./ui/daily-tiers";
 import type { DailyTier } from "@shared/daily";
 import { activeRun } from "./game/active-run";
 import { SolutionPlayer } from "./game/solution-player";
@@ -116,7 +116,11 @@ export class App {
   private rushState: RushState | null = null;
   private mode: "daily" | "rush" | "explore" | "duel" = "daily";
   private solutionPlayer: SolutionPlayer | null = null;
-  private readonly tiers = createTierPicker((tier) => this.showDailyTier(tier));
+  private readonly tiers = createTierPicker(
+    (tier) => this.showDailyTier(tier),
+    () => this.showDailyMenu(),
+  );
+  private readonly dailyMenu = createDailyMenu((tier) => this.showDailyTier(tier));
   private daily: DailyResponse | null = null;
   /**
    * Which of the day's three is on the board.
@@ -252,7 +256,24 @@ export class App {
 
     this.masthead.setDay(this.daily.day);
     this.masthead.setStreak(this.daily.streak, this.daily.totalSolved);
-    this.showDailyTier(this.dailyTier);
+    this.showDailyMenu();
+  }
+
+  /**
+   * The day's three, to choose between.
+   *
+   * Where the daily now opens, and where it comes back to. Dropping somebody
+   * straight onto one of three puzzles picks for them, and picks the same one
+   * every day — which is the easy one, for a player who might have wanted the
+   * hard one, or the reverse.
+   */
+  private showDailyMenu(): void {
+    if (!this.daily) return;
+    this.mode = "daily";
+    this.input.setGameInputEnabled(false);
+    this.badge.hide();
+    this.dailyMenu.update(this.daily.day, this.daily.puzzles);
+    this.showScreen({ wide: true, fill: true }, this.dailyMenu.element);
   }
 
   /**
@@ -410,7 +431,10 @@ export class App {
 
   private returnToDaily(): void {
     if (!this.daily) return;
-    this.showDailyTier(this.dailyTier);
+    // The chooser, not the last puzzle. Every other mode exits through here,
+    // and coming back to "the daily" means the day, not whichever third of it
+    // happened to be open when you wandered off.
+    this.showDailyMenu();
   }
 
   /** The three-column play layout: rails either side of the board. */

@@ -573,3 +573,19 @@
   background: var(--ink);
   color: var(--sun);
 }
+
+/* Pushed to the far end of the row: leaving is not one of the three. */
+.tiers__all { margin-left: auto; }
+
+/* The chooser's rows carry a goal and a byline, so they stack. */
+.explore__by { color: var(--ink-soft); font-size: 11px; }
+.explore__goal {
+  display: block;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-soft);
+  white-space: normal;
+}
+
+/* Done, and still worth being able to open again. */
+.explore__item--done .explore__id { background: var(--good); }
