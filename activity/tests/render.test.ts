@@ -327,9 +327,9 @@ describe("the day's one leaderboard", () => {
 
   test("remembers what was tried and failed, apart from what was never opened", () => {
     const ada = mergeBoards(boards)[0]!;
-    expect(ada.marks.get("hard")).toBe(false);
+    expect(ada.marks.hard).toBe(false);
     const cy = mergeBoards(boards).find((row) => row.id === "cy")!;
-    expect(cy.marks.has("easy")).toBe(false);
+    expect("easy" in cy.marks).toBe(false);
   });
 
   test("two players with the same name stay two players", () => {

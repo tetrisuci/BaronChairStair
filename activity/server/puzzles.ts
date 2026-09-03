@@ -112,9 +112,18 @@ export class PuzzleArchive {
     return pool[puzzleIndexForDay(day, pool.length, PuzzleArchive.STREAM[tier])]!;
   }
 
-  /** The three puzzles for a given day number, defaulting to today. */
+  /**
+   * The three puzzles for a given day number, defaulting to today.
+   *
+   * Memoised on the day. Everything in here is constant for a calendar day and
+   * four routes ask for it per request; the cost is dominated by `nextResetAt`,
+   * which formats a wall clock three times through Intl.
+   */
+  private cached: DailyPuzzles | null = null;
+
   forDay(day: number = dayNumber(Date.now(), this.dayOptions)): DailyPuzzles {
-    return {
+    if (this.cached?.day === day) return this.cached;
+    this.cached = {
       day,
       puzzles: {
         easy: this.forTier(day, "easy"),
@@ -123,6 +132,7 @@ export class PuzzleArchive {
       },
       resetsAt: nextResetAt(Date.now(), this.dayOptions),
     };
+    return this.cached;
   }
 
   today(): DailyPuzzles {

@@ -123,8 +123,11 @@ export function nextResetAt(now: Date | number = Date.now(), options: DayOptions
  * positional rank every day, forever, and the pairing would never vary. It is
  * mixed into the cycle seed rather than the position, so each stream still
  * walks a full permutation and still repeats nothing until it wraps.
+ *
+ * Required, with no default. A forgotten argument is exactly the lockstep this
+ * exists to prevent, and a default would let the type checker wave it through.
  */
-export function puzzleIndexForDay(day: number, puzzleCount: number, stream = 0): number {
+export function puzzleIndexForDay(day: number, puzzleCount: number, stream: number): number {
   if (puzzleCount <= 0) throw new RangeError("No puzzles to choose from");
   const zeroBased = day - 1;
   const cycle = Math.floor(zeroBased / puzzleCount);
@@ -168,6 +171,9 @@ export function dailyTierOf(puzzle: { readonly difficulty: number }): DailyTier 
 export function byTier<T extends { readonly difficulty: number }>(
   puzzles: readonly T[],
 ): Readonly<Record<DailyTier, readonly T[]>> {
+  // Written out rather than built from DAILY_TIERS: the explicit object is what
+  // lets the return type check that every tier is present, and a tier added to
+  // the union without a line here is then a compile error rather than a gap.
   return {
     easy: puzzles.filter((puzzle) => dailyTierOf(puzzle) === "easy"),
     medium: puzzles.filter((puzzle) => dailyTierOf(puzzle) === "medium"),

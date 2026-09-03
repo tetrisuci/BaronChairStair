@@ -216,7 +216,7 @@ def _grid(marks: dict) -> str:
     )
 
 
-def _daily_lines(boards: list[dict]) -> list[str]:
+def _daily_lines(rows: list[dict]) -> list[str]:
     """
     Everybody once, best first, with their three marks beside them.
 
@@ -224,7 +224,6 @@ def _daily_lines(boards: list[dict]) -> list[str]:
     continuous, so no two players ever share a bucket and grouping would put
     one name on every line anyway.
     """
-    rows = _merge_boards(boards)
     if not rows:
         return []
 
@@ -293,7 +292,7 @@ def format_recap(payload: dict) -> str:
         payload.get("streak", 0),
         any(row["solved"] > 0 for row in rows),
     )]
-    lines += _daily_lines(boards)
+    lines += _daily_lines(rows)
 
     # The board is capped server-side and misses sort last, so a very busy
     # server would lose exactly the people this message exists to tease.

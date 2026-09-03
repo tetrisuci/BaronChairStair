@@ -106,7 +106,7 @@ describe("rebuilding the runs key", () => {
         .all()
         .map((row) => row.name)
         .sort();
-      expect(names).toEqual(["runs_by_day", "runs_by_guild", "runs_by_player"]);
+      expect(names).toEqual(["runs_board", "runs_by_day", "runs_by_guild", "runs_by_player"]);
       expect(db.query("PRAGMA foreign_key_check").all()).toEqual([]);
       db.close();
     } finally {

@@ -1,10 +1,10 @@
 /**
- * The day's three, and which one you are on.
+ * The chooser the day opens on.
  *
- * A day used to be one puzzle, so there was nothing to choose and nothing to
- * show. Three of them need both: a way across, and — more importantly — a way
- * to see at a glance that the easy one is done and the hard one is still there.
- * The tick is the point of the control; the switching is incidental.
+ * There was a second control here — a picker for the left rail — which was
+ * mounted and then wiped by `startRun` and `presentVerdict`, both of which own
+ * that rail and rebuild it. It never reached a screen, so it is gone; the home
+ * row and the masthead cover switching.
  */
 
 import type { DailyEntry } from "../api";
@@ -17,42 +17,6 @@ const LABELS: Readonly<Record<DailyTier, string>> = {
   medium: "Medium",
   hard: "Hard",
 };
-
-export interface TierPicker {
-  readonly element: HTMLElement;
-  update(entries: readonly DailyEntry[], current: DailyTier): void;
-}
-
-export function createTierPicker(onPick: (tier: DailyTier) => void, onAll: () => void): TierPicker {
-  const row = el("div", { class: "tiers" });
-  const back = el("button", { class: "btn btn--small tiers__all", text: "All three" });
-  back.addEventListener("click", () => onAll());
-  return {
-    element: row,
-    update(entries, current) {
-      replaceChildren(
-        row,
-        ...entries.map((entry) => {
-          const solved = entry.run?.solved === true;
-          const button = el("button", {
-            class: `btn btn--small tiers__pick${entry.tier === current ? " tiers__pick--on" : ""}`,
-            // A filed miss is not the same as an untouched puzzle, and the
-            // player is the only one who can tell the difference otherwise.
-            text: `${LABELS[entry.tier]}${solved ? " ✓" : entry.run ? " ·" : ""}`,
-            title: solved
-              ? "Solved"
-              : entry.run
-                ? "Filed, not solved"
-                : "Not played yet",
-          });
-          button.addEventListener("click", () => onPick(entry.tier));
-          return button;
-        }),
-        back,
-      );
-    },
-  };
-}
 
 // ── The chooser the day opens on ─────────────────────────────────────────────
 

@@ -12,10 +12,8 @@
  */
 
 import type { RushRun, StoredRun } from "../api";
-import type { DailyTier } from "@shared/daily";
+import { DAILY_TIERS, type DailyTier } from "@shared/daily";
 import { el, formatDuration, panel, replaceChildren } from "./dom";
-
-const TIERS: readonly DailyTier[] = ["easy", "medium", "hard"];
 
 export interface DailyBoard {
   readonly element: HTMLElement;
@@ -29,7 +27,7 @@ export interface DailyBoard {
 interface Row {
   readonly id: string;
   readonly username: string;
-  readonly marks: Map<DailyTier, boolean>;
+  readonly marks: Partial<Record<DailyTier, boolean>>;
   solved: number;
   totalMs: number;
   /** Puzzles cleared in today's rush, or null if they never ran one. */
@@ -50,12 +48,12 @@ export function mergeBoards(
       const row = rows.get(id) ?? {
         id,
         username: run.player.username,
-        marks: new Map<DailyTier, boolean>(),
+        marks: {},
         solved: 0,
         totalMs: 0,
         rush: null,
       };
-      row.marks.set(board.tier, run.solved);
+      row.marks[board.tier] = run.solved;
       if (run.solved) {
         row.solved += 1;
         row.totalMs += run.totalMs;
@@ -70,7 +68,7 @@ export function mergeBoards(
     const row = rows.get(run.player.id) ?? {
       id: run.player.id,
       username: run.player.username,
-      marks: new Map<DailyTier, boolean>(),
+      marks: {},
       solved: 0,
       totalMs: 0,
       rush: null,
@@ -89,7 +87,7 @@ export function mergeBoards(
 
 /** Solved, tried and failed, and never opened are three different days. */
 function mark(row: Row, tier: DailyTier): HTMLElement {
-  const state = row.marks.has(tier) ? (row.marks.get(tier) ? "on" : "off") : "none";
+  const state = tier in row.marks ? (row.marks[tier] ? "on" : "off") : "none";
   return el("span", {
     class: `board__mark board__mark--${state}`,
     title: `${tier}: ${state === "on" ? "solved" : state === "off" ? "not solved" : "not played"}`,
@@ -98,7 +96,9 @@ function mark(row: Row, tier: DailyTier): HTMLElement {
 
 export function createDailyBoard(): DailyBoard {
   const note = el("p", { class: "note", text: "" });
-  const rows = el("div", {});
+  // `board-list` is what caps the height and scrolls; without it every row
+  // renders inline and pushes the rest of the card off the bottom.
+  const rows = el("div", { class: "board-list" });
   const element = panel("Leaderboard", {}, note, rows);
 
   return {
@@ -113,17 +113,17 @@ export function createDailyBoard(): DailyBoard {
         ...merged.map((row, index) =>
           el(
             "div",
-            { class: `board__row${row.id === selfId ? " board__row--self" : ""}` },
-            el("span", { class: "board__rank", text: `${index + 1}` }),
-            el("span", { class: "board__marks" }, ...TIERS.map((tier) => mark(row, tier))),
-            el("span", { class: "board__name", text: row.username }),
+            { class: `board-list__row${row.id === selfId ? " board-list__row--self" : ""}` },
+            el("span", { class: "board-list__rank", text: `${index + 1}` }),
+            el("span", { class: "board__marks" }, ...DAILY_TIERS.map((tier) => mark(row, tier))),
+            el("span", { class: "board-list__name", text: row.username }),
             el("span", {
-              class: "board__score",
+              class: "board-list__score",
               // A rush of zero solves is a rush that happened, and reads
               // differently from never having run one — so null is the blank,
               // not zero.
               text:
-                (row.solved > 0 ? `${row.solved}/3 · ${formatDuration(row.totalMs)}` : "0/3") +
+                (row.solved > 0 ? `${row.solved}/${DAILY_TIERS.length} · ${formatDuration(row.totalMs)}` : `0/${DAILY_TIERS.length}`) +
                 (row.rush === null ? "" : ` · ⚡${row.rush}`),
             }),
           ),

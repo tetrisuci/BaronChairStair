@@ -224,7 +224,7 @@ export function createExplorer(callbacks: ExplorerCallbacks): Explorer {
       sort.value = next.sort;
 
       const matches = filterArchive(entries, next);
-      random.disabled = matches.filter((entry) => !locked.has(entry.id)).length === 0;
+      random.disabled = !matches.some((entry) => !locked.has(entry.id));
       count.textContent =
         matches.length === entries.length
           ? `All ${entries.length} puzzles`

@@ -39,7 +39,6 @@ HTTP_TIMEOUT = aiohttp.ClientTimeout(total=8)
 
 # The club's own yellow, so the embed matches tetrisatuci.org and the activity.
 PUZZLE_COLOUR = discord.Colour.from_rgb(0xFC, 0xD7, 0x50)
-MISSING_COLOUR = discord.Colour.from_rgb(0xC8, 0x40, 0x2F)
 
 # The archive's difficulty is a loose vibe scale, so it is shown as a band.
 GRADE_BANDS = (
@@ -50,10 +49,6 @@ GRADE_BANDS = (
     (10, "V · severe"),
 )
 
-
-# Both boards are per guild, and both can be handed a reply they cannot read,
-# so the two sentences live in one place rather than drifting apart.
-SERVER_ONLY = "Standings are per server, so this only works in a server."
 
 # Lent by discord_bot at boot so /puzzle play can note where it announced the
 # day. Left as None when nothing wired it up: this module stays importable on
@@ -76,7 +71,6 @@ def _grade(difficulty: float) -> str:
         if difficulty <= ceiling:
             return label
     return "VI · brutal"
-
 
 
 def _not_configured(missing: str) -> str:

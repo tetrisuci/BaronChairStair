@@ -18,7 +18,7 @@ import { InputRouter } from "./game/input";
 import { type LocalAction, keyName } from "@shared/keybinds";
 import { RushSession, type RushSummary } from "./game/rush";
 import { PuzzleRun, type RunSnapshot } from "./game/runner";
-import { createDailyMenu, createTierPicker } from "./ui/daily-tiers";
+import { createDailyMenu } from "./ui/daily-tiers";
 import { createDailyBoard } from "./ui/daily-board";
 import { createHome } from "./ui/home";
 import type { DailyTier } from "@shared/daily";
@@ -119,10 +119,6 @@ export class App {
   private rushState: RushState | null = null;
   private mode: "daily" | "rush" | "explore" | "duel" = "daily";
   private solutionPlayer: SolutionPlayer | null = null;
-  private readonly tiers = createTierPicker(
-    (tier) => this.showDailyTier(tier),
-    () => this.showDailyMenu(),
-  );
   private readonly dailyMenu = createDailyMenu((tier) => this.showDailyTier(tier));
   private readonly home = createHome({
     onDaily: () => this.showDailyMenu(),
@@ -274,11 +270,28 @@ export class App {
    * Every mode leaves through here now, and the activity opens on it. Four
    * things to do is one too many for a row of small buttons in the furniture.
    */
-  private showHome(): void {
-    if (!this.daily) return;
+  /**
+   * The prologue every screen shares.
+   *
+   * Each `enter*`/`show*` used to hand-roll these four lines, and two of the
+   * screens added with the front door forgot the first one — so clicking Home
+   * mid-rush left the rush running: its frame loop, its buzzer, and five
+   * minutes later a filed run yanking whatever screen you had moved to. A duel
+   * left the socket open while the keyboard stopped routing to it, which is a
+   * forfeit nobody chose. `disposeActiveMode`'s own comment says it exists so
+   * "the next mode added" is not the one that forgets; the next screen added
+   * forgot, so the prologue is now one place instead of eight.
+   */
+  private leaveForScreen(): void {
+    this.disposeActiveMode();
     this.mode = "daily";
     this.input.setGameInputEnabled(false);
     this.badge.hide();
+  }
+
+  private showHome(): void {
+    if (!this.daily) return;
+    this.leaveForScreen();
     this.home.update(this.daily.day, this.daily.puzzles, this.daily.streak);
     this.home.mountBoard(this.dailyBoard.element);
     this.showScreen({ wide: true, fill: true }, this.home.element);
@@ -295,9 +308,7 @@ export class App {
    */
   private showDailyMenu(): void {
     if (!this.daily) return;
-    this.mode = "daily";
-    this.input.setGameInputEnabled(false);
-    this.badge.hide();
+    this.leaveForScreen();
     this.dailyMenu.update(this.daily.day, this.daily.puzzles);
     this.showScreen({ wide: true, fill: true }, this.dailyMenu.element);
   }
@@ -312,16 +323,16 @@ export class App {
    */
   private showDailyTier(tier: DailyTier): void {
     if (!this.daily) return;
+    // Clicking the tier you are already playing is a no-op, not a restart.
+    // Both the home row and the chooser can raise it, and rebuilding here
+    // throws away an attempt in progress.
+    if (tier === this.dailyTier && this.run) return;
     this.dailyTier = tier;
     const entry = this.dailyEntry;
     if (!entry) return;
     this.sheet = { puzzle: entry.puzzle, solution: entry.solution, scored: true };
     this.credits.update({ day: this.daily.day, puzzle: entry.puzzle });
     this.hud.setPuzzle(entry.puzzle);
-    this.tiers.update(this.daily.puzzles, tier);
-    // Above the hold panel, so the day's three are the first thing in the rail
-    // rather than something to go looking for.
-    replaceChildren(this.hud.left, this.tiers.element, this.hud.panels.hold, this.hud.panels.progress);
     // Rebuilt rather than left alone: a filed tier puts the walkthrough in this
     // rail, and switching from it to an unplayed one would otherwise keep the
     // last puzzle's solution where the queue belongs.

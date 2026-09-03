@@ -568,14 +568,7 @@
 
 .tiers__pick { flex: 1 1 auto; }
 
-/* The one you are on, in the same ink the masthead uses for a live control. */
-.tiers__pick--on {
-  background: var(--ink);
-  color: var(--sun);
-}
 
-/* Pushed to the far end of the row: leaving is not one of the three. */
-.tiers__all { margin-left: auto; }
 
 /* The chooser's rows carry a goal and a byline, so they stack. */
 .explore__by { color: var(--ink-soft); font-size: 11px; }
@@ -611,26 +604,11 @@
 
 /* ── The day's one board ──────────────────────────────────────────────────── */
 
-.board__row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 5px 0;
-  border-bottom: 1px dashed var(--ink-line);
-}
-.board__row:last-child { border-bottom: 0; }
-
-/* Yours, findable without reading every line. */
-.board__row--self { font-weight: 700; }
-
-.board__rank {
-  font-family: var(--mono);
-  font-size: 11px;
-  color: var(--ink-faint);
-  min-width: 2ch;
-  text-align: right;
-}
-
+/*
+ * Only the marks. The row, its rank, name, score and self-highlight are
+ * `board-list__*` in overlays.css, shared with the daily and rush boards —
+ * a third copy of them was how this board lost its height cap.
+ */
 .board__marks { display: flex; gap: 3px; flex: none; }
 
 /*
@@ -648,20 +626,6 @@
 .board__mark--off { background: transparent; }
 .board__mark--none { border-style: dotted; opacity: 0.5; }
 
-.board__name {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.board__score {
-  font-family: var(--mono);
-  font-size: 11px;
-  color: var(--ink-soft);
-  white-space: nowrap;
-}
 
 /*
  * The wordmark, as a control that does not look like one.

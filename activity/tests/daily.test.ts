@@ -132,7 +132,7 @@ describe("three rotations running side by side", () => {
     // pure function of the list's length, so two tiers with the same number of
     // puzzles would pick the same positional rank every day for ever, and the
     // pairing of easy to hard would never vary.
-    const withoutStream = Array.from({ length: 60 }, (_, day) => puzzleIndexForDay(day + 1, 46));
+    const withoutStream = Array.from({ length: 60 }, (_, day) => puzzleIndexForDay(day + 1, 46, 0));
     const streamOne = Array.from({ length: 60 }, (_, day) => puzzleIndexForDay(day + 1, 46, 1));
     const streamTwo = Array.from({ length: 60 }, (_, day) => puzzleIndexForDay(day + 1, 46, 2));
 
