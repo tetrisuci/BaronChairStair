@@ -589,3 +589,22 @@
 
 /* Done, and still worth being able to open again. */
 .explore__item--done .explore__id { background: var(--good); }
+
+/*
+ * The front door's four ways on.
+ *
+ * Wrapping, and each one wide enough to be a target rather than a word: this
+ * is the first thing a player meets, and Discord gives the activity a window
+ * whose shape nobody controls.
+ */
+.home__nav {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 12px 0;
+}
+
+.home__go {
+  flex: 1 1 120px;
+  padding-block: 12px;
+}

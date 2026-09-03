@@ -19,6 +19,7 @@ import { type LocalAction, keyName } from "@shared/keybinds";
 import { RushSession, type RushSummary } from "./game/rush";
 import { PuzzleRun, type RunSnapshot } from "./game/runner";
 import { createDailyMenu, createTierPicker } from "./ui/daily-tiers";
+import { createHome } from "./ui/home";
 import type { DailyTier } from "@shared/daily";
 import { activeRun } from "./game/active-run";
 import { SolutionPlayer } from "./game/solution-player";
@@ -121,6 +122,18 @@ export class App {
     () => this.showDailyMenu(),
   );
   private readonly dailyMenu = createDailyMenu((tier) => this.showDailyTier(tier));
+  private readonly home = createHome({
+    onDaily: () => this.showDailyMenu(),
+    onRush: () => this.enterRush(),
+    onDuel: () => this.enterDuel(),
+    onExplore: () => this.enterExplorer(),
+    onTier: (tier) => {
+      this.boardTier = tier;
+      void this.loadLeaderboard();
+    },
+  });
+  /** Which tier's board the home screen is showing. Not what you are playing. */
+  private boardTier: DailyTier = "easy";
   private daily: DailyResponse | null = null;
   /**
    * Which of the day's three is on the board.
@@ -256,7 +269,25 @@ export class App {
 
     this.masthead.setDay(this.daily.day);
     this.masthead.setStreak(this.daily.streak, this.daily.totalSolved);
-    this.showDailyMenu();
+    this.showHome();
+  }
+
+  /**
+   * The front door: what the day looks like, where to go, and a board.
+   *
+   * Every mode leaves through here now, and the activity opens on it. Four
+   * things to do is one too many for a row of small buttons in the furniture.
+   */
+  private showHome(): void {
+    if (!this.daily) return;
+    this.mode = "daily";
+    this.input.setGameInputEnabled(false);
+    this.badge.hide();
+    this.home.update(this.daily.day, this.daily.puzzles, this.daily.streak, this.boardTier);
+    this.leaderboard.setVisible(true);
+    this.home.mountBoard(this.leaderboard.element);
+    this.showScreen({ wide: true, fill: true }, this.home.element);
+    void this.loadLeaderboard();
   }
 
   /**
@@ -447,10 +478,10 @@ export class App {
 
   private returnToDaily(): void {
     if (!this.daily) return;
-    // The chooser, not the last puzzle. Every other mode exits through here,
-    // and coming back to "the daily" means the day, not whichever third of it
-    // happened to be open when you wandered off.
-    this.showDailyMenu();
+    // Home, not the last puzzle and not the chooser. Leaving a rush or a duel
+    // means leaving the thing you were doing, and the front door is where the
+    // next choice gets made.
+    this.showHome();
   }
 
   /** The three-column play layout: rails either side of the board. */
@@ -835,6 +866,16 @@ export class App {
       this.settingsDialog.element,
       this.toastNode,
     );
+    // First control, and the only one that is a way *back* rather than a way
+    // somewhere else: every screen can be left without knowing which one it is.
+    this.masthead.mountControl(
+      el("button", {
+        class: "btn",
+        text: "Home",
+        title: "The day, the boards, and everything else",
+        on: { click: () => this.showHome() },
+      }),
+    );
     this.masthead.mountControl(
       el("button", {
         class: "btn",
@@ -1063,7 +1104,7 @@ export class App {
 
   private async loadLeaderboard(): Promise<void> {
     try {
-      const { entries } = await this.connection.api.leaderboard(this.dailyTier);
+      const { entries } = await this.connection.api.leaderboard(this.boardTier);
       this.leaderboard.update(entries, this.connection.player.id);
     } catch {
       // The result card is still useful without the leaderboard.
