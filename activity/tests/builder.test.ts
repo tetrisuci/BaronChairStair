@@ -22,7 +22,7 @@ import { type BlueprintPage, decodeBlueprint } from "../shared/blueprint/decode"
 import { encodeBlueprint } from "../shared/blueprint/encode";
 import { COLUMNS } from "../shared/blueprint/playfield";
 import { createBuilder } from "../client/src/ui/builder";
-import { MAX_QUEUE, MAX_ROWS, MIN_ROWS } from "../client/src/ui/builder-state";
+import { MAX_QUEUE, MAX_ROWS } from "../client/src/ui/builder-state";
 import { archive, hasSolutions } from "./archive";
 
 let window: Window;
@@ -182,12 +182,12 @@ describe("which way up the board is", () => {
   test("a cell painted at the bottom of the screen is row 0 in the code", () => {
     const ui = mount();
     ui.paint(ui.bottomRow(), 0);
-    // The top of the starting board, painted before the stack grows it.
+    // And the top row of the field, which is the other end of the axis.
     ui.paint(0, 3);
 
     expect(filled(ui.page())).toEqual([
       { x: 0, y: 0, type: "g" },
-      { x: 3, y: MIN_ROWS - 1, type: "g" },
+      { x: 3, y: MAX_ROWS - 1, type: "g" },
     ]);
   });
 
@@ -249,7 +249,7 @@ describe("where a click lands", () => {
       clientLeft: border,
       clientTop: border,
       clientWidth: COLUMNS * CELL - border * 2,
-      clientHeight: MIN_ROWS * CELL - border * 2,
+      clientHeight: MAX_ROWS * CELL - border * 2,
     };
     for (const [name, value] of Object.entries(metrics)) {
       Object.defineProperty(ui.grid, name, { value, configurable: true });
@@ -257,7 +257,8 @@ describe("where a click lands", () => {
 
     // 2px past the second seam by the border box, still inside column 1 by the
     // content box — and column 1 is where the pointer visibly is.
-    ui.pointAt(2 * CELL, 9.5 * CELL);
+    // Bottom row of the full field; this test is about the column seam.
+    ui.pointAt(2 * CELL, (MAX_ROWS - 0.5) * CELL);
 
     expect(filled(ui.page())).toEqual([{ x: 1, y: 0, type: "g" }]);
   });

@@ -24,14 +24,12 @@ import {
   MAX_GOAL,
   MAX_QUEUE,
   MAX_ROWS,
-  MIN_ROWS,
   pageOf,
   paintCells,
   parsePieces,
   sanitizeGoal,
   summaryOf,
   toCode,
-  visibleRowsFor,
   warningFor,
 } from "../client/src/ui/builder-state";
 import { archive, hasSolutions } from "./archive";
@@ -108,15 +106,6 @@ describe("painting", () => {
   });
 });
 
-describe("how tall the board is drawn", () => {
-  test("is the stack plus headroom, floored and capped", () => {
-    expect(visibleRowsFor(EMPTY_STATE)).toBe(MIN_ROWS);
-    expect(visibleRowsFor(state({ cells: cells([[0, 14, "g"]]) }))).toBe(17);
-    // Cells can sit above the drawn board — they are kept, not dropped — so the
-    // height has to stop at what the app can draw.
-    expect(visibleRowsFor(state({ cells: cells([[0, 19, "g"]]) }))).toBe(MAX_ROWS);
-  });
-});
 
 describe("reading a queue somebody typed", () => {
   test("keeps the piece letters and ignores everything else", () => {

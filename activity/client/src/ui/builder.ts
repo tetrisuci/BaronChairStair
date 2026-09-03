@@ -48,7 +48,7 @@ import {
   lossFromPage,
   MAX_GOAL,
   MAX_QUEUE,
-  MIN_ROWS,
+  MAX_ROWS,
   PALETTE,
   pageOf,
   paintCells,
@@ -57,7 +57,6 @@ import {
   sanitizeGoal,
   summaryOf,
   toCode,
-  visibleRowsFor,
   warningFor,
 } from "./builder-state";
 
@@ -111,7 +110,6 @@ export function createBuilder(callbacks: BuilderCallbacks): Builder {
   let bench: BuilderState = EMPTY_STATE;
   let paint: Paint = "g";
   let history: Step[] = [];
-  let visibleRows = MIN_ROWS;
   /** A cell index, for the keyboard. Not a selection — nothing else reads it. */
   let cursor = 0;
   /** Non-null only between a pointerdown and the pointerup that ends the stroke. */
@@ -158,7 +156,7 @@ export function createBuilder(callbacks: BuilderCallbacks): Builder {
       "aria-label": "Puzzle board",
       tabindex: 0,
       "aria-colcount": COLUMNS,
-      "aria-rowcount": MIN_ROWS,
+      "aria-rowcount": MAX_ROWS,
     },
   });
 
@@ -261,7 +259,6 @@ export function createBuilder(callbacks: BuilderCallbacks): Builder {
   /** Nothing else assigns `bench`, so nothing else can skip the redraw. */
   function setBench(next: BuilderState): void {
     bench = next;
-    visibleRows = visibleRowsFor(next);
     render();
   }
 
@@ -308,8 +305,8 @@ export function createBuilder(callbacks: BuilderCallbacks): Builder {
   /** The grid node holding a cell index, or null when that row is off the board. */
   function nodeAt(index: number): HTMLElement | null {
     const row = Math.floor(index / COLUMNS);
-    if (row < 0 || row >= visibleRows) return null;
-    return cellNodes[(visibleRows - 1 - row) * COLUMNS + (index % COLUMNS)] ?? null;
+    if (row < 0 || row >= MAX_ROWS) return null;
+    return cellNodes[(MAX_ROWS - 1 - row) * COLUMNS + (index % COLUMNS)] ?? null;
   }
 
   function applyCell(node: HTMLElement, index: number, type: PaintedCell | undefined): void {
@@ -335,10 +332,10 @@ export function createBuilder(callbacks: BuilderCallbacks): Builder {
     const rows: HTMLElement[] = [];
     // Top row first, because that is document order; the model counts up from
     // the floor, so the two are read in opposite directions on purpose.
-    for (let fromTop = 0; fromTop < visibleRows; fromTop++) {
+    for (let fromTop = 0; fromTop < MAX_ROWS; fromTop++) {
       const cells: HTMLElement[] = [];
       for (let column = 0; column < COLUMNS; column++) {
-        const index = cellIndex(column, visibleRows - 1 - fromTop);
+        const index = cellIndex(column, MAX_ROWS - 1 - fromTop);
         const node = el("div", {
           class: "build__cell",
           attrs: {
@@ -358,12 +355,12 @@ export function createBuilder(callbacks: BuilderCallbacks): Builder {
         ),
       );
     }
-    grid.setAttribute("aria-rowcount", String(visibleRows));
+    grid.setAttribute("aria-rowcount", String(MAX_ROWS));
     replaceChildren(grid, ...rows);
   }
 
   function render(): void {
-    cursor = clamp(0, cursor, visibleRows * COLUMNS - 1);
+    cursor = clamp(0, cursor, MAX_ROWS * COLUMNS - 1);
     const code = toCode(bench);
 
     swatches.forEach((button, index) => {
@@ -372,10 +369,10 @@ export function createBuilder(callbacks: BuilderCallbacks): Builder {
       button.setAttribute("aria-checked", String(on));
     });
 
-    if (grid.childElementCount !== visibleRows) rebuildGrid();
-    for (let fromTop = 0; fromTop < visibleRows; fromTop++) {
+    if (grid.childElementCount !== MAX_ROWS) rebuildGrid();
+    for (let fromTop = 0; fromTop < MAX_ROWS; fromTop++) {
       for (let column = 0; column < COLUMNS; column++) {
-        const index = cellIndex(column, visibleRows - 1 - fromTop);
+        const index = cellIndex(column, MAX_ROWS - 1 - fromTop);
         const node = cellNodes[fromTop * COLUMNS + column];
         if (node) applyCell(node, index, bench.cells.get(index));
       }
@@ -452,10 +449,10 @@ export function createBuilder(callbacks: BuilderCallbacks): Builder {
     );
     const fromTop = clamp(
       0,
-      Math.floor((event.clientY - box.top - grid.clientTop) / (height / visibleRows)),
-      visibleRows - 1,
+      Math.floor((event.clientY - box.top - grid.clientTop) / (height / MAX_ROWS)),
+      MAX_ROWS - 1,
     );
-    return cellIndex(column, visibleRows - 1 - fromTop);
+    return cellIndex(column, MAX_ROWS - 1 - fromTop);
   }
 
   /**
@@ -545,7 +542,7 @@ export function createBuilder(callbacks: BuilderCallbacks): Builder {
     const row = Math.floor(cursor / COLUMNS);
     const column = cursor % COLUMNS;
     const move = (nextColumn: number, nextRow: number): boolean => {
-      cursor = cellIndex(clamp(0, nextColumn, COLUMNS - 1), clamp(0, nextRow, visibleRows - 1));
+      cursor = cellIndex(clamp(0, nextColumn, COLUMNS - 1), clamp(0, nextRow, MAX_ROWS - 1));
       render();
       return true;
     };

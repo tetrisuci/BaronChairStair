@@ -21,7 +21,7 @@ import { createDailyMenu } from "../client/src/ui/daily-tiers";
 import { withRush } from "../client/src/ui/daily-board";
 import { createRushResultCard } from "../client/src/ui/rush";
 import { createBuilder } from "../client/src/ui/builder";
-import { MIN_ROWS } from "../client/src/ui/builder-state";
+import { MAX_ROWS } from "../client/src/ui/builder-state";
 import type { RushPlayed } from "../client/src/api";
 
 let window: Window;
@@ -344,10 +344,10 @@ describe("the builder", () => {
     expect(scrollers).toHaveLength(0);
   });
 
-  test("draws ten columns and a board that starts at the minimum height", () => {
+  test("draws ten columns and the whole twenty-row field", () => {
     const builder = mountedBuilder();
     const rows = builder.element.querySelectorAll(".build__row");
-    expect(rows).toHaveLength(MIN_ROWS);
+    expect(rows).toHaveLength(MAX_ROWS);
     expect(rows[0]!.querySelectorAll(".build__cell")).toHaveLength(10);
   });
 });

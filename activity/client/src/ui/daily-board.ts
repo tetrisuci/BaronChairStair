@@ -87,7 +87,13 @@ export function createDailyBoard(): DailyBoard {
         ...merged.map((row, index) =>
           el(
             "div",
-            { class: `board-list__row${row.player.id === selfId ? " board-list__row--self" : ""}` },
+            {
+              // `--marks` because this row has a fourth column the shared one
+              // does not: the three tier squares, between rank and name.
+              class:
+                `board-list__row board-list__row--marks` +
+                (row.player.id === selfId ? " board-list__row--self" : ""),
+            },
             el("span", { class: "board-list__rank", text: `${index + 1}` }),
             el("span", { class: "board__marks" }, ...DAILY_TIERS.map((tier) => mark(row, tier))),
             el("span", { class: "board-list__name", text: row.player.username }),

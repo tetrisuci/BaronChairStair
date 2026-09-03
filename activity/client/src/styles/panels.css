@@ -659,9 +659,20 @@
  * the container's box, and a gutter would put the seams half a cell out. The
  * ruling is an inset shadow on each cell instead.
  */
+/*
+ * Height-led, not width-led.
+ *
+ * The field is ten wide and twenty tall, so square cells make the board twice
+ * as tall as it is wide — sizing it by width put the floor well below the
+ * bottom of a Discord window. The height is chosen first and the width follows
+ * from the ratio, so the whole field is always on screen.
+ */
 .build__grid {
   flex: 0 0 auto;
-  width: min(100%, 320px);
+  height: min(58vh, 520px);
+  aspect-ratio: 1 / 2;
+  width: auto;
+  max-width: 100%;
   border: var(--edge) solid var(--ink);
   border-radius: var(--radius-sm);
   background: var(--cream);
@@ -669,9 +680,10 @@
   /* A paint stroke must not scroll the screen out from under itself. */
   touch-action: none;
 }
+.build__grid { display: grid; grid-template-rows: repeat(20, 1fr); }
 .build__row { display: grid; grid-template-columns: repeat(10, 1fr); }
+/* Square by construction now: twenty equal rows in a box of ratio 1:2. */
 .build__cell {
-  aspect-ratio: 1;
   box-shadow: inset 0 0 0 1px var(--board-grid);
 }
 .build__cell--on { box-shadow: inset 0 0 0 2px var(--ink); }

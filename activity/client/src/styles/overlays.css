@@ -105,7 +105,22 @@
   font-weight: 600;
   font-size: 12px;
 }
-.board-list__score { font-family: var(--mono); font-size: 12px; font-variant-numeric: tabular-nums; }
+.board-list__score {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  /* "2/3 · 2:14.9" is one score, and a grid column will happily break it. */
+  white-space: nowrap;
+}
+
+/*
+ * The day's board carries a fourth column: the three marks, between the rank
+ * and the name. Without its own template those marks land in the name's column
+ * and the score wraps onto a line of its own — the row stops being a row.
+ */
+.board-list__row--marks {
+  grid-template-columns: 20px auto minmax(0, 1fr) auto;
+}
 
 /* ── Solution walkthrough ─────────────────────────────────────────────────── */
 

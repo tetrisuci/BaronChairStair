@@ -33,9 +33,6 @@ export interface BuilderState {
   readonly goal: string;
 }
 
-/** The archive's median stack is six rows; ten is a board with room to think. */
-export const MIN_ROWS = 10;
-export const HEADROOM_ROWS = 2;
 /** Twenty. The app cannot draw a taller board than it plays on. */
 export const MAX_ROWS = BOARD_HEIGHT;
 /** The archive's longest real queue is 74, so the cap sits above every existing code. */
@@ -108,15 +105,6 @@ export function paintCells(
   return changed ? { ...state, cells: next } : state;
 }
 
-/** How tall the board should be drawn: the stack, plus somewhere to build. */
-export function visibleRowsFor(state: BuilderState): number {
-  let top = -1;
-  for (const index of state.cells.keys()) {
-    const row = Math.floor(index / COLUMNS);
-    if (row > top) top = row;
-  }
-  return clamp(MIN_ROWS, top + 1 + HEADROOM_ROWS, MAX_ROWS);
-}
 
 /** Tolerant on purpose: "t, l j sZ" is how somebody reads a queue out loud. */
 export function parsePieces(text: string): PieceType[] {
