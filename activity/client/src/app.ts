@@ -36,6 +36,7 @@ import {
   createWalkthroughPanel,
 } from "./ui/results";
 import { createExplorer } from "./ui/explorer";
+import { createBuilder, type Builder } from "./ui/builder";
 import { DuelClient } from "./game/duel";
 import {
   createDuelIntro,
@@ -132,8 +133,17 @@ export class App {
     onRush: () => this.enterRush(),
     onDuel: () => this.enterDuel(),
     onExplore: () => this.enterExplorer(),
+    onBuild: () => this.enterBuilder(),
     onPlayTier: (tier) => this.showDailyTier(tier),
   });
+  /**
+   * Built on first use, then kept for the session.
+   *
+   * Two hundred grid cells is not something a player who never opens the
+   * builder should pay for at boot — and once it exists it holds the board
+   * being laid out, which has to survive a trip to the front door and back.
+   */
+  private builder: Builder | null = null;
   private daily: DailyResponse | null = null;
   /**
    * Which of the day's three is on the board.
@@ -514,6 +524,20 @@ export class App {
       .filter(Boolean)
       .join(" ");
     replaceChildren(this.deck, el("div", { class: `screen ${modifiers}`.trim() }, ...cards));
+  }
+
+  // ── Builder ────────────────────────────────────────────────────────────────
+
+  /**
+   * The authoring screen. No mode of its own: nothing is running behind it, the
+   * keyboard belongs to whatever is focused inside it, and `leaveForScreen`
+   * has already put away the run, rush or duel that was live when Build was
+   * clicked — which is the whole of what a screen has to do here.
+   */
+  private enterBuilder(): void {
+    this.leaveForScreen();
+    this.builder ??= createBuilder({ onClose: () => this.showHome() });
+    this.showScreen({ wide: true, fill: true }, this.builder.element);
   }
 
   // ── 1v1 ────────────────────────────────────────────────────────────────────

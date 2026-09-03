@@ -439,7 +439,8 @@
 .explore__slot { display: contents; }
 
 .explore__search,
-.explore__number {
+.explore__number,
+.build__field {
   padding: 5px 8px;
   border: var(--edge) solid var(--ink);
   border-radius: var(--radius-sm);
@@ -456,7 +457,8 @@
 .explore__select { flex: 1 1 140px; }
 
 .explore__search:focus-visible,
-.explore__number:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
+.explore__number:focus-visible,
+.build__field:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
 
 .explore__count {
   margin: 0;
@@ -601,6 +603,100 @@
   flex: 1 1 120px;
   padding-block: 12px;
 }
+
+/* ── Builder ──────────────────────────────────────────────────────────────── */
+
+/*
+ * Nothing in here sets `overflow-y`. The builder is a stack of fixed blocks, not
+ * an endless list, so the screen scrolls the card and the `.explore__list--flow`
+ * trap above never arises.
+ */
+
+.build__palette {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.build__swatch {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 7px;
+  border: var(--edge) solid var(--ink-line);
+  border-radius: var(--radius-sm);
+  background: var(--cream);
+}
+.build__swatch--on {
+  background: var(--sun);
+  border-color: var(--ink);
+  box-shadow: 2px 2px 0 var(--ink);
+}
+.build__chip {
+  width: 16px;
+  height: 16px;
+  border: 1px solid var(--ink);
+  border-radius: 2px;
+}
+/* Erase has no colour of its own; the dashed edge is what says so. */
+.build__swatch--erase .build__chip { background: var(--cream); border-style: dashed; }
+.build__key {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--ink);
+}
+
+.build__stage {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+/*
+ * No gap anywhere in the grid: a pointer is mapped to a cell by arithmetic off
+ * the container's box, and a gutter would put the seams half a cell out. The
+ * ruling is an inset shadow on each cell instead.
+ */
+.build__grid {
+  flex: 0 0 auto;
+  width: min(100%, 320px);
+  border: var(--edge) solid var(--ink);
+  border-radius: var(--radius-sm);
+  background: var(--cream);
+  box-shadow: var(--drop) var(--drop) 0 var(--ink);
+  /* A paint stroke must not scroll the screen out from under itself. */
+  touch-action: none;
+}
+.build__row { display: grid; grid-template-columns: repeat(10, 1fr); }
+.build__cell {
+  aspect-ratio: 1;
+  box-shadow: inset 0 0 0 1px var(--board-grid);
+}
+.build__cell--on { box-shadow: inset 0 0 0 2px var(--ink); }
+.build__cell--cursor { outline: var(--edge) dashed var(--ink); outline-offset: -3px; }
+
+.build__side { flex: 1 1 200px; display: grid; gap: 8px; align-content: start; }
+.build__hold { min-width: 92px; }
+.build__legend { font-family: var(--mono); font-size: 10px; }
+
+/*
+ * Wrapping, not scrolling: a 74-piece queue takes about six lines in a 720px
+ * card, and a horizontal scroller here would be a second scroller.
+ */
+.build__strip { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; }
+.build__strip-first {
+  padding: 1px;
+  border: 1px solid var(--ink);
+  border-radius: 2px;
+  background: var(--sun);
+}
+
+.build__pieces { flex: 1 1 160px; text-transform: uppercase; }
+.build__letter { width: 44px; text-align: center; text-transform: uppercase; }
+.build__code { flex: 1 1 200px; }
+.build__warning { color: var(--warn); }
 
 /* ── The day's one board ──────────────────────────────────────────────────── */
 

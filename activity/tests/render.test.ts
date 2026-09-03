@@ -20,6 +20,8 @@ import { activeRun } from "../client/src/game/active-run";
 import { createDailyMenu } from "../client/src/ui/daily-tiers";
 import { withRush } from "../client/src/ui/daily-board";
 import { createRushResultCard } from "../client/src/ui/rush";
+import { createBuilder } from "../client/src/ui/builder";
+import { MIN_ROWS } from "../client/src/ui/builder-state";
 import type { RushPlayed } from "../client/src/api";
 
 let window: Window;
@@ -320,5 +322,32 @@ describe("rush attached to the day's board", () => {
     // Replays are unlimited and unscored; the best is the interesting one, not
     // whichever came back last.
     expect(withRush([], [rushRun("ada", 3), rushRun("ada", 8), rushRun("ada", 5)])[0]!.rush).toBe(8);
+  });
+});
+
+describe("the builder", () => {
+  const mountedBuilder = () => {
+    const builder = createBuilder({ onClose: () => {} });
+    window.document.body.append(builder.element as never);
+    return builder;
+  };
+
+  test("creates no scroller of its own, so the screen scrolls the card", () => {
+    // The trap `.explore__list--flow` exists for: a nested scroller inside a
+    // card that itself scrolls eats the wheel wherever the pointer sits. The
+    // builder is a stack of fixed blocks, so it must own no scroller at all.
+    const builder = mountedBuilder();
+    const scrollers = [...builder.element.querySelectorAll("*")].filter((node) => {
+      const overflow = window.getComputedStyle(node as never).overflowY;
+      return overflow === "auto" || overflow === "scroll";
+    });
+    expect(scrollers).toHaveLength(0);
+  });
+
+  test("draws ten columns and a board that starts at the minimum height", () => {
+    const builder = mountedBuilder();
+    const rows = builder.element.querySelectorAll(".build__row");
+    expect(rows).toHaveLength(MIN_ROWS);
+    expect(rows[0]!.querySelectorAll(".build__cell")).toHaveLength(10);
   });
 });
