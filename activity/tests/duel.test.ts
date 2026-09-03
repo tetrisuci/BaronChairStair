@@ -276,7 +276,7 @@ function scoreOf(duel: DuelView, playerId: string): number {
 
 // ── The archive, answers and all ─────────────────────────────────────────────
 
-const archive: Puzzle[] = JSON.parse(readFileSync("data/puzzles.json", "utf8")).puzzles;
+import { archive, hasSolutions, solutionOf } from "./archive";
 
 function setupFor(puzzle: Puzzle) {
   return { board: decodeBoard(puzzle.board, ENGINE_ROWS), queue: puzzle.queue, hold: puzzle.hold };
@@ -308,7 +308,7 @@ function solvingLog(puzzle: Puzzle): InputEvent[] {
     frame += 2;
   };
 
-  for (const step of puzzle.solution.slice(0, pieceBudget(puzzle))) {
+  for (const step of solutionOf(puzzle).slice(0, pieceBudget(puzzle))) {
     if (toLetter(engine.falling.symbol) !== step.piece) {
       tap("hold");
       engine.hold(false, true);

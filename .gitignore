@@ -376,3 +376,13 @@ activity/data/*.sqlite-*
 
 # The raw puzzle archive export. Decoded output lives in activity/data/puzzles.json.
 tmp/
+
+# The retired /bennxt job tracker's inputs: a real resume and H-1B research.
+# Purged from history on 2026-09-02; never track this directory again.
+# (activity/data/ is a different directory and stays tracked.)
+/data/
+
+# The answers. `bun run puzzles` writes these beside the tracked puzzles.json,
+# which deliberately has none: a solution sitting next to its puzzle in a public
+# repository is a published answer key. Regenerate from the club's archive.
+activity/data/solutions.json

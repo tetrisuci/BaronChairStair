@@ -82,10 +82,19 @@ export interface Puzzle {
   readonly hold: Mino | null;
   /** Garbage the reference solution sends — the score to match. */
   readonly targetAttack: number;
-  /** The reference solution, used for the reveal and to derive the target. */
-  readonly solution: readonly SolutionStep[];
+  /**
+   * The reference solution, used for the reveal.
+   *
+   * Optional because it is not shipped in `data/puzzles.json`, which is a file
+   * in a public repository: an answer key next to the puzzles is an answer key
+   * for anybody. The build writes them to `data/solutions.json`, which is not
+   * tracked, and the server merges that in at load if it is there. A checkout
+   * without it serves and scores every puzzle exactly as before and simply has
+   * no reveal to give.
+   */
+  readonly solution?: readonly SolutionStep[];
   /** Original blueprint codes, so a puzzle can always be traced to the archive. */
-  readonly source: {
+  readonly source?: {
     readonly puzzle: string;
     readonly solution: string;
   };

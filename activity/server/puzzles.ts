@@ -6,7 +6,8 @@
  * at startup instead of halfway through someone's run.
  */
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import {
   byTier,
   DAILY_TIERS,
@@ -17,6 +18,27 @@ import {
   puzzleIndexForDay,
 } from "../shared/daily";
 import { BOARD_WIDTH, type Puzzle, type PuzzlePrompt, toPrompt } from "../shared/puzzle";
+
+/**
+ * Folds `data/solutions.json` back in, when it is there.
+ *
+ * The answers are not in the tracked archive — a solution beside its puzzle in
+ * a public repository is a published answer key — so the build writes them
+ * separately and this is where the two halves meet. Absent, every puzzle still
+ * loads, plays and scores; only the reveal has nothing to show, which is the
+ * right way round for the thing that must not leak.
+ */
+function withSolutions(puzzles: Puzzle[], archivePath: string): Puzzle[] {
+  const beside = join(dirname(archivePath), "solutions.json");
+  if (!existsSync(beside)) return puzzles;
+  const book = new Map<number, Pick<Puzzle, "solution" | "source">>(
+    (JSON.parse(readFileSync(beside, "utf8")).solutions as Puzzle[]).map((entry) => [
+      entry.id,
+      { solution: entry.solution, source: entry.source },
+    ]),
+  );
+  return puzzles.map((puzzle) => ({ ...puzzle, ...book.get(puzzle.id) }));
+}
 
 export interface DailyPuzzles {
   readonly day: number;
@@ -51,9 +73,8 @@ function assertValid(puzzle: unknown, index: number): Puzzle {
     throw problem(`hold is ${JSON.stringify(candidate.hold)}`);
   }
   if (!(candidate.targetAttack > 0)) throw problem("target attack must be positive");
-  if (!Array.isArray(candidate.solution) || candidate.solution.length === 0) {
-    throw problem("missing solution");
-  }
+  // No solution check. They live in data/solutions.json, which is untracked, so
+  // a checkout without it is the ordinary case rather than a broken build.
   return candidate;
 }
 
@@ -99,7 +120,7 @@ export class PuzzleArchive {
     if (!Array.isArray(list) || list.length === 0) {
       throw new Error(`${path} contains no puzzles`);
     }
-    return new PuzzleArchive(list.map(assertValid), dayOptions);
+    return new PuzzleArchive(withSolutions(list.map(assertValid), path), dayOptions);
   }
 
   get(id: number): Puzzle | undefined {

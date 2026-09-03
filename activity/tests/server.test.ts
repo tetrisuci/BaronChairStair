@@ -12,6 +12,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { archive, solutionOf } from "./archive";
 import { readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -186,7 +187,7 @@ describe("request handling", () => {
  * be reconstructed from the answer on disk and sent as keystrokes, exactly as
  * `tools/e2e-submit.ts` does against a running server.
  */
-const archive: Puzzle[] = JSON.parse(readFileSync("data/puzzles.json", "utf8")).puzzles;
+// Merged with the untracked answers; see tests/archive.ts.
 
 /** Enough segments for a skip in the middle with solves on either side of it. */
 const SEGMENTS_PLAYED = 5;
@@ -251,7 +252,7 @@ function solvingLog(puzzle: Puzzle): InputEvent[] {
     frame += 2;
   };
 
-  for (const step of puzzle.solution.slice(0, pieceBudget(puzzle))) {
+  for (const step of solutionOf(puzzle).slice(0, pieceBudget(puzzle))) {
     if (toLetter(engine.falling.symbol) !== step.piece) {
       tap("hold");
       engine.hold(false, true);

@@ -13,7 +13,8 @@ real TETR.IO engine to learn what it actually sends, and uses that number as the
 day's target.
 
 ```
-tmp/*.csv ──► tools/build-puzzles.ts ──► data/puzzles.json ──► server ──► browser
+tmp/*.csv ──► tools/build-puzzles.ts ──┬─► data/puzzles.json   ──► server ──► browser
+                                       └─► data/solutions.json ──► server (reveals only)
    archive        decode + replay            138 puzzles       daily     the game
 ```
 
@@ -36,7 +37,8 @@ tmp/*.csv ──► tools/build-puzzles.ts ──► data/puzzles.json ──►
 
 ```sh
 bun install
-bun run puzzles       # tmp/*.csv -> data/puzzles.json  (already committed)
+bun run puzzles       # tmp/*.csv -> data/puzzles.json (committed)
+                      #            -> data/solutions.json (never committed)
 bun run build         # client -> dist/
 bun run dev           # server on :3001, serving dist/
 ```
@@ -299,18 +301,19 @@ The opponent is a bar and a score, never a board — a board part-way through a
 puzzle is a partial solution to it, and losing should not come with a hint. The
 archive likewise refuses the answer to a puzzle you are currently duelling on.
 
-**And none of that makes a duel cheat-proof.** `data/puzzles.json` is in this
-public repository, so every answer is already on disk for anyone who wants
-one, and the pathfinder that turns an answer into a keystroke log ships in the
-client bundle. The scheme proves a submitted log really solves the puzzle it
-claims; it cannot prove a human made it. That is the same trade the daily and
+**It still cannot prove a human made the log.** The answers are no longer in
+this repository — `data/puzzles.json` carries no solutions and
+`data/solutions.json` is untracked — but the pathfinder that turns a board into
+a keystroke log ships in the client bundle, so a determined player can still
+derive one. The scheme proves a submitted log really solves the puzzle it
+claims; it cannot prove a person typed it. That is the same trade the daily and
 rush make, and it costs more here, because what a scripted opponent takes is
 somebody's match rather than a place on a board.
 
-**What that proves, and what it does not.** `data/puzzles.json` is committed to
-a public repository, and `GET /api/archive/:id` hands any signed-in player the
-solution to every puzzle except today's, so the answers to a rush sequence are
-public knowledge before anybody runs it. The scheme therefore proves exactly
+**What that proves, and what it does not.** `GET /api/archive/:id` hands a
+signed-in player the solution to a puzzle they have earned, and no longer to
+one they have not — and the answers are no longer sitting in the repository
+either. The scheme therefore proves exactly
 one thing: that the submitted inputs legally solve those puzzles, in that
 order, inside five minutes the server measured itself. It does not prove a
 human made them, and a scripted client beats it. A fixed sequence per day also
@@ -364,6 +367,11 @@ are SIL Open Font Licence.
 ## Regenerating the puzzle data
 
 `data/puzzles.json` is committed, so a checkout runs without the spreadsheet.
+`data/solutions.json` is not: an answer key beside its puzzles in a public
+repository is a published answer key. Without it every puzzle still loads,
+plays and scores — only the reveal has nothing to show, which is the right way
+round for the thing that must not leak. Regenerate it with `bun run puzzles`
+against the club's archive.
 When the archive gains puzzles, re-export the sheets into `tmp/` and run:
 
 ```sh

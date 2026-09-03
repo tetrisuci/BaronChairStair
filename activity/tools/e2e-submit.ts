@@ -81,7 +81,14 @@ function buildLog(puzzle: Puzzle): InputEvent[] {
     frame += 2;
   };
 
-  for (const step of puzzle.solution.slice(0, pieceBudget(puzzle))) {
+  const solution = puzzle.solution;
+  if (!solution) {
+    throw new Error(
+      "That puzzle has no solution loaded. data/solutions.json is untracked — " +
+        "run `bun run puzzles` against the club's archive to write it.",
+    );
+  }
+  for (const step of solution.slice(0, pieceBudget(puzzle))) {
     if (toLetter(engine.falling.symbol) !== step.piece) {
       tap("hold");
       engine.hold(false, true);

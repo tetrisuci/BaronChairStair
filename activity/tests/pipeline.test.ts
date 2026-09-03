@@ -21,7 +21,7 @@ const ENGINE_ROWS = 40;
 /** One frame down, one frame up: long enough to register, short of DAS. */
 const FRAMES_PER_INPUT = 2;
 
-const puzzles: Puzzle[] = JSON.parse(readFileSync("data/puzzles.json", "utf8")).puzzles;
+import { archive as puzzles, hasSolutions, solutionOf } from "./archive";
 
 function setupFor(puzzle: Puzzle) {
   return {
@@ -43,7 +43,7 @@ function inputLogFor(puzzle: Puzzle): InputEvent[] {
     frame += FRAMES_PER_INPUT;
   };
 
-  for (const step of puzzle.solution) {
+  for (const step of solutionOf(puzzle)) {
     if (toLetter(engine.falling.symbol) !== step.piece) {
       tap("hold");
       engine.hold(false, true);
@@ -66,8 +66,8 @@ describe("puzzle archive", () => {
     expect(puzzles.length).toBeGreaterThan(100);
     for (const puzzle of puzzles) {
       expect(puzzle.targetAttack).toBeGreaterThan(0);
-      expect(puzzle.solution.length).toBeGreaterThan(0);
-      expect(puzzle.solution.length).toBeLessThanOrEqual(pieceBudget(puzzle));
+      expect(solutionOf(puzzle).length).toBeGreaterThan(0);
+      expect(solutionOf(puzzle).length).toBeLessThanOrEqual(pieceBudget(puzzle));
       expect(puzzle.board.every((row) => row.length === 10)).toBe(true);
     }
   });
@@ -88,7 +88,7 @@ describe("verifyRun", () => {
       // replay can only match the target or beat it. Falling short is the
       // drift this guards against.
       expect(result.attack).toBeGreaterThanOrEqual(puzzle.targetAttack);
-      expect(result.placements.length).toBe(puzzle.solution.length);
+      expect(result.placements.length).toBe(solutionOf(puzzle).length);
     },
   );
 });

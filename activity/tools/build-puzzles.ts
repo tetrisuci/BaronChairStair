@@ -35,10 +35,15 @@ const META_SHEET = "Copy of Puzzles Archive - Puzzles.csv";
 interface CliOptions {
   archive: string;
   out: string;
+  solutions: string;
 }
 
 function parseArgs(argv: readonly string[]): CliOptions {
-  const options: CliOptions = { archive: "../tmp", out: "data/puzzles.json" };
+  const options: CliOptions = {
+    archive: "../tmp",
+    out: "data/puzzles.json",
+    solutions: "data/solutions.json",
+  };
   for (let i = 0; i < argv.length; i += 2) {
     const flag = argv[i];
     const value = argv[i + 1];
@@ -181,7 +186,26 @@ function main(): void {
   }
 
   mkdirSync(dirname(options.out), { recursive: true });
-  writeFileSync(options.out, `${JSON.stringify({ puzzles }, null, 1)}\n`);
+  // Two files, and only one of them is tracked. The answers are the whole game
+  // — a puzzle whose solution sits beside it in a public repository is a puzzle
+  // with a published answer key — so they go to their own file, which
+  // .gitignore keeps out of the repo, and the server merges them back at load.
+  const prompts = puzzles.map(({ solution: _s, source: _src, ...prompt }) => prompt);
+  writeFileSync(options.out, `${JSON.stringify({ puzzles: prompts }, null, 1)}\n`);
+  writeFileSync(
+    options.solutions,
+    `${JSON.stringify(
+      {
+        solutions: puzzles.map((puzzle) => ({
+          id: puzzle.id,
+          solution: puzzle.solution,
+          source: puzzle.source,
+        })),
+      },
+      null,
+      1,
+    )}\n`,
+  );
 
   const goalAgreement = puzzles.filter((p) => goalMatchesSolution(p)).length;
   console.log(`built ${puzzles.length} puzzles -> ${options.out}`);
@@ -201,7 +225,8 @@ function main(): void {
 function goalMatchesSolution(puzzle: Puzzle): boolean {
   const goal = puzzle.goal.toLowerCase();
   const counts = new Map<string, number>();
-  for (const step of puzzle.solution) {
+  // Built here a few lines up, so it is present by construction.
+  for (const step of puzzle.solution ?? []) {
     if (step.clear) counts.set(step.clear, (counts.get(step.clear) ?? 0) + 1);
   }
   const aliases: Record<string, readonly string[]> = {
