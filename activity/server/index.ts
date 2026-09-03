@@ -528,21 +528,33 @@ app.post("/api/rush/start", requireSession, async (c) => {
   const body = await c.req.json<{ practice?: unknown }>().catch(() => ({}) as { practice?: unknown });
   const practice = body.practice === true;
 
-  if (!practice && store.rushRunFor(day, session.player.id)) {
-    throw new HTTPException(409, {
-      message: "Today's rush is already on the board. Practice runs are unlimited.",
-    });
-  }
+  // The daily rush can be played as often as you like. Only the first one of
+  // the day is filed, and a replay keeps the day's own sequence rather than
+  // being pushed into practice: "let me try that again" means that stack of
+  // puzzles, not a fresh random one.
+  //
+  // `ranked` is decided here and travels inside the signed ticket, so the run
+  // that comes back cannot claim to be the first when it is the fourth.
+  const filed = store.rushRunFor(day, session.player.id) !== null;
+  const ranked = !practice && !filed;
 
-  // A practice seed the client never chose, so nobody can re-roll for a soft
-  // sequence without paying the five minutes for it.
-  const seed = practice ? (Math.random() * 0x1_0000_0000) >>> 0 : dailyRushSeed(day);
+  /*
+   * The day's shared sequence belongs to the run that is scored, and to that
+   * run only. Everyone gets the same forty in the same order for the one
+   * attempt that reaches the board, which is the whole basis for comparing two
+   * players — and every run after it draws its own, because a replay that deals
+   * the identical stack is a memory test rather than another go at the mode.
+   *
+   * The seed is the server's either way, never the client's, so nobody can
+   * re-roll for a soft sequence without paying the five minutes for it.
+   */
+  const seed = ranked ? dailyRushSeed(day) : (Math.random() * 0x1_0000_0000) >>> 0;
   const ticket: RushTicket = {
     playerId: session.player.id,
     guildId: session.guildId,
     day,
     seed,
-    ranked: !practice,
+    ranked,
     startedAt: Date.now(),
   };
 
@@ -640,11 +652,26 @@ app.post("/api/rush/run", requireSession, async (c) => {
     elapsedMs: Math.min(elapsedMs, RUSH_DURATION_MS),
   };
 
+  /**
+   * What happened on each puzzle, in the order they were played.
+   *
+   * The verifier's own answer rather than the client's: the end screen lists
+   * these, and a screen that called something solved which the server had just
+   * refused would be the one place the two disagree in front of the player.
+   * Only the puzzles actually reached — the rest were never seen.
+   */
+  const played = results.map((outcome, index) => ({
+    id: puzzles[index]!.id,
+    title: puzzles[index]!.title,
+    solved: outcome.solved,
+  }));
+
   // Practice never touches the board. It exists so the ranked run is not the
   // only place to learn the mode.
   if (!ticket.ranked) {
     return c.json({
       ranked: false,
+      played,
       run: { day: ticket.day, player: session.player, createdAt: Date.now(), ...result },
       isFirst: false,
       best: store.bestRush(session.player.id),
@@ -657,6 +684,7 @@ app.post("/api/rush/run", requireSession, async (c) => {
   const { run, isFirst } = store.recordRushRun(ticket.day, session.player, ticket.guildId, result);
   return c.json({
     ranked: true,
+    played,
     run,
     isFirst,
     best: store.bestRush(session.player.id),

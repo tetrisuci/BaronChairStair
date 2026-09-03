@@ -488,6 +488,28 @@
   scrollbar-color: var(--ink-line) transparent;
 }
 
+/*
+ * The same list, as a section of a card rather than as the screen.
+ *
+ * A scroller inside a scroller is only right when the inner one is the point,
+ * which it is on the explorer and in the 1v1 room list — both mounted with
+ * `screen--fill`, where the card owns the height and the list is what moves.
+ * On a card that scrolls as a whole it is two bugs at once: `overscroll-behavior:
+ * contain` swallows the wheel whenever the pointer is over a row, so the page
+ * stops scrolling under the cursor, and the list has no height to scroll within
+ * anyway, so it just grows and pushes the rest of the card off the bottom.
+ *
+ * Here it flows, and the screen scrolls the lot.
+ */
+.explore__list--flow {
+  min-height: 0;
+  /* Longhand, to undo the longhand above it: a shorthand would rely on source
+     order beating a more specific-looking declaration, which is true but not
+     worth making a reader check. */
+  overflow-y: visible;
+  overscroll-behavior: auto;
+}
+
 .explore__item {
   display: grid;
   grid-template-columns: 46px minmax(0, 1fr) auto;

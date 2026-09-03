@@ -82,8 +82,17 @@ export interface RushStart {
   readonly puzzles: readonly PuzzlePrompt[];
 }
 
+/** One puzzle of a finished rush, as the verifier scored it. */
+export interface RushPlayed {
+  readonly id: number;
+  readonly title: string;
+  readonly solved: boolean;
+}
+
 export interface RushSubmitResponse {
   readonly ranked: boolean;
+  /** In play order, and only the puzzles actually reached. */
+  readonly played: readonly RushPlayed[];
   readonly run: RushRun;
   readonly isFirst: boolean;
   readonly best: number;

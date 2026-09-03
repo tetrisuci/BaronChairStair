@@ -94,12 +94,14 @@ function newRun(): PuzzleRun {
 }
 
 /**
- * Hard drop, then a piece seated with soft drop, then hard drop again.
+ * Hard drop, then a piece seated with soft drop and dropped under it, then
+ * hard drop again.
  *
- * The middle piece is the one that matters: it locks on its lock delay, frames
- * after the key that seated it, so the checkpoint that placement writes is a
- * log with soft drop still down. That is the ordinary way to place a piece —
- * gravity is zero, so nothing about it is a stunt.
+ * The middle piece is the one that matters: soft drop is still held when it
+ * locks, so the checkpoint that placement writes is a log with a key down. It
+ * used to lock on its lock delay instead, which was the ordinary way to place
+ * a piece until issue #8 removed the lock timer — nothing places a piece now
+ * but a hard drop, so the held key has to be arranged rather than waited for.
  */
 function playThreePieces(run: PuzzleRun): void {
   run.input("hardDrop", true);
@@ -108,7 +110,10 @@ function playThreePieces(run: PuzzleRun): void {
   pump(1);
 
   run.input("softDrop", true);
+  pump(2);
+  run.input("hardDrop", true);
   pumpUntil(() => run.snapshot().piecesPlaced === 2);
+  run.input("hardDrop", false);
   run.input("softDrop", false);
   pump(SAFE_LOCK_FRAMES);
 
@@ -124,7 +129,7 @@ beforeEach(() => {
 });
 
 describe("undo", () => {
-  test("plays three pieces, the middle one on its lock delay", () => {
+  test("plays three pieces, the middle one under a held soft drop", () => {
     const run = newRun();
     playThreePieces(run);
 
@@ -133,6 +138,8 @@ describe("undo", () => {
       "keydown:hardDrop",
       "keyup:hardDrop",
       "keydown:softDrop",
+      "keydown:hardDrop",
+      "keyup:hardDrop",
       "keyup:softDrop",
       "keydown:hardDrop",
       "keyup:hardDrop",
@@ -148,10 +155,15 @@ describe("undo", () => {
     expect(run.snapshot().piecesPlaced).toBe(2);
 
     const retained = structuredClone(run.log()) as InputEvent[];
+    // The two closers are undo's own: soft drop and hard drop were both down at
+    // the instant the second piece locked, so the prefix it kept ends mid-press
+    // and has to be closed before it is a log the server would accept.
     expect(retained.map((event) => `${event.type}:${event.data.key}`)).toEqual([
       "keydown:hardDrop",
       "keyup:hardDrop",
       "keydown:softDrop",
+      "keydown:hardDrop",
+      "keyup:hardDrop",
       "keyup:softDrop",
     ]);
 
@@ -180,12 +192,16 @@ describe("undo", () => {
     run.dispose();
   });
 
-  test("takes back one placement when a held key placed two in a row", () => {
+  test("takes back the last of two placements and leaves the first", () => {
     const run = newRun();
-    // Soft drop held across a lock seats the next piece too, so both placements
-    // are recorded at the same point in a log that is one keypress long.
-    run.input("softDrop", true);
+    run.input("hardDrop", true);
+    pumpUntil(() => run.snapshot().piecesPlaced === 1);
+    run.input("hardDrop", false);
+    pump(SAFE_LOCK_FRAMES);
+    run.input("hardDrop", true);
     pumpUntil(() => run.snapshot().piecesPlaced === 2);
+    run.input("hardDrop", false);
+    pump(1);
 
     expect(run.undo()).toBe(true);
     expect(run.snapshot().piecesPlaced).toBe(1);
@@ -205,7 +221,9 @@ describe("undo", () => {
     const before = run.log().length;
     run.input("softDrop", true);
     expect(run.log()).toHaveLength(before + 1);
+    run.input("hardDrop", true);
     pumpUntil(() => run.snapshot().piecesPlaced === 3);
+    run.input("hardDrop", false);
     run.input("softDrop", false);
 
     pump(PATIENCE);

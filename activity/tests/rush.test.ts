@@ -30,6 +30,7 @@ import {
   isRushEligible,
   RUSH_MAX_PIECES,
   RUSH_SEQUENCE_LENGTH,
+  rushBand,
   rushDifficulty,
   rushSequence,
 } from "../shared/rush";
@@ -89,13 +90,48 @@ describe("rushSequence", () => {
     }
   });
 
-  test("difficulty never goes down as the run goes on", () => {
+  test("the rung never goes down as the run goes on", () => {
+    // By rung, not by rating. The rating itself is allowed to dip inside a rung
+    // — that is what stops the run being the same ladder every time — but a run
+    // must never hand you something out of an easier rung than one you have
+    // already been given.
     for (const seed of SEEDS) {
-      const difficulties = rushSequence(puzzles, seed).map(rushDifficulty);
-      for (let index = 1; index < difficulties.length; index++) {
-        expect(difficulties[index]!).toBeGreaterThanOrEqual(difficulties[index - 1]!);
+      const bands = rushSequence(puzzles, seed).map(rushBand);
+      for (let index = 1; index < bands.length; index++) {
+        expect(bands[index]!).toBeGreaterThanOrEqual(bands[index - 1]!);
       }
     }
+  });
+
+  test("the order inside a rung is not the rating order", () => {
+    // The feature, stated as the thing that would be false without it: if the
+    // sequence were still sorted on the rating, every run would be
+    // non-decreasing all the way down and this would find no seed at all.
+    const dips = SEEDS.filter((seed) => {
+      const difficulties = rushSequence(puzzles, seed).map(rushDifficulty);
+      return difficulties.some((value, index) => index > 0 && value < difficulties[index - 1]!);
+    });
+    expect(dips.length).toBeGreaterThan(SEEDS.length / 2);
+  });
+
+  test("the same seed deals the same run, every time", () => {
+    // Load-bearing, not a nicety: the server re-derives the sequence from the
+    // seed in the ticket to score a run it never watched. A sequence that
+    // varied for a fixed seed would make every run unverifiable.
+    for (const seed of SEEDS.slice(0, 8)) {
+      const once = rushSequence(puzzles, seed).map((puzzle) => puzzle.id);
+      const twice = rushSequence(puzzles, seed).map((puzzle) => puzzle.id);
+      expect(twice).toEqual(once);
+    }
+  });
+
+  test("two seeds deal different orders", () => {
+    const orders = SEEDS.slice(0, 8).map((seed) =>
+      rushSequence(puzzles, seed)
+        .map((puzzle) => puzzle.id)
+        .join(","),
+    );
+    expect(new Set(orders).size).toBe(orders.length);
   });
 
   test("the ramp is a real climb and not a flat line that happens to be sorted", () => {
@@ -103,9 +139,15 @@ describe("rushSequence", () => {
     // the stronger question: does the run actually open somewhere a beginner
     // can start and end somewhere nobody reaches?
     for (const seed of SEEDS) {
-      const sequence = rushSequence(puzzles, seed);
-      expect(rushDifficulty(sequence[0]!)).toBeLessThanOrEqual(3);
-      expect(rushDifficulty(sequence[sequence.length - 1]!)).toBeGreaterThanOrEqual(9);
+      const difficulties = rushSequence(puzzles, seed).map(rushDifficulty);
+      expect(difficulties[0]!).toBeLessThanOrEqual(3);
+      // The end of the run is the hardest rung rather than the hardest single
+      // puzzle now, so this measures the climb rather than the final step.
+      const quarter = Math.floor(difficulties.length / 4);
+      const mean = (values: number[]) => values.reduce((a, b) => a + b, 0) / values.length;
+      expect(mean(difficulties.slice(-quarter))).toBeGreaterThan(
+        mean(difficulties.slice(0, quarter)) + 3,
+      );
     }
   });
 
@@ -178,9 +220,13 @@ describe("unrated puzzles in the ramp", () => {
   });
 
   test("an unrated puzzle is placed among the hard ones instead", () => {
+    // Unrated reads as 8, which shares a rung with the 9 — so which of those
+    // two comes last is the shuffle's business. What matters is that neither
+    // leads, and that both come after the easy one and the mid one.
     for (const seed of SEEDS.slice(0, 12)) {
       const order = rushSequence(field, seed, field.length).map((puzzle) => puzzle.name);
-      expect(order).toEqual(["easy", "mid", "unrated", "hard"]);
+      expect(order.slice(0, 2)).toEqual(["easy", "mid"]);
+      expect([...order.slice(2)].sort()).toEqual(["hard", "unrated"]);
     }
   });
 

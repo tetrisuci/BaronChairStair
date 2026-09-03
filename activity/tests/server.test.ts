@@ -194,6 +194,7 @@ interface RushStartBody {
 
 interface RushRunBody {
   readonly ranked: boolean;
+  readonly played: readonly { id: number; title: string; solved: boolean }[];
   readonly run: StoredRushRun;
   readonly isFirst: boolean;
   readonly best: number;
@@ -363,6 +364,16 @@ describe("puzzle rush", () => {
     expect(body.run.attempted).toBe(SEGMENTS_PLAYED);
     // One puzzle was left behind between two solves, and no segment said so.
     expect(body.run.skipsUsed).toBe(1);
+
+    // The end screen lists these, so they are the verifier's account of each
+    // puzzle rather than the client's: one row per puzzle actually reached, in
+    // play order, and the skipped one shows as unsolved.
+    expect(body.played).toHaveLength(SEGMENTS_PLAYED);
+    expect(body.played.map((puzzle) => puzzle.id)).toEqual(
+      played.slice(0, SEGMENTS_PLAYED).map((puzzle) => puzzle.id),
+    );
+    expect(body.played[SKIPPED_SEGMENT]!.solved).toBe(false);
+    expect(body.played.filter((puzzle) => puzzle.solved)).toHaveLength(expected.length);
     // Forty-five seconds claimed inside a run the server timed in milliseconds:
     // the claim gets cut down to the run, never the run stretched to the claim.
     expect(body.run.timeToLastSolveMs).toBe(body.run.elapsedMs);
@@ -493,11 +504,21 @@ describe("puzzle rush", () => {
     expect(board.run?.solved).toBe(RANKED_SOLVES);
   });
 
-  test("the day's ranked rush is the first one, and practice stays open", async () => {
+  test("the day's rush can be played again, and only the first one counts", async () => {
+    // Replaying is allowed, unscored, and draws its own sequence. The day's
+    // shared order belongs to the scored run — comparing two players depends on
+    // it — and a replay that dealt the identical stack would be a memory test
+    // rather than another go at the mode.
+    const first = (await (await startRush(token, false)).json()) as RushStartBody;
     const second = await startRush(token, false);
-    expect(second.status).toBe(409);
-    expect(await errorOf(second)).toContain("already on the board");
+    expect(second.status).toBe(200);
+    const replay = (await second.json()) as RushStartBody;
+    expect(replay.ranked).toBe(false);
+    expect(replay.puzzles.map((puzzle) => puzzle.id)).not.toEqual(
+      first.puzzles.map((puzzle) => puzzle.id),
+    );
 
+    // Practice is still its own thing: unranked, and a sequence of its own.
     const practice = await startRush(token, true);
     expect(practice.status).toBe(200);
     expect(((await practice.json()) as RushStartBody).ranked).toBe(false);
