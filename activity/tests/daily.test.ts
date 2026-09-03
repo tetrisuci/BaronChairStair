@@ -8,7 +8,17 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { DEFAULT_TIME_ZONE, dayNumber, nextResetAt } from "../shared/daily";
+import {
+  byTier,
+  DAILY_TIERS,
+  DEFAULT_TIME_ZONE,
+  dailyTierOf,
+  dayNumber,
+  nextResetAt,
+  puzzleIndexForDay,
+} from "../shared/daily";
+import { readFileSync } from "node:fs";
+import type { Puzzle } from "../shared/puzzle";
 
 /** Reads back the wall-clock time in the club's zone, for assertions. */
 function pacific(instant: number): string {
@@ -77,5 +87,74 @@ describe("daily rotation", () => {
     // 05:00 UTC on the 15th is still the evening of the 14th in Pacific.
     const instant = Date.UTC(2026, 0, 15, 5, 0);
     expect(dayNumber(instant, { timeZone: "UTC" })).toBe(dayNumber(instant) + 1);
+  });
+});
+
+// ── The three tiers a day holds ──────────────────────────────────────────────
+
+const archive: Puzzle[] = JSON.parse(readFileSync("data/puzzles.json", "utf8")).puzzles;
+
+describe("the day's three tiers", () => {
+  const tiers = byTier(archive);
+
+  test("every puzzle lands in exactly one tier, and none is lost", () => {
+    const total = DAILY_TIERS.reduce((sum, tier) => sum + tiers[tier].length, 0);
+    expect(total).toBe(archive.length);
+  });
+
+  test("no tier is so thin that it repeats months before the others", () => {
+    // A tier's size is how many days it takes to come round again, because each
+    // walks its own rotation. A lopsided split would mean the hard puzzle
+    // repeating while the easy one was still on its first pass.
+    const sizes = DAILY_TIERS.map((tier) => tiers[tier].length);
+    expect(Math.min(...sizes) * 1.5).toBeGreaterThan(Math.max(...sizes));
+  });
+
+  test("an unrated puzzle is hard, not easy", () => {
+    // Rated nothing because nobody got round to it, not because it is gentle.
+    expect(dailyTierOf({ difficulty: 0 })).toBe("hard");
+    expect(dailyTierOf({ difficulty: 4 })).toBe("easy");
+    expect(dailyTierOf({ difficulty: 5 })).toBe("medium");
+    expect(dailyTierOf({ difficulty: 8 })).toBe("hard");
+  });
+});
+
+describe("three rotations running side by side", () => {
+  test("a tier deals every one of its puzzles before repeating any", () => {
+    for (const size of [45, 46, 47]) {
+      const seen = Array.from({ length: size }, (_, day) => puzzleIndexForDay(day + 1, size, 1));
+      expect(new Set(seen).size).toBe(size);
+    }
+  });
+
+  test("two tiers of the same size do not march in lockstep", () => {
+    // The trap this stream argument exists for. The permutation is otherwise a
+    // pure function of the list's length, so two tiers with the same number of
+    // puzzles would pick the same positional rank every day for ever, and the
+    // pairing of easy to hard would never vary.
+    const withoutStream = Array.from({ length: 60 }, (_, day) => puzzleIndexForDay(day + 1, 46));
+    const streamOne = Array.from({ length: 60 }, (_, day) => puzzleIndexForDay(day + 1, 46, 1));
+    const streamTwo = Array.from({ length: 60 }, (_, day) => puzzleIndexForDay(day + 1, 46, 2));
+
+    expect(streamOne).not.toEqual(withoutStream);
+    expect(streamTwo).not.toEqual(streamOne);
+    // And not merely offset from one another either.
+    const agreements = streamOne.filter((value, index) => value === streamTwo[index]).length;
+    expect(agreements).toBeLessThan(10);
+  });
+
+  test("the same day and stream always deal the same puzzle", () => {
+    // Derived and never stored, so this is what makes a day reproducible on the
+    // server, in the browser and in the build tool alike.
+    for (const day of [1, 2, 45, 46, 137, 300]) {
+      expect(puzzleIndexForDay(day, 46, 2)).toBe(puzzleIndexForDay(day, 46, 2));
+    }
+  });
+
+  test("a stream keeps reshuffling when it wraps", () => {
+    const firstPass = Array.from({ length: 46 }, (_, day) => puzzleIndexForDay(day + 1, 46, 3));
+    const secondPass = Array.from({ length: 46 }, (_, day) => puzzleIndexForDay(day + 47, 46, 3));
+    expect(secondPass).not.toEqual(firstPass);
+    expect(new Set(secondPass).size).toBe(46);
   });
 });

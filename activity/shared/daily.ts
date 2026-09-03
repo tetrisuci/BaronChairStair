@@ -114,13 +114,63 @@ export function nextResetAt(now: Date | number = Date.now(), options: DayOptions
 }
 
 /**
- * Index into the puzzle list for a given day. Each pass through the archive
- * uses its own shuffle, so day 1 of the second cycle is not day 1 again.
+ * Index into a puzzle list for a given day. Each pass through the list uses its
+ * own shuffle, so day 1 of the second cycle is not day 1 again.
+ *
+ * `stream` separates lists that are drawn from side by side. Without it the
+ * permutation is a pure function of the list's *length*, so two lists of the
+ * same size march in lockstep: the easy and the hard track would pick the same
+ * positional rank every day, forever, and the pairing would never vary. It is
+ * mixed into the cycle seed rather than the position, so each stream still
+ * walks a full permutation and still repeats nothing until it wraps.
  */
-export function puzzleIndexForDay(day: number, puzzleCount: number): number {
+export function puzzleIndexForDay(day: number, puzzleCount: number, stream = 0): number {
   if (puzzleCount <= 0) throw new RangeError("No puzzles to choose from");
   const zeroBased = day - 1;
   const cycle = Math.floor(zeroBased / puzzleCount);
   const position = ((zeroBased % puzzleCount) + puzzleCount) % puzzleCount;
-  return shuffledIndices(puzzleCount, cycle * 0x9e3779b1 + 0x1a2b3c)[position]!;
+  const seed = (cycle * 0x9e3779b1 + 0x1a2b3c + stream * 0x85ebca6b) >>> 0;
+  return shuffledIndices(puzzleCount, seed)[position]!;
+}
+
+/**
+ * The three puzzles a day holds: one within reach, one to work at, one to lose
+ * to.
+ *
+ * A tier is a band of the archive's own difficulty rating, and unrated puzzles
+ * count as hard — they are rated nothing because nobody got round to it, not
+ * because they are gentle, and they ask for things like "2 TSS, 3 TSD" over a
+ * dozen pieces.
+ *
+ * The bands are chosen to be close to equal rather than to be round numbers.
+ * Each tier walks its own rotation, so a tier's size is how long it takes that
+ * tier to repeat itself, and a lopsided split would mean the hard puzzle came
+ * round again months before the easy one did.
+ */
+export type DailyTier = "easy" | "medium" | "hard";
+
+export const DAILY_TIERS: readonly DailyTier[] = ["easy", "medium", "hard"];
+
+export function dailyTierOf(puzzle: { readonly difficulty: number }): DailyTier {
+  if (puzzle.difficulty <= 0) return "hard";
+  if (puzzle.difficulty <= 4) return "easy";
+  if (puzzle.difficulty <= 7) return "medium";
+  return "hard";
+}
+
+/**
+ * Splits a list into the three tiers, keeping each tier's own order.
+ *
+ * The caller is responsible for handing in a list whose order is stable across
+ * restarts — the rotation is an index into these arrays, so a list that came
+ * back in a different order would silently deal different puzzles.
+ */
+export function byTier<T extends { readonly difficulty: number }>(
+  puzzles: readonly T[],
+): Readonly<Record<DailyTier, readonly T[]>> {
+  return {
+    easy: puzzles.filter((puzzle) => dailyTierOf(puzzle) === "easy"),
+    medium: puzzles.filter((puzzle) => dailyTierOf(puzzle) === "medium"),
+    hard: puzzles.filter((puzzle) => dailyTierOf(puzzle) === "hard"),
+  };
 }
