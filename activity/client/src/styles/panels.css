@@ -503,7 +503,10 @@
  */
 .explore__list--flow {
   min-height: 0;
-  overflow: visible;
+  /* Longhand, to undo the longhand above it: a shorthand would rely on source
+     order beating a more specific-looking declaration, which is true but not
+     worth making a reader check. */
+  overflow-y: visible;
   overscroll-behavior: auto;
 }
 
