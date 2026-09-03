@@ -214,3 +214,67 @@ describe("what the new key admits", () => {
     }
   });
 });
+
+describe("the day as one board", () => {
+  const someone = (id: string) => ({ id, username: id, avatarUrl: null });
+
+  test("a limit counts players, not tier rows", () => {
+    // The defect this replaced: each tier was fetched with its own limit and
+    // the three were merged afterwards, so a player near the bottom of one
+    // tier and the top of another came back on one board only and lost the
+    // other mark. Here the grouping happens first and the limit counts people.
+    const store = new Store(path);
+    try {
+      for (let n = 0; n < 5; n++) {
+        store.recordRun(10, "easy", 101, someone(`p${n}`), "g1", result(true, 100 + n));
+      }
+      // Last on easy by time, and the only one who solved the hard puzzle.
+      store.recordRun(10, "hard", 303, someone("p4"), "g1", result(true, 50));
+
+      const board = store.dayBoard(10, "g1", 2);
+      expect(board).toHaveLength(2);
+      // p4 leads on two solves, and carries BOTH marks — the easy one would
+      // have been cut by an easy-board limit of 2.
+      expect(board[0]!.player.id).toBe("p4");
+      expect(board[0]!.solved).toBe(2);
+      expect(board[0]!.marks).toEqual({ easy: true, hard: true });
+    } finally {
+      store.close();
+    }
+  });
+
+  test("tells apart solved, filed and failed, and never opened", () => {
+    const store = new Store(path);
+    try {
+      store.recordRun(10, "easy", 101, someone("ada"), "g1", result(true));
+      store.recordRun(10, "medium", 202, someone("ada"), "g1", result(false));
+      const [row] = store.dayBoard(10, "g1");
+      expect(row!.marks).toEqual({ easy: true, medium: false });
+      expect("hard" in row!.marks).toBe(false);
+    } finally {
+      store.close();
+    }
+  });
+
+  test("counts only the time of the puzzles actually solved", () => {
+    const store = new Store(path);
+    try {
+      store.recordRun(10, "easy", 101, someone("ada"), "g1", result(true, 900));
+      store.recordRun(10, "hard", 303, someone("ada"), "g1", result(false, 9999));
+      expect(store.dayBoard(10, "g1")[0]!.totalMs).toBe(900);
+    } finally {
+      store.close();
+    }
+  });
+
+  test("leaves legacy rows out of the day's three", () => {
+    // They were filed against a day's single puzzle, which is none of these.
+    seedLegacy([10]);
+    const store = new Store(path);
+    try {
+      expect(store.dayBoard(10, "g1")).toEqual([]);
+    } finally {
+      store.close();
+    }
+  });
+});

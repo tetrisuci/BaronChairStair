@@ -173,39 +173,17 @@ def _headline(day: int, streak: int, anybody_solved: bool) -> str:
     return head
 
 
-def _merge_boards(boards: list[dict]) -> list[dict]:
+def _rows(payload_daily: dict) -> list[dict]:
     """
-    One row per player, carrying what they did to each of the day's three.
+    The day's board, already merged by the server.
 
-    The boards arrive one per tier, and a player has a row in each tier they
-    filed. Wordle posts one line per person, so the recap does too: three marks
-    beside a name rather than the same name in three sections.
-
-    Keyed on the player id and not the mention, because two guests can render
-    the same escaped name and would otherwise be merged into one person.
+    This used to be a second implementation of the merge, keyed on the player
+    id and sorted the same way — and it had the same defect as its TypeScript
+    twin: each tier arrived under its own limit, so a player near the bottom of
+    one and the top of another lost a mark. The grouping is one SQL query now
+    and both renderers only format.
     """
-    players: dict[str, dict] = {}
-    for board in boards:
-        tier = board.get("tier")
-        for entry in board.get("entries") or []:
-            player = entry.get("player") or {}
-            key = str(player.get("id") or player.get("username") or "")
-            if not key:
-                continue
-            row = players.setdefault(
-                key, {"entry": entry, "marks": {}, "solved": 0, "total_ms": 0}
-            )
-            solved = bool(entry.get("solved"))
-            row["marks"][tier] = solved
-            if solved:
-                row["solved"] += 1
-                row["total_ms"] += entry.get("totalMs", 0) or 0
-    # Most solved first, then whoever spent least time on the ones they solved.
-    # A player who solved nothing has a total of zero, so the solve count has to
-    # lead or they would sort to the front.
-    return sorted(
-        players.values(), key=lambda row: (-row["solved"], row["total_ms"])
-    )
+    return list(payload_daily.get("rows") or [])
 
 
 def _grid(marks: dict) -> str:
@@ -229,21 +207,21 @@ def _daily_lines(rows: list[dict]) -> list[str]:
 
     lines = []
     for index, row in enumerate(rows[:RANKED_SHOWN]):
-        crown = "\N{CROWN} " if index == 0 and row["solved"] > 0 else ""
+        crown = "\N{CROWN} " if index == 0 and row.get("solved", 0) > 0 else ""
         tail = (
-            f" — {format_duration(row['total_ms'])}"
-            if row["solved"] > 0
+            f" — {format_duration(row.get('totalMs', 0))}"
+            if row.get("solved", 0) > 0
             else ""
         )
-        lines.append(f"{crown}{_grid(row['marks'])} {_mention(row['entry'])}{tail}")
+        lines.append(f"{crown}{_grid(row.get('marks') or {})} {_mention(row)}{tail}")
 
     rest = rows[RANKED_SHOWN:]
     if rest:
-        lines.append(f"also played — {_names([row['entry'] for row in rest])}")
+        lines.append(f"also played — {_names(rest)}")
 
-    swept = [row for row in rows if row["solved"] == len(TIER_ORDER)]
+    swept = [row for row in rows if row.get("solved", 0) == len(TIER_ORDER)]
     if swept:
-        lines.append(f"All three: {_names([row['entry'] for row in swept])}")
+        lines.append(f"All three: {_names(swept)}")
     return lines
 
 
@@ -282,15 +260,14 @@ def format_recap(payload: dict) -> str:
     about no-one.
     """
     daily = payload.get("daily") or {}
-    boards = list(daily.get("boards") or [])
-    rows = _merge_boards(boards)
+    rows = _rows(daily)
     if not rows:
         return ""
 
     lines = [_headline(
         payload.get("day", 0),
         payload.get("streak", 0),
-        any(row["solved"] > 0 for row in rows),
+        any(row.get("solved", 0) > 0 for row in rows),
     )]
     lines += _daily_lines(rows)
 

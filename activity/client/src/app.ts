@@ -1110,13 +1110,13 @@ export class App {
 
   private async loadLeaderboard(): Promise<void> {
     try {
-      const { boards, rush } = await this.connection.api.leaderboard();
+      const { board, rush } = await this.connection.api.leaderboard();
       const self = this.connection.player.id;
       // One call, two readers: the home screen shows the day whole, and the
       // panel beside a board shows the tier being played.
-      this.dailyBoard.update(boards, rush, self);
-      const mine = boards.find((board) => board.tier === this.dailyTier);
-      this.leaderboard.update(mine?.entries ?? [], self);
+      this.dailyBoard.update(board, rush, self);
+      // The verdict rail's panel wants per-run rows, which the day board no
+      // longer carries; it is refreshed from the submit response instead.
     } catch {
       // The result card is still useful without the leaderboard.
     }

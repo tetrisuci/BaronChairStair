@@ -32,6 +32,15 @@ export interface StoredRun {
   readonly createdAt: number;
 }
 
+/** A day's board row: one player, and how each of the three went for them. */
+export interface DayBoardRow {
+  readonly player: PlayerProfile;
+  readonly solved: number;
+  readonly totalMs: number;
+  /** Missing means never opened; false means filed and not solved. */
+  readonly marks: Partial<Record<DailyTier, boolean>>;
+}
+
 /** One of the day's three, with whatever this player has done to it. */
 export interface DailyEntry {
   readonly tier: DailyTier;
@@ -206,7 +215,7 @@ export class Api {
 
   leaderboard(): Promise<{
     day: number;
-    boards: readonly { tier: DailyTier; entries: readonly StoredRun[] }[];
+    board: readonly DayBoardRow[];
     rush: readonly RushRun[];
   }> {
     return this.request("/api/daily/leaderboard");

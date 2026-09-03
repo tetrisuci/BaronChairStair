@@ -618,14 +618,14 @@ describe("the daily recap", () => {
       day: number;
       puzzles: { tier: string; id: number; title: string }[];
       streak: number;
-      daily: { boards: { tier: string; entries: unknown[] }[]; total: number };
+      daily: { rows: { player: { id: string }; marks: Record<string, boolean> }[]; total: number };
       rush: { entries: unknown[]; total: number };
     };
     expect(body.day).toBe(today - 1);
     expect(body.puzzles.map((puzzle) => puzzle.tier)).toEqual(["easy", "medium", "hard"]);
     expect(body.puzzles.every((puzzle) => Number.isInteger(puzzle.id))).toBe(true);
     expect(body.streak).toBeGreaterThanOrEqual(0);
-    expect(body.daily.boards.map((board) => board.tier)).toEqual(["easy", "medium", "hard"]);
+    expect(Array.isArray(body.daily.rows)).toBe(true);
     expect(Array.isArray(body.rush.entries)).toBe(true);
     // No solution or board anywhere in it — the bot never needs the answer.
     expect(JSON.stringify(body)).not.toContain("solution");

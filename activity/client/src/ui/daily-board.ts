@@ -11,75 +11,49 @@
  * the very top, on a total of zero.
  */
 
-import type { RushRun, StoredRun } from "../api";
+import type { DayBoardRow, RushRun } from "../api";
 import { DAILY_TIERS, type DailyTier } from "@shared/daily";
 import { el, formatDuration, panel, replaceChildren } from "./dom";
 
 export interface DailyBoard {
   readonly element: HTMLElement;
-  update(
-    boards: readonly { tier: DailyTier; entries: readonly StoredRun[] }[],
-    rush: readonly RushRun[],
-    selfId: string,
-  ): void;
+  update(board: readonly DayBoardRow[], rush: readonly RushRun[], selfId: string): void;
 }
 
-interface Row {
-  readonly id: string;
-  readonly username: string;
-  readonly marks: Partial<Record<DailyTier, boolean>>;
-  solved: number;
-  totalMs: number;
+interface Row extends DayBoardRow {
   /** Puzzles cleared in today's rush, or null if they never ran one. */
-  rush: number | null;
+  readonly rush: number | null;
 }
 
-/** Everybody once, best first. Exported for the tests that pin the ordering. */
-export function mergeBoards(
-  boards: readonly { tier: DailyTier; entries: readonly StoredRun[] }[],
+/**
+ * Attaches today's rush to the day's board.
+ *
+ * The daily merge is the server's — one grouping, one limit — and this only
+ * folds rush in beside it, because rush lives in another table with a limit of
+ * its own. It can add rows as well as fill them in: somebody who spent their
+ * day on rush has no daily row at all, and is not somebody who did nothing.
+ *
+ * The daily still decides the order and rush only breaks ties. Three puzzles
+ * chosen for you and as many as you can take in five minutes are not the same
+ * unit, and summing them would say they are.
+ */
+export function withRush(
+  board: readonly DayBoardRow[],
   rush: readonly RushRun[] = [],
 ): Row[] {
-  const rows = new Map<string, Row>();
-  for (const board of boards) {
-    for (const run of board.entries) {
-      // Keyed on the id, never the name: two guests can share a display name
-      // and would otherwise be folded into one person.
-      const id = run.player.id;
-      const row = rows.get(id) ?? {
-        id,
-        username: run.player.username,
-        marks: {},
-        solved: 0,
-        totalMs: 0,
-        rush: null,
-      };
-      row.marks[board.tier] = run.solved;
-      if (run.solved) {
-        row.solved += 1;
-        row.totalMs += run.totalMs;
-      }
-      rows.set(id, row);
-    }
-  }
-
-  // Rush can put somebody on the board who filed no daily at all, so this adds
-  // rows as well as filling them in.
+  const rows = new Map<string, Row>(
+    board.map((entry) => [entry.player.id, { ...entry, rush: null }]),
+  );
   for (const run of rush) {
-    const row = rows.get(run.player.id) ?? {
-      id: run.player.id,
-      username: run.player.username,
-      marks: {},
-      solved: 0,
-      totalMs: 0,
-      rush: null,
-    };
-    row.rush = Math.max(row.rush ?? 0, run.solved);
-    rows.set(run.player.id, row);
+    const found = rows.get(run.player.id);
+    const best = Math.max(found?.rush ?? 0, run.solved);
+    rows.set(
+      run.player.id,
+      found
+        ? { ...found, rush: best }
+        : { player: run.player, solved: 0, totalMs: 0, marks: {}, rush: best },
+    );
   }
-
-  // The daily decides the order and rush breaks ties, rather than the two being
-  // added together: three puzzles chosen for you and as many as you can take in
-  // five minutes are not the same unit, and summing them would say they are.
   return [...rows.values()].sort(
     (a, b) => b.solved - a.solved || a.totalMs - b.totalMs || (b.rush ?? -1) - (a.rush ?? -1),
   );
@@ -103,8 +77,8 @@ export function createDailyBoard(): DailyBoard {
 
   return {
     element,
-    update(boards, rush, selfId) {
-      const merged = mergeBoards(boards, rush);
+    update(board, rush, selfId) {
+      const merged = withRush(board, rush);
       note.textContent = merged.length
         ? "Solved, then fastest. Squares are easy, medium, hard; ⚡ is today's rush."
         : "Nobody has played yet today. Be first.";
@@ -113,10 +87,10 @@ export function createDailyBoard(): DailyBoard {
         ...merged.map((row, index) =>
           el(
             "div",
-            { class: `board-list__row${row.id === selfId ? " board-list__row--self" : ""}` },
+            { class: `board-list__row${row.player.id === selfId ? " board-list__row--self" : ""}` },
             el("span", { class: "board-list__rank", text: `${index + 1}` }),
             el("span", { class: "board__marks" }, ...DAILY_TIERS.map((tier) => mark(row, tier))),
-            el("span", { class: "board-list__name", text: row.username }),
+            el("span", { class: "board-list__name", text: row.player.username }),
             el("span", {
               class: "board-list__score",
               // A rush of zero solves is a rush that happened, and reads

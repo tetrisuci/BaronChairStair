@@ -17,6 +17,27 @@ export interface PlayerProfile {
   readonly avatarUrl: string | null;
 }
 
+/** A day's board row: one player, and how each of the three went for them. */
+export interface DayBoardRow {
+  readonly player: PlayerProfile;
+  readonly solved: number;
+  readonly totalMs: number;
+  /** Missing means never opened; false means filed and not solved. */
+  readonly marks: Partial<Record<DailyTier, boolean>>;
+}
+
+/** The raw shape of a {@link Store.dayBoard} row: marks as 0 absent, 1 filed, 2 solved. */
+interface DayBoardRaw {
+  id: string;
+  username: string;
+  avatarUrl: string | null;
+  solved: number;
+  totalMs: number;
+  easy: number;
+  medium: number;
+  hard: number;
+}
+
 export interface RunResult {
   readonly solved: boolean;
   readonly attack: number;
@@ -394,6 +415,58 @@ export class Store {
       )
       .get(day, playerId, slot);
     return row ? toStoredRun(row) : null;
+  }
+
+  /**
+   * The day as one board: a row per player, with what they did to each tier.
+   *
+   * The merge belongs here and not in the two clients that were doing it. Three
+   * per-tier boards each carried their own `LIMIT`, and the limit was applied
+   * *before* anything joined them up — so a player twenty-sixth on easy and
+   * first on hard came back on the hard board only, and both renderers drew a
+   * row that silently dropped their easy mark. One query, one grouping, one
+   * limit over the merged rows.
+   *
+   * Marks are encoded 0/1/2 rather than as two columns: absent, filed and
+   * failed, solved. Those are three different days and a boolean cannot hold
+   * them. `MAX` over the encoding picks the best a player did on a tier, which
+   * matters because a miss can be upgraded by a later solve.
+   *
+   * 'legacy' rows are excluded. They were filed against a day's single puzzle,
+   * which is none of the three that day deals now.
+   */
+  dayBoard(day: number, guildId: string | null, limit = 25): DayBoardRow[] {
+    const rows = this.db
+      .query<DayBoardRaw, [number, string | null, number]>(
+        `SELECT players.id AS id, players.username AS username,
+                players.avatar_url AS avatarUrl,
+                SUM(runs.solved) AS solved,
+                SUM(CASE WHEN runs.solved = 1 THEN runs.total_ms ELSE 0 END) AS totalMs,
+                MAX(CASE WHEN runs.slot = 'easy'   THEN runs.solved + 1 ELSE 0 END) AS easy,
+                MAX(CASE WHEN runs.slot = 'medium' THEN runs.solved + 1 ELSE 0 END) AS medium,
+                MAX(CASE WHEN runs.slot = 'hard'   THEN runs.solved + 1 ELSE 0 END) AS hard
+         FROM runs JOIN players ON players.id = runs.player_id
+         WHERE runs.day = ?1 AND (?2 IS NULL OR runs.guild_id = ?2)
+           AND runs.slot IN ('easy', 'medium', 'hard')
+         GROUP BY runs.player_id
+         ORDER BY solved DESC, totalMs ASC
+         LIMIT ?3`,
+      )
+      .all(day, guildId, limit);
+
+    return rows.map((row) => {
+      const marks: Partial<Record<DailyTier, boolean>> = {};
+      for (const tier of DAILY_TIERS) {
+        const state = row[tier];
+        if (state > 0) marks[tier] = state === 2;
+      }
+      return {
+        player: { id: row.id, username: row.username, avatarUrl: row.avatarUrl },
+        solved: row.solved,
+        totalMs: row.totalMs,
+        marks,
+      };
+    });
   }
 
   /** Every slot this player has filed for a day, keyed by tier. */

@@ -18,7 +18,7 @@ import { readFileSync } from "node:fs";
 import { Window } from "happy-dom";
 import { activeRun } from "../client/src/game/active-run";
 import { createDailyMenu } from "../client/src/ui/daily-tiers";
-import { mergeBoards } from "../client/src/ui/daily-board";
+import { withRush } from "../client/src/ui/daily-board";
 import { createRushResultCard } from "../client/src/ui/rush";
 import type { RushPlayed } from "../client/src/api";
 
@@ -289,105 +289,36 @@ describe("the day's chooser", () => {
   });
 });
 
-describe("the day's one leaderboard", () => {
-  const run = (id: string, solved: boolean, totalMs: number) =>
-    ({ player: { id, username: id, avatarUrl: null }, solved, totalMs }) as never;
-
-  const boards = [
-    { tier: "easy" as const, entries: [run("ada", true, 1000), run("bo", true, 500)] },
-    { tier: "medium" as const, entries: [run("ada", true, 2000)] },
-    { tier: "hard" as const, entries: [run("ada", false, 0), run("cy", true, 100)] },
-  ];
-
-  test("puts each player on one row, however many boards they are on", () => {
-    // ada appears on all three and comes back once. The order is the ranking,
-    // not the order they were merged in: two solves, then the faster of the two
-    // who managed one.
-    const rows = mergeBoards(boards);
-    expect(rows.map((row) => row.id)).toEqual(["ada", "cy", "bo"]);
-  });
-
-  test("ranks by solves first, so a fast single solve does not lead", () => {
-    // bo and cy each solved one, faster than ada solved two. Sorting on time
-    // alone would put them above her — and would put somebody who solved
-    // nothing, on a total of zero, above everybody.
-    const rows = mergeBoards(boards);
-    expect(rows[0]!.id).toBe("ada");
-    expect(rows[0]!.solved).toBe(2);
-    expect(rows[0]!.totalMs).toBe(3000);
-    // Between the two who solved one, the faster one leads.
-    expect(rows[1]!.id).toBe("cy");
-  });
-
-  test("counts only the time of the puzzles actually solved", () => {
-    // ada filed the hard one and failed it; that attempt is not time she spent
-    // getting to a solve and must not be added to her total.
-    expect(mergeBoards(boards)[0]!.totalMs).toBe(3000);
-  });
-
-  test("remembers what was tried and failed, apart from what was never opened", () => {
-    const ada = mergeBoards(boards)[0]!;
-    expect(ada.marks.hard).toBe(false);
-    const cy = mergeBoards(boards).find((row) => row.id === "cy")!;
-    expect("easy" in cy.marks).toBe(false);
-  });
-
-  test("two players with the same name stay two players", () => {
-    const sameName = [
-      {
-        tier: "easy" as const,
-        entries: [
-          { player: { id: "1", username: "guest", avatarUrl: null }, solved: true, totalMs: 1 },
-          { player: { id: "2", username: "guest", avatarUrl: null }, solved: true, totalMs: 2 },
-        ] as never,
-      },
-    ];
-    expect(mergeBoards(sameName)).toHaveLength(2);
-  });
-});
-
-describe("rush on the day's board", () => {
-  const run = (id: string, solved: boolean, totalMs: number) =>
-    ({ player: { id, username: id, avatarUrl: null }, solved, totalMs }) as never;
+describe("rush attached to the day's board", () => {
+  const row = (id: string, solved: number, totalMs: number) =>
+    ({ player: { id, username: id, avatarUrl: null }, solved, totalMs, marks: {} }) as never;
   const rushRun = (id: string, solved: number) =>
     ({ player: { id, username: id, avatarUrl: null }, solved }) as never;
 
-  const boards = [{ tier: "easy" as const, entries: [run("ada", true, 1000)] }];
-
   test("puts a rush-only player on the board", () => {
     // Somebody who spent their day on rush did not do nothing, and the daily
-    // boards have no row for them at all.
-    const rows = mergeBoards(boards, [rushRun("bo", 7)]);
-    expect(rows.map((row) => row.id).sort()).toEqual(["ada", "bo"]);
-    expect(rows.find((row) => row.id === "bo")!.solved).toBe(0);
+    // board — which the server merged — has no row for them at all.
+    const rows = withRush([row("ada", 2, 3000)], [rushRun("bo", 7)]);
+    expect(rows.map((r) => r.player.id).sort()).toEqual(["ada", "bo"]);
+    expect(rows.find((r) => r.player.id === "bo")!.solved).toBe(0);
   });
 
   test("a rush of zero is not the same as no rush at all", () => {
     // null is the blank. Zero means they ran one and cleared nothing, which is
     // a different day and should read differently.
-    const [ran] = mergeBoards([], [rushRun("bo", 0)]);
-    expect(ran!.rush).toBe(0);
-    const [never] = mergeBoards(boards, []);
-    expect(never!.rush).toBeNull();
+    expect(withRush([], [rushRun("bo", 0)])[0]!.rush).toBe(0);
+    expect(withRush([row("ada", 1, 500)], [])[0]!.rush).toBeNull();
   });
 
   test("the daily still decides the order, with rush breaking ties", () => {
-    // Not added together: three puzzles chosen for you and as many as you can
-    // take in five minutes are not the same unit.
-    const rows = mergeBoards(boards, [rushRun("bo", 40)]);
-    expect(rows[0]!.id).toBe("ada");
-
-    const tied = mergeBoards(
-      [{ tier: "easy" as const, entries: [run("cy", true, 500), run("di", true, 500)] }],
-      [rushRun("di", 9)],
-    );
-    expect(tied[0]!.id).toBe("di");
+    expect(withRush([row("ada", 2, 3000)], [rushRun("bo", 40)])[0]!.player.id).toBe("ada");
+    const tied = withRush([row("cy", 1, 500), row("di", 1, 500)], [rushRun("di", 9)]);
+    expect(tied[0]!.player.id).toBe("di");
   });
 
   test("keeps the best rush when a player ran more than one", () => {
-    // Replays are unlimited and unscored, but the board should show the best
-    // of them rather than whichever came back last.
-    const [row] = mergeBoards([], [rushRun("ada", 3), rushRun("ada", 8), rushRun("ada", 5)]);
-    expect(row!.rush).toBe(8);
+    // Replays are unlimited and unscored; the best is the interesting one, not
+    // whichever came back last.
+    expect(withRush([], [rushRun("ada", 3), rushRun("ada", 8), rushRun("ada", 5)])[0]!.rush).toBe(8);
   });
 });

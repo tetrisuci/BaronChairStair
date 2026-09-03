@@ -263,15 +263,12 @@ function totalTimeOnPuzzle(claimed: unknown, verifiedMs: number): number {
 app.get("/api/daily/leaderboard", requireSession, (c) => {
   const session = c.get("session");
   const day = archive.currentDay();
-  // All three at once. They are one day, and a board you have to click between
-  // is three boards — the player wants to know how their server did today, not
-  // how it did at one difficulty.
+  // One board for the day, merged in SQL. Three per-tier boards each applied
+  // their own limit before anything joined them, which quietly dropped marks
+  // for anyone near the bottom of one tier and the top of another.
   return c.json({
     day,
-    boards: DAILY_TIERS.map((tier) => ({
-      tier,
-      entries: store.leaderboard(day, session.guildId, tier, LEADERBOARD_SIZE),
-    })),
+    board: store.dayBoard(day, session.guildId, LEADERBOARD_SIZE),
     // The day's rush, in the same answer. It belongs on the same board — a
     // player who spent their day on rush is not somebody who did nothing —
     // and a second round trip to say so would only be a second thing to fail.
@@ -390,10 +387,7 @@ app.get("/api/recap", (c) => {
     })),
     streak: store.guildStreak(guildId, day),
     daily: {
-      boards: DAILY_TIERS.map((tier) => ({
-        tier,
-        entries: store.leaderboard(day, guildId, tier, RECAP_SIZE),
-      })),
+      rows: store.dayBoard(day, guildId, RECAP_SIZE),
       // How many people played, not how many rows they left.
       total: store.dayCount(day, guildId),
     },
