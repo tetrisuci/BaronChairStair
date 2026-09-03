@@ -296,6 +296,22 @@ export class App {
     // Above the hold panel, so the day's three are the first thing in the rail
     // rather than something to go looking for.
     replaceChildren(this.hud.left, this.tiers.element, this.hud.panels.hold, this.hud.panels.progress);
+    // Rebuilt rather than left alone: a filed tier puts the walkthrough in this
+    // rail, and switching from it to an unplayed one would otherwise keep the
+    // last puzzle's solution where the queue belongs.
+    replaceChildren(
+      this.hud.right,
+      this.hud.panels.goal,
+      this.hud.panels.meter,
+      this.hud.panels.queue,
+    );
+    // The board itself. The chooser is a screen and holds the whole deck, so
+    // without this the run starts correctly and invisibly, underneath it —
+    // which is what clicking a tier appeared to do: nothing.
+    this.input.setGameInputEnabled(true);
+    this.showPlayfield();
+    // Mounted first, painted second, as everywhere else: showPlayfield relays
+    // out, a relayout resizes the canvas, and resizing a canvas clears it.
     if (entry.run) this.showFiledRun(entry.puzzle, entry.run, entry.solution);
     else this.startRun();
   }
