@@ -39,6 +39,7 @@ import {
 import { config } from "./config";
 import { Store } from "./db";
 import { callerKey, limitBodySize, MAX_BODY_BYTES, rateLimit } from "./limits";
+import { DAILY_TIERS, type DailyTier } from "../shared/daily";
 import { PuzzleArchive } from "./puzzles";
 import {
   type SocketData,
@@ -158,31 +159,59 @@ app.post("/api/session", async (c) => {
 
 // ── Daily puzzle ─────────────────────────────────────────────────────────────
 
+/**
+ * Which of the day's three a request is about.
+ *
+ * Client-supplied and never trusted for anything but selection: naming a tier
+ * chooses the board a log is replayed against, so a log played on the hard one
+ * and filed as "easy" simply fails to solve the easy one. It cannot be used to
+ * file somebody else's result, and it cannot be used to fetch an answer —
+ * every solution below is gated on the run stored for that same tier.
+ */
+function readTier(value: unknown): DailyTier {
+  const tier = DAILY_TIERS.find((candidate) => candidate === value);
+  if (!tier) throw new HTTPException(400, { message: "That is not one of today's three puzzles" });
+  return tier;
+}
+
 app.get("/api/daily", requireSession, (c) => {
   const session = c.get("session");
-  const { day, puzzle, resetsAt } = archive.today();
-  const run = store.runFor(day, session.player.id);
+  const { day, puzzles, resetsAt } = archive.today();
+  const runs = store.runsFor(day, session.player.id);
   return c.json({
     day,
     resetsAt,
-    puzzle: archive.prompt(puzzle),
-    run,
+    puzzles: DAILY_TIERS.map((tier) => ({
+      tier,
+      puzzle: archive.prompt(puzzles[tier]),
+      run: runs[tier] ?? null,
+      // Gated per tier, not per day. Solving the easy one must not hand over
+      // the hard one's answer — with one run a day that distinction did not
+      // exist, and reading it as "solved today" is a solution leak.
+      solution: runs[tier]?.solved ? puzzles[tier].solution : null,
+    })),
     streak: store.streak(session.player.id, day),
     totalSolved: store.totalSolved(session.player.id),
-    // The answer is only ever sent once the player has solved it.
-    solution: run?.solved ? puzzle.solution : null,
   });
 });
 
 app.post("/api/daily/run", requireSession, async (c) => {
   const session = c.get("session");
-  const { day, puzzle } = archive.today();
+  const { day, puzzles } = archive.today();
 
   const body = await c.req
-    .json<{ handling?: unknown; events?: unknown; resets?: unknown; totalMs?: unknown }>()
+    .json<{
+      tier?: unknown;
+      handling?: unknown;
+      events?: unknown;
+      resets?: unknown;
+      totalMs?: unknown;
+    }>()
     .catch(() => {
       throw new HTTPException(400, { message: "Request body is not valid JSON" });
     });
+  const tier = readTier(body.tier);
+  const puzzle = puzzles[tier];
   const handling = sanitizeHandling(body.handling);
   const events = parseInputLog(body.events);
   const resets = Number.isInteger(body.resets) ? Math.max(0, Math.min(9999, body.resets as number)) : 0;
@@ -194,7 +223,7 @@ app.post("/api/daily/run", requireSession, async (c) => {
   };
   const verified = verifyRun(setup, handling, events);
 
-  const { run, isFirst } = store.recordRun(day, puzzle.id, session.player, session.guildId, {
+  const { run, isFirst } = store.recordRun(day, tier, puzzle.id, session.player, session.guildId, {
     solved: meetsTarget(verified.attack, puzzle.targetAttack),
     attack: verified.attack,
     targetAttack: puzzle.targetAttack,
@@ -206,6 +235,7 @@ app.post("/api/daily/run", requireSession, async (c) => {
   });
 
   return c.json({
+    tier,
     run,
     isFirst,
     verified,
@@ -214,7 +244,7 @@ app.post("/api/daily/run", requireSession, async (c) => {
     // Same rule as every other route: the answer is only ever sent to somebody
     // who has solved it. Filing a deliberately empty run must not buy it.
     solution: run.solved ? puzzle.solution : null,
-    leaderboard: store.leaderboard(day, session.guildId, LEADERBOARD_SIZE),
+    leaderboard: store.leaderboard(day, session.guildId, tier, LEADERBOARD_SIZE),
   });
 });
 
@@ -233,7 +263,8 @@ function totalTimeOnPuzzle(claimed: unknown, verifiedMs: number): number {
 app.get("/api/daily/leaderboard", requireSession, (c) => {
   const session = c.get("session");
   const day = archive.currentDay();
-  return c.json({ day, entries: store.leaderboard(day, session.guildId, LEADERBOARD_SIZE) });
+  const tier = readTier(c.req.query("tier") ?? "easy");
+  return c.json({ day, tier, entries: store.leaderboard(day, session.guildId, tier, LEADERBOARD_SIZE) });
 });
 
 // ── Bot-facing endpoints ─────────────────────────────────────────────────────
@@ -243,20 +274,23 @@ app.get("/api/daily/leaderboard", requireSession, (c) => {
  * channel. Public: everything here is on the puzzle's own front page.
  */
 app.get("/api/today", (c) => {
-  const { day, puzzle, resetsAt } = archive.today();
+  const { day, puzzles, resetsAt } = archive.today();
+  const describe = (puzzle: (typeof puzzles)[DailyTier]) => ({
+    id: puzzle.id,
+    title: puzzle.title,
+    author: puzzle.author,
+    difficulty: puzzle.difficulty,
+    goal: puzzle.goal,
+    set: puzzle.set,
+    pieces: pieceBudget(puzzle),
+    targetAttack: puzzle.targetAttack,
+  });
   return c.json({
     day,
     resetsAt,
-    puzzle: {
-      id: puzzle.id,
-      title: puzzle.title,
-      author: puzzle.author,
-      difficulty: puzzle.difficulty,
-      goal: puzzle.goal,
-      set: puzzle.set,
-      pieces: pieceBudget(puzzle),
-      targetAttack: puzzle.targetAttack,
-    },
+    puzzles: DAILY_TIERS.map((tier) => ({ tier, ...describe(puzzles[tier]) })),
+    // People, not rows: a player has three results a day now, and this is the
+    // "solved by N so far" line on the announcement.
     solvedCount: store.solvedCount(day),
   });
 });
@@ -278,7 +312,15 @@ app.get("/api/standings", (c) => {
   requireBotKey(c);
   const day = archive.currentDay();
   const guildId = c.req.query("guild") ?? null;
-  return c.json({ day, entries: store.leaderboard(day, guildId, LEADERBOARD_SIZE) });
+  // One board per tier, because a player has a result in each and ranking them
+  // against each other would compare a five-piece opener with a wall.
+  return c.json({
+    day,
+    boards: DAILY_TIERS.map((tier) => ({
+      tier,
+      entries: store.leaderboard(day, guildId, tier, LEADERBOARD_SIZE),
+    })),
+  });
 });
 
 /**
@@ -323,19 +365,24 @@ app.get("/api/recap", (c) => {
   // parameter would put strangers into one server's recap.
   if (!guildId) throw new HTTPException(400, { message: "guild is required" });
 
-  const { puzzle } = archive.forDay(day);
+  const { puzzles } = archive.forDay(day);
   return c.json({
     day,
-    puzzle: {
-      id: puzzle.id,
-      title: puzzle.title,
-      author: puzzle.author,
-      goal: puzzle.goal,
-      targetAttack: puzzle.targetAttack,
-    },
+    puzzles: DAILY_TIERS.map((tier) => ({
+      tier,
+      id: puzzles[tier].id,
+      title: puzzles[tier].title,
+      author: puzzles[tier].author,
+      goal: puzzles[tier].goal,
+      targetAttack: puzzles[tier].targetAttack,
+    })),
     streak: store.guildStreak(guildId, day),
     daily: {
-      entries: store.leaderboard(day, guildId, RECAP_SIZE),
+      boards: DAILY_TIERS.map((tier) => ({
+        tier,
+        entries: store.leaderboard(day, guildId, tier, RECAP_SIZE),
+      })),
+      // How many people played, not how many rows they left.
       total: store.dayCount(day, guildId),
     },
     rush: {
@@ -373,9 +420,14 @@ function maySeeSolution(session: Session, puzzleId: number): boolean {
   // Never the puzzle they are on right now: a duel round names its puzzle, and
   // this route would otherwise answer with the way to win it.
   if (puzzlesInPlayFor(session.player.id).has(puzzleId)) return false;
-  const { day, puzzle } = archive.today();
-  if (puzzle.id !== puzzleId) return true;
-  return store.runFor(day, session.player.id)?.solved === true;
+  // Which of today's three this is, if it is one of them at all. Asking "is it
+  // today's puzzle" no longer has a single answer, and the tier matters: the
+  // gate has to be the run for *this* puzzle's tier. Read as "solved today" it
+  // would hand the hard answer to somebody who solved the easy one.
+  const day = archive.currentDay();
+  const tier = archive.tierOfDay(day, puzzleId);
+  if (!tier) return true;
+  return store.runFor(day, session.player.id, tier)?.solved === true;
 }
 
 app.get("/api/archive", requireSession, (c) => {
