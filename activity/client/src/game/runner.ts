@@ -59,6 +59,51 @@ export interface RunCallbacks {
   readonly onLock: (clear: ClearName | null, attack: number) => void;
 }
 
+/**
+ * Where a placement left the log: how long it was, and the frame it locked on.
+ *
+ * The frame is the half undo cannot do without. A key held through the lock has
+ * to be let go of after that lock, not at the keypress that started it.
+ */
+interface Checkpoint {
+  readonly length: number;
+  readonly frame: number;
+}
+
+/** What undo took out of the log, and what it put back in to close the rest. */
+interface UndoneSegment {
+  readonly events: readonly InputEvent[];
+  /** Keyups undo appended, dropped again so redo restores the log verbatim. */
+  readonly closers: number;
+  readonly checkpoint: Checkpoint;
+}
+
+/** The keys a log leaves down, in the order they were first touched. */
+function keysHeldAfter(events: readonly InputEvent[]): GameKey[] {
+  const state = new Map<GameKey, boolean>();
+  for (const event of events) state.set(event.data.key, event.type === "keydown");
+  return [...state].flatMap(([key, down]) => (down ? [key] : []));
+}
+
+/**
+ * Keyups that release everything `events` leaves held, as of `frame`.
+ *
+ * The frame is the one the placement locked on rather than the last event's: a
+ * piece seated with soft drop locks well after the key that seated it, so
+ * releasing at the keypress would replay a piece that never lands. Subframe
+ * zero puts the release before that frame's gravity, leaving the piece the lock
+ * spawned exactly where the engine put it.
+ */
+function closingKeyups(events: readonly InputEvent[], frame: number): InputEvent[] {
+  return keysHeldAfter(events).map((key) => ({
+    // Clamped because the server parses this log under its own bounds, and a
+    // synthetic event has to sit inside them like every typed one.
+    frame: Math.min(frame, MAX_FRAMES),
+    type: "keyup" as const,
+    data: { key, subframe: 0 },
+  }));
+}
+
 export class PuzzleRun {
   private engine!: Engine;
   private ledger!: PieceLedger;
@@ -78,6 +123,19 @@ export class PuzzleRun {
   private clears: ClearName[] = [];
   private resets = 0;
   private firstInputFrame: number | null = null;
+  /**
+   * Where each placement left the log.
+   *
+   * Undo cuts the log back to a placement boundary and replays what is left,
+   * which is why undo needs no server support at all: a shortened log is still
+   * an ordinary log, and the server verifies it the way it verifies every
+   * other one. There is nothing to tell it about.
+   */
+  private checkpoints: Checkpoint[] = [];
+  /** Segments undo removed, newest last, so redo can put them back. */
+  private undone: UndoneSegment[] = [];
+  /** True while the log is being fed back in, to keep the replay silent. */
+  private replaying = false;
   private finishedAt: number | null = null;
 
   private flashRows: number[] = [];
@@ -136,12 +194,29 @@ export class PuzzleRun {
       this.piecesPlaced++;
       this.attack += lock.garbage.reduce((total, value) => total + value, 0);
       const clear = nameClear(lock, this.engine.board.perfectClear);
-      if (clear) {
-        this.clears.push(clear);
-        this.flashRows = this.pendingFlash;
-        this.flashUntil = performance.now() + FLASH_MS;
+      if (clear) this.clears.push(clear);
+      // Only a live placement moves the boundary. During a replay the log is
+      // already whole, so `events.length` is its total rather than the
+      // position reached — recording it would collapse every checkpoint onto
+      // the same value and the second undo would truncate nothing.
+      //
+      // The lock frame is recorded alongside the length because a boundary is
+      // only worth returning to if the player can play on from it, and a prefix
+      // that ends mid-keypress cannot: undo needs a frame after the lock at
+      // which to release whatever was still being held when it happened.
+      if (!this.replaying) {
+        this.checkpoints.push({ length: this.events.length, frame: this.engine.frame });
       }
-      this.callbacks.onLock(clear, this.attack);
+      // A replay is re-reaching a position the player already saw. Flashing
+      // every line it clears again, and calling back for each, would replay
+      // the noise as well as the placements.
+      if (!this.replaying) {
+        if (clear) {
+          this.flashRows = this.pendingFlash;
+          this.flashUntil = performance.now() + FLASH_MS;
+        }
+        this.callbacks.onLock(clear, this.attack);
+      }
       this.checkForEnd();
     });
   }
@@ -173,10 +248,119 @@ export class PuzzleRun {
     this.attack = 0;
     this.piecesPlaced = 0;
     this.clears = [];
+    this.checkpoints = [];
+    this.undone = [];
     this.firstInputFrame = null;
     this.phase = "ready";
     this.flashRows = [];
     this.build();
+    this.renderOnce();
+  }
+
+  // ── Undo and redo ──────────────────────────────────────────────────────────
+
+  get canUndo(): boolean {
+    return this.checkpoints.length > 0 && this.phase !== "solved" && this.phase !== "failed";
+  }
+
+  get canRedo(): boolean {
+    return this.undone.length > 0 && this.phase !== "solved" && this.phase !== "failed";
+  }
+
+  /** Takes back the last placement. Returns false when there is none. */
+  undo(): boolean {
+    if (!this.canUndo) return false;
+    const boundary = this.checkpoints[this.checkpoints.length - 2];
+    const target = boundary?.length ?? 0;
+    // A checkpoint is a prefix of the log, not a closed one: the lock that
+    // recorded it happened mid-frame, so a key that was down at that instant
+    // has its press inside the prefix and its release in the part being thrown
+    // away. Replayed as it stands, the prefix leaves that key down for good —
+    // the engine goes on acting on it, and `input` reads the player's real
+    // release as a repeat and drops it.
+    const closers = boundary ? closingKeyups(this.events.slice(0, target), boundary.frame) : [];
+    // Refusing to undo beats returning to a position whose log the server would
+    // reject as too long.
+    if (target + closers.length > MAX_EVENTS) return false;
+
+    const checkpoint = this.checkpoints.pop()!;
+    const removed = this.events.splice(target);
+    this.events.push(...closers);
+    // The boundary ends after the closers now, so a later undo back to it lands
+    // on a log that is already closed and needs no second set.
+    if (boundary) {
+      this.checkpoints[this.checkpoints.length - 1] = { ...boundary, length: this.events.length };
+    }
+    this.undone.push({ events: removed, closers: closers.length, checkpoint });
+    this.rebuildFromLog();
+    return true;
+  }
+
+  /** Puts back the placement undo took, if nothing has been played since. */
+  redo(): boolean {
+    if (!this.canRedo) return false;
+    const segment = this.undone.pop()!;
+    // Undo's closers were never typed. Taking them back out before the player's
+    // own events go back makes a redone log the one they played, byte for byte.
+    this.events.splice(this.events.length - segment.closers, segment.closers);
+    const boundary = this.checkpoints[this.checkpoints.length - 1];
+    if (boundary) {
+      this.checkpoints[this.checkpoints.length - 1] = { ...boundary, length: this.events.length };
+    }
+    // One undone segment is exactly one placement, and it restores the boundary
+    // it was taken from rather than the end of the log: keys pressed after that
+    // lock belong to the next placement, not to this one.
+    this.checkpoints.push(segment.checkpoint);
+    this.events.push(...segment.events);
+    this.rebuildFromLog();
+    return true;
+  }
+
+  /**
+   * Rebuilds the position from the log, the way the server would.
+   *
+   * A fresh engine fed the whole log is the only rewind that cannot drift:
+   * unwinding the board in place would mean undoing a line clear, a spin
+   * bonus and a hold swap by hand, and any one of those getting it slightly
+   * wrong would put the player on a board the server does not agree exists.
+   * Replaying costs well under a millisecond at this length.
+   */
+  private rebuildFromLog(): void {
+    this.stopLoop();
+    this.attack = 0;
+    this.piecesPlaced = 0;
+    this.clears = [];
+    this.pending = [];
+    // Folded from the log rather than emptied: `input` treats `held` as the
+    // truth about what is down, so a set that disagrees with the log turns the
+    // player's next release of that key into a repeat and swallows it.
+    this.held.clear();
+    for (const key of keysHeldAfter(this.events)) this.held.add(key);
+    this.flashRows = [];
+    this.phase = "ready";
+    this.build();
+
+    this.replaying = true;
+    try {
+      let cursor = 0;
+      while (cursor < this.events.length && this.engine.frame <= MAX_FRAMES) {
+        const batch: InputEvent[] = [];
+        while (cursor < this.events.length && this.events[cursor]!.frame === this.engine.frame) {
+          batch.push(this.events[cursor]!);
+          cursor++;
+        }
+        this.engine.tick(batch as never);
+      }
+    } finally {
+      this.replaying = false;
+    }
+
+    if (this.phase === "ready" && this.events.length > 0) {
+      this.phase = "playing";
+      this.lastTimestamp = performance.now();
+      this.accumulator = 0;
+      this.startLoop();
+    }
     this.renderOnce();
   }
 
@@ -234,6 +418,9 @@ export class PuzzleRun {
       type: down ? "keydown" : "keyup",
       data: { key, subframe: Number(subframe.toFixed(3)) },
     };
+    // Playing on after an undo is the player choosing this line over the one
+    // they took back, so there is no longer a forward to redo into.
+    this.undone = [];
     this.events.push(event);
     this.pending.push(event);
   }

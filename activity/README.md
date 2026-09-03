@@ -215,6 +215,58 @@ The board it returns is capped at a hundred rather than the interactive
 twenty-five, and carries a `total`. Misses sort last, so the smaller cap would
 have quietly deleted exactly the people a recap exists to tease.
 
+## 1v1
+
+Two players in the same server, over a WebSocket. Puzzle duels are best of N on
+one shared puzzle a round, first valid claim taking it and the clock expiring
+as a draw; rush duels are one clock and one shared stack walked independently,
+most solved winning.
+
+The room's rules belong to the host, and only while it is still a room. Mode,
+best-of count, clock and a difficulty band are set in the lobby with the guest
+watching the same values, and the referee refuses a change from anyone else and
+refuses any change once the match is on — otherwise a host losing a best-of
+could shorten it to a best-of-one they had already won. A band is checked against what
+the match actually consumes, not merely against being empty: a best-of-7 drawn
+from one puzzle deals that puzzle seven times, and the log that solved it the
+first time solves it every time, so the match is won without playing. Rules
+whose pool is smaller than the rounds they deal — or, in rush, than the stack
+the clock needs — are refused in the lobby with both numbers named. The lobby
+shows the host what their band leaves and what the match needs, counted by the
+referee off the pool it actually deals from rather than by the client off a
+listing it may have filtered differently.
+
+A client never says it solved something. It sends the log that solves it, and
+the server replays that log — verification is what reading a claim *means*,
+which is why a claim has no field on it to lie in. Replaying costs about a
+fifth of a millisecond, so it happens inside one turn of the event loop, and
+that is the whole race resolution: two claims arriving together are decided by
+the order the socket delivered them, with no clock from either player involved.
+A single `await` in that path would quietly reopen it, which is why the
+function carrying it says so.
+
+A puzzle duel rests for a few seconds between rounds, and spends them showing
+both players how the round was meant to go — the reference solution, on the
+board they were just playing it on, steppable. The loser gets the most out of
+it, which is the point: it is the only look they get at the puzzle that beat
+them. It is safe only because the round is over and a duel never deals a puzzle
+it has already dealt, so the answer buys nothing for the rest of the match; the
+archive still refuses the answer to a puzzle in play, and the deciding round
+skips the reveal because the result screen follows it in the same breath. Rush
+has no such pause and should not — its whole shape is one unbroken clock.
+
+The opponent is a bar and a score, never a board — a board part-way through a
+puzzle is a partial solution to it, and losing should not come with a hint. The
+archive likewise refuses the answer to a puzzle you are currently duelling on.
+
+**And none of that makes a duel cheat-proof.** `data/puzzles.json` is in this
+public repository, so every answer is already on disk for anyone who wants
+one, and the pathfinder that turns an answer into a keystroke log ships in the
+client bundle. The scheme proves a submitted log really solves the puzzle it
+claims; it cannot prove a human made it. That is the same trade the daily and
+rush make, and it costs more here, because what a scripted opponent takes is
+somebody's match rather than a place on a board.
+
 **What that proves, and what it does not.** `data/puzzles.json` is committed to
 a public repository, and `GET /api/archive/:id` hands any signed-in player the
 solution to every puzzle except today's, so the answers to a rush sequence are

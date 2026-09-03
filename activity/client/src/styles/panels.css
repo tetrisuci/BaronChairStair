@@ -419,7 +419,23 @@
 
 .explore__to { font-family: var(--mono); font-size: 11px; color: var(--ink-faint); }
 /* Never the control that wraps: it is the shortest thing on its row. */
-.explore__toggle { white-space: nowrap; }
+/*
+ * Wide enough for the longer of its two labels, so a click changes the word
+ * and nothing else. Sized off the text rather than in pixels, because the
+ * label is the state and the state is what has to fit.
+ */
+.explore__toggle {
+  white-space: nowrap;
+  min-width: 11ch;
+  text-align: center;
+}
+
+/*
+ * The guest's copy of the host's rules: the same rows, visibly not theirs.
+ * Shown rather than hidden, because "what am I about to play" is the question
+ * the lobby exists to answer, and it is the guest's question too.
+ */
+.explore__filters--locked { opacity: 0.6; }
 .explore__slot { display: contents; }
 
 .explore__search,

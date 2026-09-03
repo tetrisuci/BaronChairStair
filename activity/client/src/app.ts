@@ -31,6 +31,13 @@ import {
   createWalkthroughPanel,
 } from "./ui/results";
 import { createExplorer } from "./ui/explorer";
+import { DuelClient } from "./game/duel";
+import {
+  createDuelIntro,
+  createDuelLobby,
+  createDuelPanel,
+  createDuelResult,
+} from "./ui/duel";
 import {
   createRushBoard,
   createRushIntro,
@@ -48,7 +55,10 @@ const TOAST_MS = 2200;
 export class App {
   private readonly masthead = createMasthead();
   private readonly credits = createCredits();
-  private readonly hud = createHud();
+  private readonly hud = createHud({
+    onUndo: () => this.stepHistory("undo"),
+    onRedo: () => this.stepHistory("redo"),
+  });
   private readonly badge = createVerdictBadge();
   private readonly leaderboard = createLeaderboardPanel();
   private readonly canvas = el("canvas", {
@@ -75,6 +85,18 @@ export class App {
   private readonly rushIntro;
   private readonly rushResult;
   private readonly explorer;
+  private readonly duelIntro;
+  private readonly duelLobby;
+  private readonly duelResult;
+  private readonly duelPanel = createDuelPanel();
+  private duel: DuelClient | null = null;
+  private duelState: import("@shared/duel").DuelView | null = null;
+  /** The puzzle of the round being played, kept so its reveal can be mounted. */
+  private duelPuzzle: PuzzlePrompt | null = null;
+  /** When the next round is dealt, while a duel is between rounds. */
+  private duelIntermissionAt: number | null = null;
+  private duelEndsAt = 0;
+  private duelTick: ReturnType<typeof setInterval> | null = null;
 
   private run: PuzzleRun | null = null;
   /**
@@ -87,7 +109,7 @@ export class App {
   private rushSkips = 0;
   private rushRanked = true;
   private rushState: RushState | null = null;
-  private mode: "daily" | "rush" | "explore" = "daily";
+  private mode: "daily" | "rush" | "explore" | "duel" = "daily";
   private solutionPlayer: SolutionPlayer | null = null;
   private daily: DailyResponse | null = null;
   private submitting = false;
@@ -118,7 +140,8 @@ export class App {
   ) {
     this.input = new InputRouter(settings.value.keybinds, {
       onGameKey: (key, down) => {
-        if (this.rush) this.rush.input(key, down);
+        if (this.mode === "duel") this.duel?.input(key, down);
+        else if (this.mode === "rush") this.rush?.input(key, down);
         else this.run?.input(key, down);
       },
       onLocalAction: (action) => this.handleLocalAction(action),
@@ -166,6 +189,30 @@ export class App {
       onPlay: (id) => void this.openArchivePuzzle(id),
       onRandom: () => void this.startPractice(),
       onClose: () => this.leaveExplorer(),
+    });
+
+    this.duelIntro = createDuelIntro({
+      onOpen: (settings) => this.duel?.open(settings),
+      onJoin: (id) => this.duel?.join(id),
+      onBack: () => this.leaveDuel(),
+    });
+    this.duelLobby = createDuelLobby({
+      onStart: () => this.duel?.ready(),
+      onConfigure: (settings) => this.duel?.configure(settings),
+      onLeave: () => {
+        this.duel?.leave();
+        this.duelState = null;
+        this.showDuelIntro();
+      },
+    });
+    this.duelResult = createDuelResult({
+      onRematch: () => this.duel?.rematch(),
+      onNewRoom: () => {
+        this.duel?.leave();
+        this.duelState = null;
+        this.showDuelIntro();
+      },
+      onBack: () => this.leaveDuel(),
     });
 
     this.settings.subscribe((next) => this.input.setKeybinds(next.keybinds));
@@ -258,14 +305,41 @@ export class App {
     }
   }
 
+  // ── Modes ──────────────────────────────────────────────────────────────────
+
+  /**
+   * Puts away whatever was running, whichever mode it belonged to.
+   *
+   * The masthead buttons stay live on every screen, so any mode can be started
+   * from inside any other — and nothing left behind is idle. An abandoned rush
+   * keeps its own frame loop drawing to the shared canvas, disables the
+   * keyboard at its buzzer and files the truncated run, which for a ranked
+   * rush is the day's only one. An abandoned duel keeps the socket, the clock
+   * and first claim on every keystroke. Doing it in one place is what stops
+   * the next mode added from being the one that gets forgotten.
+   */
+  private disposeActiveMode(): void {
+    this.run?.dispose();
+    this.run = null;
+    this.runningPuzzleId = null;
+
+    this.rush?.dispose();
+    this.rush = null;
+    this.rushTicket = null;
+
+    if (this.duelTick !== null) clearInterval(this.duelTick);
+    this.duelTick = null;
+    this.duel?.close();
+    this.duel = null;
+    this.duelState = null;
+  }
+
   // ── Explorer ───────────────────────────────────────────────────────────────
 
   private enterExplorer(): void {
     if (this.mode === "explore") return;
+    this.disposeActiveMode();
     this.mode = "explore";
-    this.run?.dispose();
-    this.run = null;
-    this.runningPuzzleId = null;
     this.badge.hide();
     this.input.setGameInputEnabled(false);
     this.paintExplorer();
@@ -280,6 +354,7 @@ export class App {
   }
 
   private leaveExplorer(): void {
+    this.disposeActiveMode();
     this.mode = "daily";
     replaceChildren(this.hud.left, this.hud.panels.hold, this.hud.panels.progress);
     this.showPlayfield();
@@ -318,6 +393,186 @@ export class App {
     replaceChildren(this.deck, el("div", { class: `screen ${modifiers}`.trim() }, ...cards));
   }
 
+  // ── 1v1 ────────────────────────────────────────────────────────────────────
+
+  private enterDuel(): void {
+    if (this.mode === "duel") return;
+    this.disposeActiveMode();
+    this.mode = "duel";
+    this.badge.hide();
+    this.input.setGameInputEnabled(false);
+
+    const self = () => this.duel?.playerId ?? "";
+    this.duel = new DuelClient(
+      this.connection.api.socketUrl("/api/duel"),
+      // Frozen for the match, like every other run: the server replays every
+      // claim under one handling and a change mid-match would rescore rounds
+      // already played.
+      this.settings.value.handling,
+      {
+        onFrame: (view, run) => {
+          this.renderer.draw(view);
+          this.hud.update(run);
+        },
+        onLobbies: (open) => this.duelIntro.setLobbies(open),
+        onState: (duel) => {
+          this.duelState = duel;
+          // A room of its own, rather than the create form with its middle
+          // hidden: setting a match up and waiting in one are different moments.
+          if (duel.phase === "lobby") this.showDuelLobby(duel);
+          // A finished duel keeps sending these while a rematch is on the
+          // table, which is how each side learns the other has asked.
+          else if (duel.phase === "over") this.showRematchState(duel);
+        },
+        onRound: (_round, puzzle, endsAt, duel) => this.beginDuelRound(puzzle, endsAt, duel),
+        onRushPuzzle: (puzzle, endsAt, _solved, _skips, duel) => {
+          if (puzzle) this.beginDuelRound(puzzle, endsAt, duel);
+          else this.duelPanel.say("Stack cleared — wait for the clock.");
+        },
+        onOpponent: (progress) => this.duelPanel.setOpponent(progress),
+        onRoundOver: (winnerId, duel, solution, nextRoundAt) => {
+          this.duelState = duel;
+          this.input.setGameInputEnabled(false);
+          this.badge.show(winnerId === self(), winnerId === self() ? "Round won" : "Round lost");
+          window.setTimeout(() => this.badge.hide(), 900);
+          this.duelIntermissionAt = nextRoundAt;
+          // Both players watch it, the loser most of all: it is the only look
+          // they get at the puzzle that just beat them, on the board they were
+          // playing it on a second ago.
+          //
+          // Only when there is a pause to watch it in. The round that decides a
+          // match is followed by the result screen, which arrives in the same
+          // breath, so a reveal there would be mounted and torn down without
+          // ever being seen.
+          if (solution && nextRoundAt !== null && this.duelPuzzle) {
+            this.attachWalkthrough(this.duelPuzzle, solution);
+          }
+        },
+        onMatchOver: (winnerId, duel) => this.endDuel(winnerId, duel),
+        onError: (message) => {
+          this.toast(message);
+          // A refused rule change gets an error and no duel frame, so the form
+          // is left showing rules the referee never accepted — and would keep
+          // sending them. Put the last agreed rules back on screen.
+          if (this.duelState?.phase === "lobby") this.showDuelLobby(this.duelState);
+        },
+        onClosed: () => {
+          if (this.mode === "duel") this.toast("The duel connection closed");
+        },
+      },
+    );
+    this.duel.connect();
+    this.showDuelIntro();
+  }
+
+  /** A round started: put the board back and hand the keyboard over. */
+  private beginDuelRound(
+    puzzle: PuzzlePrompt,
+    endsAt: number,
+    duel: import("@shared/duel").DuelView,
+  ): void {
+    this.duelState = duel;
+    this.duelEndsAt = endsAt;
+    this.duelPuzzle = puzzle;
+    // The pause is over, and with it the reveal. Dropped before the board is
+    // mounted, because relayout draws the solution player whenever there is
+    // one and would otherwise paint the last round's answer over this round.
+    this.duelIntermissionAt = null;
+    this.solutionPlayer = null;
+    this.badge.hide();
+    this.hud.setPuzzle(puzzle);
+    this.credits.update({ day: this.daily?.day ?? 0, puzzle });
+    replaceChildren(this.hud.left, this.duelPanel.element, this.hud.panels.hold);
+    replaceChildren(this.hud.right, this.hud.panels.goal, this.hud.panels.meter, this.hud.panels.queue);
+    this.showPlayfield();
+    this.input.setGameInputEnabled(true);
+    this.startDuelClock();
+  }
+
+  /** The countdown is drawn here; the server is the one enforcing it. */
+  private startDuelClock(): void {
+    if (this.duelTick !== null) return;
+    this.duelTick = setInterval(() => {
+      if (!this.duelState) return;
+      this.duelPanel.update(
+        this.duelState,
+        this.duel?.playerId ?? "",
+        this.duelEndsAt - Date.now(),
+      );
+      if (this.duelIntermissionAt === null) return;
+      const left = Math.max(0, this.duelIntermissionAt - Date.now());
+      this.duelPanel.say(`Next round in ${Math.ceil(left / 1000)}s`);
+    }, CLOCK_TICK_MS);
+  }
+
+  private showDuelIntro(): void {
+    this.duelState = null;
+    this.input.setGameInputEnabled(false);
+    this.showScreen({ wide: true, fill: true }, this.duelIntro.element);
+  }
+
+  private showDuelLobby(duel: import("@shared/duel").DuelView): void {
+    this.input.setGameInputEnabled(false);
+    this.duelLobby.update(duel, this.duel?.playerId ?? "");
+    // Mounted once. Every accepted rule change broadcasts a duel frame, and
+    // re-running showScreen would move the lobby into a fresh container each
+    // time — which takes the focused control out of the document and hands
+    // focus back to the body, mid-edit, on every keystroke that lands.
+    if (!this.duelLobby.element.isConnected) {
+      this.showScreen({ wide: true, fill: true }, this.duelLobby.element);
+    }
+  }
+
+  /**
+   * Who has asked to go again.
+   *
+   * `rematchEndsAt` is the only thing that retires the button on time: the
+   * sweep that drops a finished duel runs on its own interval and reports
+   * later than the offer actually lapses.
+   */
+  private showRematchState(duel: import("@shared/duel").DuelView): void {
+    const self = this.duel?.playerId ?? "";
+    const mine = duel.players.find((player) => player.id === self);
+    const other = duel.players.find((player) => player.id !== self);
+    const open =
+      duel.rematchEndsAt !== null &&
+      Date.now() < duel.rematchEndsAt &&
+      other?.connected === true;
+    this.duelResult.setRematch(
+      mine?.wantsRematch === true,
+      other?.wantsRematch === true,
+      open,
+    );
+  }
+
+  /** The result, with the score both players can read and a way to go again. */
+  private endDuel(winnerId: string | null, duel: import("@shared/duel").DuelView): void {
+    this.duelState = duel;
+    this.input.setGameInputEnabled(false);
+    if (this.duelTick !== null) clearInterval(this.duelTick);
+    this.duelTick = null;
+    // No round is coming, and nothing should still be holding the last one's
+    // answer: relayout draws the solution player whenever there is one.
+    this.duelIntermissionAt = null;
+    this.duelPuzzle = null;
+    this.solutionPlayer = null;
+    const self = this.duel?.playerId ?? "";
+    this.badge.hide();
+    this.duelResult.update(duel, self, winnerId);
+    this.showRematchState(duel);
+    this.showScreen({ wide: true, fill: true }, this.duelResult.element);
+  }
+
+  private leaveDuel(): void {
+    this.disposeActiveMode();
+    this.mode = "daily";
+    this.badge.hide();
+    replaceChildren(this.hud.left, this.hud.panels.hold, this.hud.panels.progress);
+    this.showPlayfield();
+    this.input.setGameInputEnabled(true);
+    this.returnToDaily();
+  }
+
   // ── Rush ───────────────────────────────────────────────────────────────────
 
   /** What the skip binding is currently on, for the intro to name. */
@@ -336,10 +591,8 @@ export class App {
    */
   private enterRush(): void {
     if (this.mode === "rush") return;
+    this.disposeActiveMode();
     this.mode = "rush";
-    this.run?.dispose();
-    this.run = null;
-    this.runningPuzzleId = null;
     this.badge.hide();
     this.input.setGameInputEnabled(false);
 
@@ -390,6 +643,8 @@ export class App {
           this.renderer.draw(view);
           this.hud.update(run);
           this.rushPanel.update(snapshot, this.rushSkips);
+          const live = this.rush?.currentRun;
+          this.hud.setHistory(live?.canUndo ?? false, live?.canRedo ?? false);
         },
         onPuzzle: (puzzle) => {
           this.hud.setPuzzle(puzzle);
@@ -468,9 +723,7 @@ export class App {
 
   /** Leaves rush for the daily, abandoning a run in progress if there is one. */
   private leaveRush(): void {
-    this.rush?.dispose();
-    this.rush = null;
-    this.rushTicket = null;
+    this.disposeActiveMode();
     this.mode = "daily";
     this.badge.hide();
     this.input.setGameInputEnabled(true);
@@ -488,6 +741,14 @@ export class App {
       this.credits.element,
       this.settingsDialog.element,
       this.toastNode,
+    );
+    this.masthead.mountControl(
+      el("button", {
+        class: "btn",
+        text: "1v1",
+        title: "Play somebody in this server",
+        on: { click: () => this.enterDuel() },
+      }),
     );
     this.masthead.mountControl(
       el("button", {
@@ -548,11 +809,13 @@ export class App {
         this.hud.update(snapshot);
       },
       onFinish: (snapshot, events) => void this.finishRun(snapshot, events),
-      onLock: () => undefined,
+      // A placement is the only thing that changes what there is to undo.
+      onLock: () => this.hud.setHistory(this.run?.canUndo ?? false, this.run?.canRedo ?? false),
     },
     carriedResets,
     this.sheetOpenedAt);
 
+    this.hud.setHistory(false, false);
     const { hold, progress, goal, meter, queue } = this.hud.panels;
     replaceChildren(this.hud.left, hold, progress);
     replaceChildren(this.hud.right, goal, meter, queue);
@@ -733,11 +996,18 @@ export class App {
 
     switch (action) {
       case "reset":
-        if (this.rush) this.rush.restart();
+        if (this.mode === "duel") this.duel?.restart();
+        else if (this.mode === "rush") this.rush?.restart();
         else this.restartAttempt();
         return;
       case "skip":
         this.skipPuzzle();
+        return;
+      case "undo":
+        this.stepHistory("undo");
+        return;
+      case "redo":
+        this.stepHistory("redo");
         return;
       default: {
         const unreachable: never = action;
@@ -746,9 +1016,48 @@ export class App {
     }
   }
 
+  /**
+   * Takes a placement back, or puts it back.
+   *
+   * Works wherever a run is live, daily included. It is a gentler restart, and
+   * a restart already undoes everything at once, so this opens no door that
+   * was not already wide open — it just costs the player less to walk through.
+   */
+  /**
+   * The run the player is actually looking at, if there is one.
+   *
+   * Keyed on the mode rather than on whichever session is still non-null, and
+   * deliberately not `??`: a rush between two puzzles has no live run, and that
+   * has to read as nothing rather than reaching past it to the daily attempt
+   * waiting underneath.
+   *
+   * Every caller that repaints the board needs this rather than `this.run`.
+   * `this.run` is the daily's, and it is null for the whole of a duel or a
+   * rush — so anything that redraws through it draws nothing at all in the two
+   * modes that have their own runs.
+   */
+  private get activeRun(): PuzzleRun | null {
+    if (this.mode === "duel") return this.duel?.currentRun ?? null;
+    if (this.mode === "rush") return this.rush?.currentRun ?? null;
+    return this.run;
+  }
+
+  private stepHistory(direction: "undo" | "redo"): void {
+    const run = this.activeRun;
+    if (!run) return;
+    const moved = direction === "undo" ? run.undo() : run.redo();
+    if (!moved) this.toast(direction === "undo" ? "Nothing to undo" : "Nothing to redo");
+    this.hud.setHistory(run.canUndo, run.canRedo);
+  }
+
   /** Rush only. In the daily there is nothing after the puzzle you are on. */
   private skipPuzzle(): void {
-    if (!this.rush) return;
+    // A rush duel has skips too, bounded by the server rather than by us.
+    if (this.mode === "duel") {
+      this.duel?.skip();
+      return;
+    }
+    if (this.mode !== "rush" || !this.rush) return;
     if (this.rush.skip()) return;
     this.toast("No skips left");
   }
@@ -774,9 +1083,15 @@ export class App {
     const box = this.stage.getBoundingClientRect();
     // The 200 matches `.stage { min-height }`; if it were larger the renderer
     // would draw a board the stage then clipped.
+    // Resizing the canvas clears it, so every layout has to be followed by a
+    // repaint of whatever should be on it. This runs from a ResizeObserver on
+    // the stage, which fires just after the playfield is mounted — so on the
+    // first puzzle of a duel or a rush it lands immediately after that puzzle
+    // was painted, wipes it, and used to redraw nothing, because the run it
+    // asked for was the daily's and the daily is not what is on screen.
     this.renderer.layout(Math.max(160, box.width), Math.max(200, box.height), rows);
     if (this.solutionPlayer) this.renderer.draw(this.solutionPlayer.view());
-    else this.run?.renderOnce();
+    else this.activeRun?.renderOnce();
   };
 
   private startCountdown(): void {

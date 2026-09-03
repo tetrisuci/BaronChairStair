@@ -184,6 +184,28 @@
   color: var(--sun);
 }
 
+/*
+ * Petr, small, in the corner. He is the last thing in the row, so he is the
+ * bottom-right of the page.
+ *
+ * The negative block margin is what keeps him free: the title's line box is
+ * about 22px and sets the strip's height, so at 26px he would push it down and
+ * charge the board for it. Pulled in, he contributes less than the text does
+ * and the strip is exactly as tall as it was before he arrived.
+ *
+ * The art is cropped tight to him, so this height is the height he is drawn at.
+ * Swapping in a version with transparent margin would shrink him without
+ * changing a number here — the first draft had a fifth of its frame empty and
+ * rendered at 21px.
+ */
+.credits__petr {
+  height: 26px;
+  width: auto;
+  flex: none;
+  margin-block: -5px;
+  margin-left: 2px;
+}
+
 /* Difficulty as a row of filled blocks, not a number nobody can calibrate. */
 .credits__pips { display: flex; }
 .pips { display: flex; align-items: center; gap: 3px; }

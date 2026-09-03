@@ -40,6 +40,14 @@ import { config } from "./config";
 import { Store } from "./db";
 import { callerKey, limitBodySize, MAX_BODY_BYTES, rateLimit } from "./limits";
 import { PuzzleArchive } from "./puzzles";
+import {
+  type SocketData,
+  duelSocket,
+  puzzlesInPlayFor,
+  openDuelSocket,
+  sweepDuels,
+  useArchive,
+} from "./duel";
 
 const LEADERBOARD_SIZE = 25;
 /**
@@ -362,6 +370,9 @@ app.get("/api/rush/standings", (c) => {
  * and because filing a deliberately empty run would otherwise buy the answer.
  */
 function maySeeSolution(session: Session, puzzleId: number): boolean {
+  // Never the puzzle they are on right now: a duel round names its puzzle, and
+  // this route would otherwise answer with the way to win it.
+  if (puzzlesInPlayFor(session.player.id).has(puzzleId)) return false;
   const { day, puzzle } = archive.today();
   if (puzzle.id !== puzzleId) return true;
   return store.runFor(day, session.player.id)?.solved === true;
@@ -724,9 +735,38 @@ console.log(
     (config.allowGuestPlay ? " (guest play enabled)" : ""),
 );
 
+useArchive(archive.puzzles);
+// A lobby nobody joins, and a finished match nobody plays again, would
+// otherwise sit in memory until the process ends.
+setInterval(() => sweepDuels(), 60_000).unref?.();
+
+const DUEL_PATH = "/api/duel";
+
+/**
+ * Whether a request is the duel upgrade, under either prefix.
+ *
+ * Recognised before Hono routing rather than as a route, because the `/.proxy`
+ * middleware re-dispatches through a copy of the request and Bun binds an
+ * upgrade to the object it was handed — so an upgrade that reaches a route via
+ * that path can never succeed.
+ */
+function isDuelPath(pathname: string): boolean {
+  const bare = pathname.startsWith("/.proxy") ? pathname.slice("/.proxy".length) : pathname;
+  return bare === DUEL_PATH;
+}
+
 export default {
   port: config.port,
-  fetch: app.fetch,
+  /**
+   * `server` is optional so the test suite, which drives `fetch` with one
+   * argument, still exercises every HTTP route.
+   */
+  fetch(request: Request, server?: import("bun").Server<SocketData>) {
+    const url = new URL(request.url);
+    if (isDuelPath(url.pathname)) return openDuelSocket(request, server, url);
+    return app.fetch(request, server);
+  },
+  websocket: duelSocket,
   idleTimeout: 60,
   // The Content-Length check in `limitBodySize` is a fast reject for honest
   // clients; a chunked request carries no length at all. This is the bound that

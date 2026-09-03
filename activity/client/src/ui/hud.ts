@@ -22,6 +22,8 @@ export interface Hud {
   /** Exposed so the app can recompose the rails when the run ends. */
   readonly panels: HudPanels;
   setPuzzle(puzzle: PuzzlePrompt): void;
+  /** Greys the undo and redo buttons when there is nothing to step to. */
+  setHistory(canUndo: boolean, canRedo: boolean): void;
   update(snapshot: RunSnapshot): void;
   /** Freezes the meter at a finished run's total. */
   showFinal(attack: number, targetAttack: number): void;
@@ -43,13 +45,38 @@ const CLEAR_LABELS: Readonly<Record<string, string>> = {
   "perfect clear": "PC",
 };
 
-export function createHud(): Hud {
+export interface HudCallbacks {
+  readonly onUndo: () => void;
+  readonly onRedo: () => void;
+}
+
+export function createHud(callbacks: HudCallbacks): Hud {
   // ── Left rail ──────────────────────────────────────────────────────────────
   const holdBay = el("div", { class: "bay" }, el("span", { class: "label", text: "empty" }));
   const holdPanel = panel("Hold", {}, holdBay);
 
   const statsBody = el("div");
-  const progressPanel = panel("Progress", {}, statsBody);
+  // Beside the count of pieces placed, because that is the number they change.
+  const undoButton = el("button", {
+    class: "btn btn--small",
+    text: "↶ Undo",
+    title: "Take back the last placement",
+    on: { click: () => callbacks.onUndo() },
+  });
+  const redoButton = el("button", {
+    class: "btn btn--small",
+    text: "↷ Redo",
+    title: "Put it back",
+    on: { click: () => callbacks.onRedo() },
+  });
+  undoButton.disabled = true;
+  redoButton.disabled = true;
+  const progressPanel = panel(
+    "Progress",
+    {},
+    statsBody,
+    el("div", { class: "btnrow" }, undoButton, redoButton),
+  );
 
   const left = el("div", { class: "rail rail--left" }, holdPanel, progressPanel);
 
@@ -123,6 +150,11 @@ export function createHud(): Hud {
       meter: meterPanel,
       queue: queuePanel,
     },
+    setHistory(canUndo, canRedo) {
+      undoButton.disabled = !canUndo;
+      redoButton.disabled = !canRedo;
+    },
+
     setPuzzle(puzzle) {
       const pieces = puzzle.queue.length + (puzzle.hold ? 1 : 0);
       goalText.textContent = puzzle.goal || "Send as much as the reference line";
