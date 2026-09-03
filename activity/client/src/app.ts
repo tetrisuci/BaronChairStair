@@ -106,6 +106,8 @@ export class App {
    */
   private rush: RushSession | null = null;
   private rushTicket: string | null = null;
+  /** Whether the run on screen was a practice run, as opposed to the day's. */
+  private rushPractice = false;
   private rushSkips = 0;
   private rushRanked = true;
   private rushState: RushState | null = null;
@@ -177,8 +179,9 @@ export class App {
       this.skipKeyName(),
     );
     this.rushResult = createRushResultCard(
-      () => void this.beginRush(true),
+      () => void this.beginRush(this.rushPractice),
       () => this.leaveRush(),
+      (id) => void this.openArchivePuzzle(id),
     );
 
     this.explorer = createExplorer({
@@ -629,6 +632,10 @@ export class App {
     this.rushIntro.setBusy(true);
     try {
       const start = await this.connection.api.startRush(practice);
+      // Which mode this was, kept apart from whether it counted: a second run
+      // at the day's own stack is unranked but it is not practice, and "play
+      // again" after one should deal that stack rather than a random one.
+      this.rushPractice = practice;
       this.rushTicket = start.ticket;
       this.rushSkips = start.skips;
       this.rushRanked = start.ranked;
@@ -692,6 +699,7 @@ export class App {
       });
       this.rushResult.update({
         run: response.run,
+        played: response.played,
         ranked: response.ranked,
         isFirst: response.isFirst,
         best: response.best,
@@ -708,6 +716,9 @@ export class App {
           skipsUsed: summary.skipsUsed,
           timeToLastSolveMs: summary.timeToLastSolveMs,
         },
+        // The server never answered, so there is no account of which puzzles
+        // were solved. Better to show none than to invent one.
+        played: [],
         ranked: false,
         isFirst: false,
         best: this.rushState?.best ?? summary.solved,

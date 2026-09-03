@@ -144,10 +144,23 @@ is nothing to skip to.
 board compares like with like. That is the run that goes on the leaderboard,
 and the first one filed is the one that sticks: a rush cannot improve on itself
 the way an unsolved puzzle can be solved later, so nothing else would stop a
-player opening rush after rush and keeping the best. Once one is on the board
-the server will not open another ranked rush that day. Practice rushes are
-unlimited and never recorded, and they run on a seed the server draws itself,
-so nobody can re-roll for a gentle sequence without paying five minutes for it.
+player opening rush after rush and keeping the best.
+
+**Play it as often as you like.** What a filed run spends is the scoring, not
+the puzzles — a replay deals the day's own sequence again and simply is not
+recorded. `ranked` is decided by the server when the rush opens and travels
+inside the signed ticket, so a fourth run cannot come back claiming to be the
+first. Practice rushes are a separate thing and stay so: also unrecorded, but
+on a seed the server draws itself, so nobody can re-roll for a gentle sequence
+without paying five minutes for it.
+
+**A rush ends on its own screen**, listing every puzzle it reached in the order
+they came, marked solved or not, each one a way back into that puzzle on its
+own. Losing one to the clock is the moment you most want another look at it,
+and the stack used to disappear with the buzzer. The marks are the verifier's
+account rather than the client's — a screen calling something solved that the
+server had just refused would be the one place the two disagree in front of the
+player.
 Ranking is by solves, and between two players on the same count, by whoever
 reached their last solve soonest.
 
