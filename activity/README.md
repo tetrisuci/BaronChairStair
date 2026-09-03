@@ -54,6 +54,23 @@ bun run tools/inspect-puzzle.ts 13 70    # why a given archive entry will not bu
 bun run typecheck
 ```
 
+**What the suite can and cannot see.** Most of it needs no browser: the engine,
+the verifier, the routes and the duel referee are all plain data in and plain
+data out. `tests/render.test.ts` adds a document through **happy-dom**, which
+builds a real DOM and cascades real stylesheets, so "which rules apply to this
+element" and "what did this component actually build" are testable — that is
+where the scroll-container and retry-wiring tests live. It is scoped to that one
+file rather than registered as a preload, because `bun test` shares a process
+and the server suite leans on Bun's own `fetch` and `Request`, which a global
+DOM registration would shadow.
+
+happy-dom does **no layout**. Nothing in the suite can tell you that a card
+overflowed its screen, that a wheel event chained to a parent, or that resizing
+a canvas cleared it. Three bugs of exactly that shape reached a player and were
+found by hand; the tests that came out of them pin the causes — the wrong run
+being repainted, the wrong scroll rules on a list — and not the symptoms. The
+symptoms still have to be looked at.
+
 `tools/e2e-submit.ts` plays today's puzzle against a running server. It signs in
 as a guest, so once Discord credentials are configured the deployment guard
 switches guest play off and the script can no longer get a session. Point it at
@@ -140,19 +157,29 @@ ever left behind by being solved or by being skipped. Skip is a rebindable key
 like every other, `S` by default; in the daily it does nothing, because there
 is nothing to skip to.
 
-**Everyone gets the same sequence on the same day**, which is the only way the
-board compares like with like. That is the run that goes on the leaderboard,
+**The ramp is by rung, not by rating.** A rush climbs in bands three wide, and
+the order inside a band is whatever the shuffle made it. Ordering on the rating
+itself gave every run the same strictly ascending ladder — which reads as a
+fixed list even when the puzzles on it are new, and on a replay of the same day
+it *was* one. Difficulty still only ever climbs: nothing from an easier band
+arrives after something from a harder one.
+
+**Everyone gets the same sequence on the same day**, for the run that counts,
+which is the only way the board compares like with like. That is the run that goes on the leaderboard,
 and the first one filed is the one that sticks: a rush cannot improve on itself
 the way an unsolved puzzle can be solved later, so nothing else would stop a
 player opening rush after rush and keeping the best.
 
 **Play it as often as you like.** What a filed run spends is the scoring, not
-the puzzles — a replay deals the day's own sequence again and simply is not
-recorded. `ranked` is decided by the server when the rush opens and travels
-inside the signed ticket, so a fourth run cannot come back claiming to be the
-first. Practice rushes are a separate thing and stay so: also unrecorded, but
-on a seed the server draws itself, so nobody can re-roll for a gentle sequence
-without paying five minutes for it.
+the puzzles. The day's shared sequence belongs to the run that is scored and to
+that one only — everyone gets the same forty in the same order for the attempt
+that reaches the board, which is the whole basis for comparing two players —
+and every run after it draws its own. A replay dealing the identical stack
+would be a memory test rather than another go at the mode. `ranked` is decided
+by the server when the rush opens and travels inside the signed ticket, so a
+fourth run cannot come back claiming to be the first, and the seed is the
+server's either way, so nobody can re-roll for a gentle sequence without paying
+five minutes for it.
 
 **A rush ends on its own screen**, listing every puzzle it reached in the order
 they came, marked solved or not, each one a way back into that puzzle on its

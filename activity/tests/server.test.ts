@@ -505,16 +505,16 @@ describe("puzzle rush", () => {
   });
 
   test("the day's rush can be played again, and only the first one counts", async () => {
-    // Replaying is allowed and keeps the day's own sequence — "let me try that
-    // again" means that stack of puzzles, not a fresh random one. What it does
-    // not keep is the leaderboard: `ranked` is decided by the server and
-    // travels inside the signed ticket.
+    // Replaying is allowed, unscored, and draws its own sequence. The day's
+    // shared order belongs to the scored run — comparing two players depends on
+    // it — and a replay that dealt the identical stack would be a memory test
+    // rather than another go at the mode.
     const first = (await (await startRush(token, false)).json()) as RushStartBody;
     const second = await startRush(token, false);
     expect(second.status).toBe(200);
     const replay = (await second.json()) as RushStartBody;
     expect(replay.ranked).toBe(false);
-    expect(replay.puzzles.map((puzzle) => puzzle.id)).toEqual(
+    expect(replay.puzzles.map((puzzle) => puzzle.id)).not.toEqual(
       first.puzzles.map((puzzle) => puzzle.id),
     );
 

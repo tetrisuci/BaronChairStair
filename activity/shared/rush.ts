@@ -47,6 +47,7 @@ export const RUSH_MAX_PIECES = 24;
 const UNRATED_DIFFICULTY = 8;
 
 type Rankable = Pick<Puzzle, "difficulty">;
+
 type Sizeable = Pick<Puzzle, "queue" | "hold">;
 
 /** Difficulty for ordering, with unrated puzzles given a plausible one. */
@@ -59,16 +60,42 @@ export function isRushEligible(puzzle: Sizeable): boolean {
 }
 
 /**
- * The puzzles for one rush, easiest first.
+ * How wide a rung of the ladder is, in difficulty.
  *
- * Shuffled first and sorted second, rather than the other way round. Sorting
+ * Puzzles inside one rung are treated as interchangeable and come out in a
+ * random order; the rungs themselves are always climbed in order. Wider rungs
+ * mean more variety and a vaguer ramp — three keeps a five-in-a-row of the
+ * archive's gentlest from arriving in the same sequence twice, while still
+ * putting every one of them before anything rated seven.
+ */
+export const RUSH_BAND_WIDTH = 3;
+
+/** Which rung of the ladder a puzzle sits on. */
+export function rushBand(puzzle: Rankable): number {
+  return Math.floor((rushDifficulty(puzzle) - 1) / RUSH_BAND_WIDTH);
+}
+
+
+/**
+ * The puzzles for one rush: gentle first, and never twice in the same order.
+ *
+ * Shuffled first and ordered second, rather than the other way round. Sorting
  * the whole archive and taking the front would hand out the same forty easiest
- * puzzles every single day, with only their order changing; drawing the forty
- * at random and then ramping them gives a fresh set daily that still starts
- * gently and still ends somewhere nobody reaches.
+ * puzzles every time, with only their order changing; drawing the forty at
+ * random and then ramping them gives a fresh set that still starts gently and
+ * still ends somewhere nobody reaches.
  *
- * `Array.prototype.sort` is stable, so puzzles of equal difficulty keep the
- * order the shuffle gave them and the day still decides between them.
+ * The ramp is by rung, not by rating. Ordering on the rating itself made every
+ * run the same strictly-ascending ladder, which reads as a fixed list even when
+ * the puzzles on it are new — and on a replay of the same day, where the seed
+ * is the same too, it *was* a fixed list. Sorting the shuffled draw by rung
+ * instead leaves the order inside each rung exactly as the shuffle left it,
+ * because `Array.prototype.sort` is stable. So the difficulty climbs and the
+ * order does not repeat.
+ *
+ * Still a pure function of `(puzzles, seed, length)`. The server re-derives the
+ * sequence from the seed in the ticket to check a run it never watched, so
+ * anything here that was not decided by the seed would make a run unverifiable.
  */
 export function rushSequence<T extends Rankable & Sizeable>(
   puzzles: readonly T[],
@@ -79,7 +106,7 @@ export function rushSequence<T extends Rankable & Sizeable>(
   if (eligible.length === 0) throw new RangeError("No puzzle is short enough for a rush");
   return seededShuffle(eligible, seed)
     .slice(0, length)
-    .sort((a, b) => rushDifficulty(a) - rushDifficulty(b));
+    .sort((a, b) => rushBand(a) - rushBand(b));
 }
 
 /**

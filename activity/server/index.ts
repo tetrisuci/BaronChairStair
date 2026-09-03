@@ -536,16 +536,25 @@ app.post("/api/rush/start", requireSession, async (c) => {
   // `ranked` is decided here and travels inside the signed ticket, so the run
   // that comes back cannot claim to be the first when it is the fourth.
   const filed = store.rushRunFor(day, session.player.id) !== null;
+  const ranked = !practice && !filed;
 
-  // A practice seed the client never chose, so nobody can re-roll for a soft
-  // sequence without paying the five minutes for it.
-  const seed = practice ? (Math.random() * 0x1_0000_0000) >>> 0 : dailyRushSeed(day);
+  /*
+   * The day's shared sequence belongs to the run that is scored, and to that
+   * run only. Everyone gets the same forty in the same order for the one
+   * attempt that reaches the board, which is the whole basis for comparing two
+   * players — and every run after it draws its own, because a replay that deals
+   * the identical stack is a memory test rather than another go at the mode.
+   *
+   * The seed is the server's either way, never the client's, so nobody can
+   * re-roll for a soft sequence without paying the five minutes for it.
+   */
+  const seed = ranked ? dailyRushSeed(day) : (Math.random() * 0x1_0000_0000) >>> 0;
   const ticket: RushTicket = {
     playerId: session.player.id,
     guildId: session.guildId,
     day,
     seed,
-    ranked: !practice && !filed,
+    ranked,
     startedAt: Date.now(),
   };
 
