@@ -171,7 +171,7 @@ export function createRushResultCard(
   const rows = el("div", {});
   const note = el("p", { class: "note", text: "" });
   const listNote = el("p", { class: "explore__count", text: "" });
-  const list = el("div", { class: "explore__list" });
+  const list = el("div", { class: "explore__list explore__list--flow" });
   // "Again" repeats whatever was just played — the day's own stack if that is
   // what it was, practice if not. It used to always mean practice, because the
   // daily could only be played once.
