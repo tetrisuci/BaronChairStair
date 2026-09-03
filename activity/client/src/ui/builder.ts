@@ -21,8 +21,8 @@
  *   hand rather than on the board — which is why the first glyph in the queue
  *   strip is boxed and says so.
  * - **`touch-action: none` on the grid** means a touch user cannot scroll the
- *   screen by dragging on the board, the largest target on the card. They scroll
- *   from the palette, the fields or the margins. That is the price of painting.
+ *   screen by dragging on the board, the largest target on it. They scroll from
+ *   the rails or the margins. That is the price of painting.
  * - **The painted board carries colour only.** The swatches are labelled, so
  *   choosing a paint is colour-safe; telling S from Z from garbage on the board
  *   is not. Letters in 24px cells were tried and read as noise.
@@ -70,17 +70,19 @@ export interface BuilderCallbacks {
   readonly onClose: () => void;
 }
 
+/**
+ * The three parts of the deck, not one card.
+ *
+ * The board is the thing being made here, so it is mounted where the game's
+ * board goes — the centre stage, with the controls in the rails either side.
+ * As a column inside a single panel it drew about 260px wide in a Discord
+ * window and still ran off the bottom of the card, which is not a surface
+ * anybody can paint a stack on.
+ */
 export interface Builder {
-  readonly element: HTMLElement;
-}
-
-function labelled(label: string, ...controls: (HTMLElement | string)[]): HTMLElement {
-  return el(
-    "div",
-    { class: "explore__row" },
-    el("span", { class: "explore__label", text: label }),
-    el("div", { class: "explore__controls" }, ...controls),
-  );
+  readonly board: HTMLElement;
+  readonly left: HTMLElement;
+  readonly right: HTMLElement;
 }
 
 function swatchLabel(paint: Paint): string {
@@ -220,38 +222,46 @@ export function createBuilder(callbacks: BuilderCallbacks): Builder {
   const clear = el("button", { class: "btn btn--small", text: "Clear board" });
   const close = el("button", { class: "btn", text: "Back to the menu" });
 
-  const element = panel(
-    "Build",
-    { class: "explore build" },
-    el("p", {
-      class: "rush__blurb",
-      text:
-        "Pick a block and drag on the board to lay the stack. Type the pieces the " +
-        "solver gets. Copy the code out when it looks right.",
-    }),
-    palette,
-    el(
-      "div",
-      { class: "build__stage" },
-      grid,
-      el(
-        "div",
-        { class: "build__side" },
-        el("span", { class: "label", text: "Hold" }),
-        holdBay,
-        el("p", {
-          class: "note build__legend",
-          text: "arrows move · space fills · backspace clears",
-        }),
-      ),
+  // ── The screen ─────────────────────────────────────────────────────────────
+
+  /*
+   * Each panel's caption is the label for the one control under it, which is
+   * why nothing here is wrapped in an `explore__row`: a 72px label column
+   * beside a field is most of a rail's width spent saying what the caption
+   * already said. The fields keep their own `aria-label`s regardless.
+   */
+  const board = el("div", { class: "build__board" }, grid);
+
+  const left = el(
+    "div",
+    { class: "rail rail--left" },
+    panel(
+      "Paint",
+      {},
+      el("p", { class: "rush__blurb", text: "Pick a block and drag on the board." }),
+      palette,
+      el("p", {
+        class: "note build__legend",
+        text: "arrows move · space fills · backspace clears",
+      }),
     ),
-    labelled("Pieces", pieces, strip),
-    labelled("Hold", holdField),
-    labelled("Goal", goalField),
-    count,
-    warning,
-    labelled("Code", codeField, copy, load),
-    el("div", { class: "btnrow" }, undoButton, clear, close),
+    panel("Edit", {}, el("div", { class: "btnrow" }, undoButton, clear)),
+    close,
+  );
+
+  const right = el(
+    "div",
+    { class: "rail" },
+    panel("Hold", {}, holdBay, holdField),
+    panel("Queue", {}, pieces, strip),
+    panel("Goal", {}, goalField, count, warning),
+    panel(
+      "Code",
+      {},
+      codeField,
+      el("div", { class: "btnrow" }, copy, load),
+      el("p", { class: "note", text: "Copy it out when the board looks right." }),
+    ),
   );
 
   // ── The one funnel ─────────────────────────────────────────────────────────
@@ -654,5 +664,5 @@ export function createBuilder(callbacks: BuilderCallbacks): Builder {
   close.addEventListener("click", () => callbacks.onClose());
 
   render();
-  return { element };
+  return { board, left, right };
 }

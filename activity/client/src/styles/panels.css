@@ -607,9 +607,10 @@
 /* ── Builder ──────────────────────────────────────────────────────────────── */
 
 /*
- * Nothing in here sets `overflow-y`. The builder is a stack of fixed blocks, not
- * an endless list, so the screen scrolls the card and the `.explore__list--flow`
- * trap above never arises.
+ * Nothing in here sets `overflow-y`. Every card is a stack of fixed blocks, so
+ * the rail is the only scroller on the screen and the `.explore__list--flow`
+ * trap above — a scroller nested in a scroller, eating the wheel wherever the
+ * pointer happens to sit — never arises.
  */
 
 .build__palette {
@@ -647,11 +648,17 @@
   color: var(--ink);
 }
 
-.build__stage {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
-  gap: 14px;
+/*
+ * The middle of the deck, where the game's stage goes — see sheet.css. The
+ * padding is the grid's own hard offset shadow: without the room it is drawn
+ * over the gutter and shaved off by whichever ancestor is scrolling.
+ */
+.build__board {
+  display: grid;
+  place-items: center;
+  min-width: 0;
+  min-height: 0;
+  padding: 0 var(--drop) var(--drop) 0;
 }
 
 /*
@@ -663,13 +670,20 @@
  * Height-led, not width-led.
  *
  * The field is ten wide and twenty tall, so square cells make the board twice
- * as tall as it is wide — sizing it by width put the floor well below the
- * bottom of a Discord window. The height is chosen first and the width follows
- * from the ratio, so the whole field is always on screen.
+ * as tall as it is wide. Sizing it by width put the floor well below the bottom
+ * of a Discord window; the height is taken first and the width follows from the
+ * ratio, so all twenty rows fit the room the board is given.
+ *
+ * That height is now the whole of the deck row rather than a slice of the
+ * viewport, which is the point of mounting the board as a stage instead of
+ * inside a card. `min-height` is not the same claim: a percentage of a row
+ * sized by *its* content resolves to auto — twenty empty rows, which is
+ * nothing — and that is what the deck does on the short viewport in narrow.css
+ * where it scrolls instead of fitting. The floor matches `.stage`'s own.
  */
 .build__grid {
-  flex: 0 0 auto;
-  height: min(58vh, 520px);
+  height: 100%;
+  min-height: 200px;
   aspect-ratio: 1 / 2;
   width: auto;
   max-width: 100%;
@@ -689,13 +703,12 @@
 .build__cell--on { box-shadow: inset 0 0 0 2px var(--ink); }
 .build__cell--cursor { outline: var(--edge) dashed var(--ink); outline-offset: -3px; }
 
-.build__side { flex: 1 1 200px; display: grid; gap: 8px; align-content: start; }
 .build__hold { min-width: 92px; }
 .build__legend { font-family: var(--mono); font-size: 10px; }
 
 /*
- * Wrapping, not scrolling: a 74-piece queue takes about six lines in a 720px
- * card, and a horizontal scroller here would be a second scroller.
+ * Wrapping, not scrolling: a 74-piece queue takes about six lines of a rail,
+ * and a horizontal scroller inside a scrolling rail would eat the wheel.
  */
 .build__strip { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; }
 .build__strip-first {
@@ -705,9 +718,13 @@
   background: var(--sun);
 }
 
-.build__pieces { flex: 1 1 160px; text-transform: uppercase; }
+/*
+ * The fields fill their panel, which is a flex *column* — so a `flex` shorthand
+ * here would set a basis along the height and stand a text box on end. The one
+ * exception is the hold letter, which is one character wide and says so.
+ */
 .build__letter { width: 44px; text-align: center; text-transform: uppercase; }
-.build__code { flex: 1 1 200px; }
+.build__pieces { text-transform: uppercase; }
 .build__warning { color: var(--warn); }
 
 /* ── The day's one board ──────────────────────────────────────────────────── */

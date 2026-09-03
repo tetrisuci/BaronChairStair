@@ -56,7 +56,11 @@ function filled(page: BlueprintPage): Filled[] {
 
 function mount() {
   const builder = createBuilder({ onClose: () => {} });
-  const element = builder.element;
+  // The builder is three siblings now — a rail, the board, a rail — and the app
+  // mounts them straight into the deck. One parent here is the deck's stand-in,
+  // so a query below reaches the whole screen the way it used to reach the card.
+  const element = builder.board.ownerDocument.createElement("div");
+  element.append(builder.left, builder.board, builder.right);
   window.document.body.append(element as never);
 
   const find = <T extends Element>(selector: string): T => {

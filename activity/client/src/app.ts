@@ -507,10 +507,23 @@ export class App {
     this.showHome();
   }
 
-  /** The three-column play layout: rails either side of the board. */
-  private showPlayfield(): void {
+  /**
+   * The three-column layout: rails either side of a centre stage.
+   *
+   * Two things mount this way — the game and the builder — and only the deck
+   * knows the shape, so the shape is written once here. Removing
+   * `deck--screen` is half of it: without that the deck is still the one
+   * stretched column a screen sits in, and the middle of three landed in it
+   * alone with the rails stacked below the fold.
+   */
+  private showColumns(left: HTMLElement, centre: HTMLElement, right: HTMLElement): void {
     this.deck.classList.remove("deck--screen");
-    replaceChildren(this.deck, this.hud.left, this.stage, this.hud.right);
+    replaceChildren(this.deck, left, centre, right);
+  }
+
+  /** The play layout: the HUD rails either side of the game's canvas. */
+  private showPlayfield(): void {
+    this.showColumns(this.hud.left, this.stage, this.hud.right);
     this.relayout();
   }
 
@@ -533,11 +546,18 @@ export class App {
    * keyboard belongs to whatever is focused inside it, and `leaveForScreen`
    * has already put away the run, rush or duel that was live when Build was
    * clicked — which is the whole of what a screen has to do here.
+   *
+   * It takes the play layout rather than a centred card, because the board is
+   * what the screen is for and a card gave it a narrow column beside its own
+   * controls. Not `showPlayfield`, which mounts the *game's* HUD and relays out
+   * a canvas that is not on screen; the builder brings its own three parts.
+   * Home and the wordmark still lead out through `showScreen`, which puts
+   * `deck--screen` back.
    */
   private enterBuilder(): void {
     this.leaveForScreen();
     this.builder ??= createBuilder({ onClose: () => this.showHome() });
-    this.showScreen({ wide: true, fill: true }, this.builder.element);
+    this.showColumns(this.builder.left, this.builder.board, this.builder.right);
   }
 
   // ── 1v1 ────────────────────────────────────────────────────────────────────

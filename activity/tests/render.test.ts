@@ -328,16 +328,39 @@ describe("rush attached to the day's board", () => {
 describe("the builder", () => {
   const mountedBuilder = () => {
     const builder = createBuilder({ onClose: () => {} });
-    window.document.body.append(builder.element as never);
+    // Mounted the way the app mounts it: three siblings, straight into the deck.
+    window.document.body.append(
+      builder.left as never,
+      builder.board as never,
+      builder.right as never,
+    );
     return builder;
   };
 
-  test("creates no scroller of its own, so the screen scrolls the card", () => {
-    // The trap `.explore__list--flow` exists for: a nested scroller inside a
-    // card that itself scrolls eats the wheel wherever the pointer sits. The
-    // builder is a stack of fixed blocks, so it must own no scroller at all.
+  test("hands the app a board and two rails, not one card", () => {
+    // The board is the centre of the deck — where the game's own board goes —
+    // rather than a column inside a card beside its controls, which is what
+    // squeezed it to about 260px in a Discord window. The three parts are the
+    // whole of that, so they are what the app is handed.
     const builder = mountedBuilder();
-    const scrollers = [...builder.element.querySelectorAll("*")].filter((node) => {
+    expect(builder.board.querySelector(".build__grid")).not.toBeNull();
+    expect(builder.left.classList.contains("rail")).toBe(true);
+    expect(builder.right.classList.contains("rail")).toBe(true);
+    // The controls live in the rails, so nothing shares the board's room.
+    expect(builder.board.querySelector("button")).toBeNull();
+    expect(builder.left.querySelector(".build__palette")).not.toBeNull();
+    expect(builder.right.querySelector(".build__code")).not.toBeNull();
+  });
+
+  test("creates no scroller of its own, so the rail is the only one", () => {
+    // The trap `.explore__list--flow` exists for: a nested scroller inside a
+    // scroller eats the wheel wherever the pointer sits. A rail scrolls, as
+    // every rail does; nothing the builder puts inside one may.
+    const builder = mountedBuilder();
+    const inside = [builder.left, builder.right, builder.board].flatMap((part) => [
+      ...part.querySelectorAll("*"),
+    ]);
+    const scrollers = inside.filter((node) => {
       const overflow = window.getComputedStyle(node as never).overflowY;
       return overflow === "auto" || overflow === "scroll";
     });
@@ -346,7 +369,7 @@ describe("the builder", () => {
 
   test("draws ten columns and the whole twenty-row field", () => {
     const builder = mountedBuilder();
-    const rows = builder.element.querySelectorAll(".build__row");
+    const rows = builder.board.querySelectorAll(".build__row");
     expect(rows).toHaveLength(MAX_ROWS);
     expect(rows[0]!.querySelectorAll(".build__cell")).toHaveLength(10);
   });

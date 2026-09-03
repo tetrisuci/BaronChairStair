@@ -33,6 +33,19 @@
   .stage { min-height: 230px; }
 
   /*
+   * The builder's board asks for more of the middle row than a board being
+   * watched does. 230px of a 1:2 field is 115px across — ten columns of eleven
+   * pixels, which is a target for a pointer and not for a finger, on the layout
+   * most likely to be getting one. The deck already scrolls here, so the extra
+   * is paid for in scrolling rather than in a clipped board.
+   *
+   * Keyed off the board rather than a class on the deck: every screen that
+   * mounts has to remember to undo whatever the last one did, and this is one
+   * fewer thing to remember.
+   */
+  .deck:has(.build__board) { grid-template-rows: auto minmax(360px, 1fr) auto; }
+
+  /*
    * Panels wrap onto more lines rather than the rail becoming a scroller:
    * `overflow-x: auto` forces the cross axis to clip too, which is what was
    * cutting result cards off halfway.
@@ -126,4 +139,14 @@
    * panel alone is taller than the strip of deck you can see at once.
    */
   .queue { max-height: 40vh; }
+
+  /*
+   * `align-items: start` leaves the middle row sized by what is in it, and a
+   * percentage height against that resolves to nothing — so here the board is
+   * whatever this floor says and nothing else. The deck is scrolling by now,
+   * which is what pays for a board taller than the window: the same 360 the
+   * narrow layout asks for, so a window that is both short and narrow gets one
+   * board and not two disagreeing answers.
+   */
+  .build__grid { min-height: 360px; }
 }
