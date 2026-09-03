@@ -719,6 +719,33 @@
 }
 
 /*
+ * The goal's counters: one row per clear the goal actually names, plus attack.
+ *
+ * Count first, word second. The number is the thing that changes and the word
+ * beside it is its label, which is the opposite arrangement to the explorer's
+ * filter rows — there the label names a control that could be anything, here it
+ * names the count in front of it. Ten fixed rows were the alternative and they
+ * filled the rail with zeroes nobody had typed.
+ *
+ * `[hidden]` is spelled out because a `display` on the class beats the user
+ * agent's: without it, a prose goal would show empty counters under itself.
+ */
+.build__goals { display: grid; gap: 6px; }
+.build__goal {
+  display: grid;
+  grid-template-columns: 68px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+.build__goals[hidden],
+.build__goal[hidden],
+.build__goal-add[hidden] { display: none; }
+/* Square, so the × reads as the row's own control and not as a word. */
+.build__goal-drop { padding: 3px 8px; line-height: 1; }
+/* Never the thing that wraps: the button beside it is two letters wide. */
+.build__goal-pick { flex: 1 1 110px; min-width: 0; }
+
+/*
  * The fields fill their panel, which is a flex *column* — so a `flex` shorthand
  * here would set a basis along the height and stand a text box on end. The one
  * exception is the hold letter, which is one character wide and says so.

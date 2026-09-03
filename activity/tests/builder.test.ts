@@ -114,6 +114,38 @@ function mount() {
     pieces: find<HTMLInputElement>(".build__pieces"),
     holdField: find<HTMLInputElement>(".build__letter"),
     goalField: find<HTMLInputElement>('input[aria-label="Goal"]'),
+    goalRows: find<HTMLElement>(".build__goals"),
+    goalNote: find<HTMLElement>(".build__goal-note"),
+    attackBox: find<HTMLInputElement>('input[aria-label="Attack"]'),
+
+    /** A clear's count box, by the word its row shows. */
+    countBox: (label: string) => find<HTMLInputElement>(`input[aria-label="${label} count"]`),
+
+    /** Whether the goal panel is offering a counter for this clear at all. */
+    hasCount: (label: string) =>
+      element.querySelector(`input[aria-label="${label} count"]`) !== null,
+
+    /** A whole number typed into one of the counters and committed. */
+    setNumber(field: HTMLInputElement, value: string): void {
+      field.focus();
+      field.value = value;
+      field.dispatchEvent(new window.Event("change", { bubbles: true }) as never);
+    },
+
+    /** Choose a clear from the list and press Add, which is the only way in. */
+    addClear(clear: string): void {
+      const pick = find<HTMLSelectElement>(".build__goal-pick");
+      pick.value = clear;
+      pick.dispatchEvent(new window.Event("change", { bubbles: true }) as never);
+      this.press("Add");
+    },
+
+    /** The × on a clear's row, which is the only way out. */
+    removeClear(label: string): void {
+      const button = find<HTMLElement>(`button[aria-label="Remove ${label}"]`);
+      button.focus();
+      button.click();
+    },
     warning: find<HTMLElement>(".build__warning"),
     /** The screen row the floor is drawn on, which moves as the stack grows. */
     bottomRow: () => grid.childElementCount - 1,
@@ -467,6 +499,96 @@ describe("a code brought in from somewhere else", () => {
     ui.load("b1@not-a-real-code");
     expect(filled(decodeBlueprint(built).pages[0]!)).toHaveLength(2);
     expect(ui.grid.querySelectorAll(".build__cell--on")).toHaveLength(2);
+  });
+});
+
+/**
+ * The goal's counters, driven through the DOM.
+ *
+ * `builder-state.test.ts` pins the sentence and its parser. What only a DOM can
+ * show is that the two halves are wired the one way round that makes the design
+ * safe: the counters write the text, and nothing writes it back at them. A load
+ * that reworded somebody's goal would pass every pure test in the suite.
+ */
+describe("saying the goal in counts", () => {
+  test("writes the sentence the club would have written, into the code", () => {
+    const ui = mount();
+    ui.addClear("tsd");
+    ui.addClear("tst");
+    ui.setNumber(ui.countBox("TSD"), "2");
+
+    expect(ui.goalField.value).toBe("Clear 2 TSDs and 1 TST");
+    expect(ui.page().comment).toBe("Clear 2 TSDs and 1 TST");
+  });
+
+  test("carries the attack out, which is the number nothing else can supply", () => {
+    // A builder puzzle has no reference solution, so this figure exists only
+    // because the author said it — and the comment is the only place to put it.
+    const ui = mount();
+    ui.addClear("tsd");
+    ui.setNumber(ui.countBox("TSD"), "3");
+    ui.setNumber(ui.attackBox, "18");
+
+    expect(ui.page().comment).toBe("Clear 3 TSDs for 18 attack");
+  });
+
+  test("takes a clear back out rather than leaving it at zero", () => {
+    const ui = mount();
+    ui.addClear("tsd");
+    ui.addClear("quad");
+    ui.setNumber(ui.countBox("TSD"), "2");
+    ui.removeClear("Quad");
+
+    expect(ui.goalField.value).toBe("Clear 2 TSDs");
+    expect(ui.goalField.value).not.toContain("0 Quad");
+    expect(ui.hasCount("Quad")).toBe(false);
+    // And a count typed down to zero goes the same way, row and all.
+    ui.setNumber(ui.countBox("TSD"), "0");
+    expect(ui.goalField.value).toBe("");
+    expect(ui.hasCount("TSD")).toBe(false);
+  });
+
+  test("a goal written out by hand survives a load exactly as it was", () => {
+    // The rule the design turns on. Most codes in existence carry prose, and a
+    // builder that rounds one into the nearest spec has eaten somebody's work
+    // between two button presses.
+    const ui = mount();
+    const prose = encodeBlueprint({
+      cells: [{ x: 0, y: 0, type: "g" }],
+      previews: ["T"],
+      hold: null,
+      comment: "3TSD not in one combo",
+    });
+    ui.load(prose);
+
+    expect(ui.goalField.value).toBe("3TSD not in one combo");
+    expect(ui.code()).toBe(prose);
+    // The counters stand aside and say so rather than showing a wrong total.
+    expect(ui.goalRows.hidden).toBe(true);
+    expect(ui.goalNote.hidden).toBe(false);
+  });
+
+  test("fills the counters from a loose goal without rewording it", () => {
+    // "2 TSD + 1 TST" is how the archive writes this one. It reads, so the
+    // counters fill in — but the text is the author's until they move a
+    // control, and the code that goes back out is the code that came in.
+    const ui = mount();
+    const loose = encodeBlueprint({
+      cells: [{ x: 0, y: 0, type: "g" }],
+      previews: ["T"],
+      hold: null,
+      comment: "2 TSD + 1 TST",
+    });
+    ui.load(loose);
+
+    expect(ui.countBox("TSD").value).toBe("2");
+    expect(ui.countBox("TST").value).toBe("1");
+    expect(ui.goalField.value).toBe("2 TSD + 1 TST");
+    expect(ui.code()).toBe(loose);
+
+    // Touching a counter is the author asking for the sentence to be rewritten.
+    ui.setNumber(ui.countBox("TST"), "2");
+    expect(ui.goalField.value).toBe("Clear 2 TSDs and 2 TSTs");
   });
 });
 

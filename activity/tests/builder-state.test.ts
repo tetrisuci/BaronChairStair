@@ -14,11 +14,18 @@ import { describe, expect, test } from "bun:test";
 import { decodeBlueprint } from "../shared/blueprint/decode";
 import { encodeBlueprint } from "../shared/blueprint/encode";
 import {
+  MAX_GOAL_COUNT,
   type BuilderState,
+  type GoalSpec,
   cellIndex,
+  CLEAR_NAMES,
+  EMPTY_GOAL,
   EMPTY_STATE,
+  formatGoal,
   fromCode,
   fromPage,
+  GOAL_LABELS,
+  goalFits,
   hiddenCellCount,
   lossFromPage,
   MAX_GOAL,
@@ -26,11 +33,15 @@ import {
   MAX_ROWS,
   pageOf,
   paintCells,
+  parseGoal,
   parsePieces,
   sanitizeGoal,
   summaryOf,
   toCode,
+  unusedClears,
   warningFor,
+  withGoalAttack,
+  withGoalEntry,
 } from "../client/src/ui/builder-state";
 import { archive, hasSolutions } from "./archive";
 
@@ -149,6 +160,191 @@ describe("the goal field", () => {
   });
 });
 
+/**
+ * The goal's structured half.
+ *
+ * The whole design problem is that a blueprint code has one free-text comment
+ * and nothing else, so the counts have to survive as a sentence and be found
+ * again inside one. Two things are therefore load-bearing and both are pinned
+ * here: the sentence has to be one the club would have written by hand, and a
+ * sentence that is *not* one of ours has to come back untouched rather than be
+ * rounded into the nearest spec.
+ */
+describe("a goal written as counts", () => {
+  const spec = (clears: GoalSpec["clears"], attack = 0): GoalSpec => ({ clears, attack });
+
+  test("reads as a goal the archive would have written by hand", () => {
+    // Every one of these is a string that appears verbatim in data/puzzles.json,
+    // which is the bar: the player reads this on the sheet, not a format.
+    expect(formatGoal(spec([{ clear: "tsd", count: 1 }]))).toBe("Clear 1 TSD");
+    expect(
+      formatGoal(
+        spec([
+          { clear: "tsd", count: 2 },
+          { clear: "tst", count: 1 },
+        ]),
+      ),
+    ).toBe("Clear 2 TSDs and 1 TST");
+    // Three or more take the Oxford comma, as the archive's own do.
+    expect(
+      formatGoal(
+        spec([
+          { clear: "tss", count: 1 },
+          { clear: "tsd", count: 2 },
+          { clear: "tst", count: 1 },
+        ]),
+      ),
+    ).toBe("Clear 1 TSS, 2 TSDs, and 1 TST");
+    expect(formatGoal(EMPTY_GOAL)).toBe("");
+  });
+
+  test("comes back out of its own sentence as the same counts", () => {
+    const original = spec(
+      [
+        { clear: "tss", count: 1 },
+        { clear: "tsd", count: 2 },
+        { clear: "quad", count: 3 },
+      ],
+      18,
+    );
+    expect(parseGoal(formatGoal(original))).toEqual(original);
+  });
+
+  test("round trips every clear the vocabulary has", () => {
+    // A clear added to `ClearName` and forgotten here would serialise to a word
+    // the parser cannot read, and the counters would eat it on the way back.
+    for (const clear of CLEAR_NAMES) {
+      const one = spec([{ clear, count: 1 }]);
+      const many = spec([{ clear, count: 4 }], 7);
+      expect(parseGoal(formatGoal(one))).toEqual(one);
+      expect(parseGoal(formatGoal(many))).toEqual(many);
+    }
+  });
+
+  test("carries the attack, which is the number nothing else can derive", () => {
+    // A builder puzzle has no reference solution, so `targetAttack` cannot be
+    // computed the way the pipeline computes it. The author's own figure has to
+    // survive the only channel a code has.
+    const withAttack = spec([{ clear: "tsd", count: 3 }], 18);
+    const text = formatGoal(withAttack);
+    expect(text).toBe("Clear 3 TSDs for 18 attack");
+    expect(parseGoal(text)?.attack).toBe(18);
+
+    // And on its own, with nothing to clear.
+    expect(formatGoal(spec([], 20))).toBe("Send 20 attack");
+    expect(parseGoal("Send 20 attack")).toEqual(spec([], 20));
+
+    // Through the code itself, which is where it actually has to survive.
+    const again = fromCode(toCode(state({ queue: ["T"], goal: text })));
+    expect(again.goal).toBe(text);
+    expect(parseGoal(again.goal)).toEqual(withAttack);
+  });
+
+  test("never prints a count of zero", () => {
+    // "0 Quad" is not a goal, it is a control somebody turned back down.
+    const zeroed = withGoalEntry(
+      spec([
+        { clear: "tsd", count: 2 },
+        { clear: "quad", count: 3 },
+      ]),
+      "quad",
+      0,
+    );
+    expect(formatGoal(zeroed)).toBe("Clear 2 TSDs");
+    expect(zeroed.clears).toEqual([{ clear: "tsd", count: 2 }]);
+    // Even handed a spec that was built with one in it by some other route.
+    expect(
+      formatGoal(
+        spec([
+          { clear: "tsd", count: 2 },
+          { clear: "quad", count: 0 },
+        ]),
+      ),
+    ).toBe("Clear 2 TSDs");
+    // And an attack of zero is silence, not "for 0 attack".
+    expect(formatGoal(spec([{ clear: "tsd", count: 1 }], 0))).toBe("Clear 1 TSD");
+    expect(formatGoal(withGoalAttack(spec([], 12), 0))).toBe("");
+  });
+
+  test("reads the archive's own looser wording without rewriting it", () => {
+    // Tolerance is one-way: these parse, so the counters fill in, but nothing
+    // writes the text back unless the author moves a control.
+    expect(parseGoal("2 TSD + 1 TST")).toEqual(
+      spec([
+        { clear: "tsd", count: 2 },
+        { clear: "tst", count: 1 },
+      ]),
+    );
+    expect(parseGoal("3TSD")).toEqual(spec([{ clear: "tsd", count: 3 }]));
+    expect(parseGoal("2 TSS, 3 TSD")).toEqual(
+      spec([
+        { clear: "tss", count: 2 },
+        { clear: "tsd", count: 3 },
+      ]),
+    );
+    expect(parseGoal("Clear 1 TSD and 1 Tetris")).toEqual(
+      spec([
+        { clear: "tsd", count: 1 },
+        { clear: "quad", count: 1 },
+      ]),
+    );
+    expect(parseGoal("Perform 3 Spins")).toEqual(spec([{ clear: "spin", count: 3 }]));
+  });
+
+  test("refuses anything it cannot account for, whole", () => {
+    // Each of these is a real archived goal carrying something the counters
+    // have no room for. Half-reading them would drop the half that matters.
+    for (const prose of [
+      "3TSD not in one combo",
+      "3 B2B in one combo",
+      "Clear a TSD",
+      "Send 16 (no b2b table)",
+      "Clear 2 TSDs and 1 Quad (no hold)",
+      "TSD + TST",
+      "Clear a Quad while keeping season 2 B2B",
+      "Clear 4 TSDs and 2 Quads | Chain 5 attacks together",
+      // Not a total but an order, so the counters would say the wrong thing.
+      "2 TSDs and 2 TSDs",
+    ]) {
+      expect(parseGoal(prose)).toBeNull();
+    }
+    // Empty is not prose: it is a goal nobody has written yet.
+    expect(parseGoal("   ")).toEqual(EMPTY_GOAL);
+  });
+
+  test("leaves a prose comment exactly as it was written, through the code", () => {
+    // The rule the whole design turns on. Most codes in existence carry a goal
+    // that will never parse, and a builder that eats one on load is worse than
+    // one with no counters at all.
+    const prose = "3TSD not in one combo";
+    const again = fromCode(toCode(state({ queue: ["T"], goal: prose })));
+    expect(again.goal).toBe(prose);
+    expect(parseGoal(again.goal)).toBeNull();
+  });
+
+  test("offers only the clears the goal does not already name", () => {
+    expect(unusedClears(EMPTY_GOAL)).toEqual([...CLEAR_NAMES]);
+    expect(unusedClears(spec([{ clear: "tsd", count: 1 }]))).not.toContain("tsd");
+  });
+
+  test("knows when a sentence has run past what a comment can carry", () => {
+    const every = CLEAR_NAMES.reduce(
+      (built, clear) => withGoalEntry(built, clear, 99),
+      EMPTY_GOAL,
+    );
+    // Ten clears at two digits each is a sentence longer than the field holds,
+    // and the builder disables Add rather than truncating into unparseable text.
+    expect(formatGoal(every).length).toBeGreaterThan(MAX_GOAL);
+    expect(goalFits(every)).toBe(false);
+    expect(goalFits(spec([{ clear: "tsd", count: 2 }], 18))).toBe(true);
+  });
+
+  test("names every clear, so a new one cannot go unlabelled", () => {
+    for (const clear of CLEAR_NAMES) expect(GOAL_LABELS[clear]).not.toBe("");
+    expect(CLEAR_NAMES).toHaveLength(10);
+  });
+});
+
 describe("what a load cannot keep", () => {
   const oversized = encodeBlueprint({
     cells: [{ x: 0, y: 0, type: "g" }],
@@ -246,5 +442,23 @@ describe("the summary line", () => {
       "1 cells · 2 pieces · no hold",
     );
     expect(summaryOf(state({ hold: "O" }))).toBe("0 cells · 0 pieces · hold O");
+  });
+});
+
+describe("a count typed wrong", () => {
+  test("a stray minus keeps the clear instead of deleting it", () => {
+    // Zero means "take this clear out"; a negative means a typo. Folding them
+    // together deleted the row on `-4` while `150` was politely clamped — the
+    // same control behaving two different ways at its two ends.
+    const spec = withGoalEntry(withGoalEntry(EMPTY_GOAL, "tsd", 2), "tst", 1);
+    expect(withGoalEntry(spec, "tsd", -4).clears.map((entry) => entry.clear)).toEqual([
+      "tsd",
+      "tst",
+    ]);
+    expect(withGoalEntry(spec, "tsd", -4).clears[0]!.count).toBe(1);
+    // Zero still means what it meant.
+    expect(withGoalEntry(spec, "tsd", 0).clears.map((entry) => entry.clear)).toEqual(["tst"]);
+    // And an overshoot is still clamped, not refused.
+    expect(withGoalEntry(spec, "tsd", 150).clears[0]!.count).toBe(MAX_GOAL_COUNT);
   });
 });
