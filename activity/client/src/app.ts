@@ -19,6 +19,7 @@ import { type LocalAction, keyName } from "@shared/keybinds";
 import { RushSession, type RushSummary } from "./game/rush";
 import { PuzzleRun, type RunSnapshot } from "./game/runner";
 import { createDailyMenu, createTierPicker } from "./ui/daily-tiers";
+import { createDailyBoard } from "./ui/daily-board";
 import { createHome } from "./ui/home";
 import type { DailyTier } from "@shared/daily";
 import { activeRun } from "./game/active-run";
@@ -65,6 +66,7 @@ export class App {
   });
   private readonly badge = createVerdictBadge();
   private readonly leaderboard = createLeaderboardPanel();
+  private readonly dailyBoard = createDailyBoard();
   private readonly canvas = el("canvas", {
     class: "field",
     attrs: { role: "img", "aria-label": "Puzzle playfield" },
@@ -127,13 +129,8 @@ export class App {
     onRush: () => this.enterRush(),
     onDuel: () => this.enterDuel(),
     onExplore: () => this.enterExplorer(),
-    onTier: (tier) => {
-      this.boardTier = tier;
-      void this.loadLeaderboard();
-    },
+    onPlayTier: (tier) => this.showDailyTier(tier),
   });
-  /** Which tier's board the home screen is showing. Not what you are playing. */
-  private boardTier: DailyTier = "easy";
   private daily: DailyResponse | null = null;
   /**
    * Which of the day's three is on the board.
@@ -283,9 +280,8 @@ export class App {
     this.mode = "daily";
     this.input.setGameInputEnabled(false);
     this.badge.hide();
-    this.home.update(this.daily.day, this.daily.puzzles, this.daily.streak, this.boardTier);
-    this.leaderboard.setVisible(true);
-    this.home.mountBoard(this.leaderboard.element);
+    this.home.update(this.daily.day, this.daily.puzzles, this.daily.streak);
+    this.home.mountBoard(this.dailyBoard.element);
     this.showScreen({ wide: true, fill: true }, this.home.element);
     void this.loadLeaderboard();
   }
@@ -1104,8 +1100,13 @@ export class App {
 
   private async loadLeaderboard(): Promise<void> {
     try {
-      const { entries } = await this.connection.api.leaderboard(this.boardTier);
-      this.leaderboard.update(entries, this.connection.player.id);
+      const { boards } = await this.connection.api.leaderboard();
+      const self = this.connection.player.id;
+      // One call, two readers: the home screen shows the day whole, and the
+      // panel beside a board shows the tier being played.
+      this.dailyBoard.update(boards, self);
+      const mine = boards.find((board) => board.tier === this.dailyTier);
+      this.leaderboard.update(mine?.entries ?? [], self);
     } catch {
       // The result card is still useful without the leaderboard.
     }

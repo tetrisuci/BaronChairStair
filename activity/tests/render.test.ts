@@ -18,6 +18,7 @@ import { readFileSync } from "node:fs";
 import { Window } from "happy-dom";
 import { activeRun } from "../client/src/game/active-run";
 import { createDailyMenu } from "../client/src/ui/daily-tiers";
+import { mergeBoards } from "../client/src/ui/daily-board";
 import { createRushResultCard } from "../client/src/ui/rush";
 import type { RushPlayed } from "../client/src/api";
 
@@ -285,5 +286,62 @@ describe("the day's chooser", () => {
     const rows = [...made.element.querySelectorAll(".explore__item")];
     (rows[2] as unknown as HTMLElement).click();
     expect(picked).toEqual(["hard"]);
+  });
+});
+
+describe("the day's one leaderboard", () => {
+  const run = (id: string, solved: boolean, totalMs: number) =>
+    ({ player: { id, username: id, avatarUrl: null }, solved, totalMs }) as never;
+
+  const boards = [
+    { tier: "easy" as const, entries: [run("ada", true, 1000), run("bo", true, 500)] },
+    { tier: "medium" as const, entries: [run("ada", true, 2000)] },
+    { tier: "hard" as const, entries: [run("ada", false, 0), run("cy", true, 100)] },
+  ];
+
+  test("puts each player on one row, however many boards they are on", () => {
+    // ada appears on all three and comes back once. The order is the ranking,
+    // not the order they were merged in: two solves, then the faster of the two
+    // who managed one.
+    const rows = mergeBoards(boards);
+    expect(rows.map((row) => row.id)).toEqual(["ada", "cy", "bo"]);
+  });
+
+  test("ranks by solves first, so a fast single solve does not lead", () => {
+    // bo and cy each solved one, faster than ada solved two. Sorting on time
+    // alone would put them above her — and would put somebody who solved
+    // nothing, on a total of zero, above everybody.
+    const rows = mergeBoards(boards);
+    expect(rows[0]!.id).toBe("ada");
+    expect(rows[0]!.solved).toBe(2);
+    expect(rows[0]!.totalMs).toBe(3000);
+    // Between the two who solved one, the faster one leads.
+    expect(rows[1]!.id).toBe("cy");
+  });
+
+  test("counts only the time of the puzzles actually solved", () => {
+    // ada filed the hard one and failed it; that attempt is not time she spent
+    // getting to a solve and must not be added to her total.
+    expect(mergeBoards(boards)[0]!.totalMs).toBe(3000);
+  });
+
+  test("remembers what was tried and failed, apart from what was never opened", () => {
+    const ada = mergeBoards(boards)[0]!;
+    expect(ada.marks.get("hard")).toBe(false);
+    const cy = mergeBoards(boards).find((row) => row.id === "cy")!;
+    expect(cy.marks.has("easy")).toBe(false);
+  });
+
+  test("two players with the same name stay two players", () => {
+    const sameName = [
+      {
+        tier: "easy" as const,
+        entries: [
+          { player: { id: "1", username: "guest", avatarUrl: null }, solved: true, totalMs: 1 },
+          { player: { id: "2", username: "guest", avatarUrl: null }, solved: true, totalMs: 2 },
+        ] as never,
+      },
+    ];
+    expect(mergeBoards(sameName)).toHaveLength(2);
   });
 });

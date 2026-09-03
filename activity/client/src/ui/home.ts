@@ -20,24 +20,21 @@ export interface HomeCallbacks {
   readonly onRush: () => void;
   readonly onDuel: () => void;
   readonly onExplore: () => void;
-  /** Which tier's board to show. */
-  readonly onTier: (tier: DailyTier) => void;
+  /** Straight into one of the day's three, past the chooser. */
+  readonly onPlayTier: (tier: DailyTier) => void;
 }
 
 export interface Home {
   readonly element: HTMLElement;
   /** `board` is the leaderboard panel, mounted here rather than owned here. */
   mountBoard(board: HTMLElement): void;
-  update(day: number, entries: readonly DailyEntry[], streak: number, tier: DailyTier): void;
+  update(day: number, entries: readonly DailyEntry[], streak: number): void;
 }
-
-const TIERS: readonly DailyTier[] = ["easy", "medium", "hard"];
 
 export function createHome(callbacks: HomeCallbacks): Home {
   const heading = el("p", { class: "rush__blurb", text: "" });
   const progress = el("div", { class: "tiers" });
   const boardSlot = el("div", {});
-  const boardTabs = el("div", { class: "tiers" });
 
   const go = (label: string, hint: string, onClick: () => void) => {
     const button = el("button", { class: "btn btn--primary home__go", text: label, title: hint });
@@ -58,8 +55,6 @@ export function createHome(callbacks: HomeCallbacks): Home {
       go("1v1", "Play somebody in this server", callbacks.onDuel),
       go("Explore", "The whole archive", callbacks.onExplore),
     ),
-    el("p", { class: "explore__count", text: "Today's boards" }),
-    boardTabs,
     boardSlot,
   );
 
@@ -68,7 +63,7 @@ export function createHome(callbacks: HomeCallbacks): Home {
     mountBoard(board) {
       replaceChildren(boardSlot, board);
     },
-    update(day, entries, streak, tier) {
+    update(day, entries, streak) {
       const solved = entries.filter((entry) => entry.run?.solved).length;
       heading.textContent =
         `Puzzle #${day}. ` +
@@ -77,26 +72,23 @@ export function createHome(callbacks: HomeCallbacks): Home {
           ? "All three done today."
           : `${solved} of ${entries.length} solved today.`);
 
-      // The day's state at a glance, and not a control: the daily button goes
-      // to the chooser, which is where a puzzle is actually picked.
+      // Buttons, because they looked like buttons and a control that reads as
+      // clickable and is not is worse than no control. Each one is the short
+      // way into that puzzle; the Daily button below goes to the chooser, which
+      // is where the three can be compared before picking.
       replaceChildren(
         progress,
-        ...entries.map((entry) =>
-          el("span", {
+        ...entries.map((entry) => {
+          const button = el("button", {
             class: "btn btn--small tiers__pick",
             text: `${entry.tier}${entry.run?.solved ? " ✓" : entry.run ? " ·" : ""}`,
-          }),
-        ),
-      );
-
-      replaceChildren(
-        boardTabs,
-        ...TIERS.map((each) => {
-          const button = el("button", {
-            class: `btn btn--small tiers__pick${each === tier ? " tiers__pick--on" : ""}`,
-            text: each,
+            title: entry.run?.solved
+              ? "Solved — open it again"
+              : entry.run
+                ? "Filed, not solved"
+                : "Not played yet",
           });
-          button.addEventListener("click", () => callbacks.onTier(each));
+          button.addEventListener("click", () => callbacks.onPlayTier(entry.tier));
           return button;
         }),
       );

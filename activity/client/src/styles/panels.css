@@ -608,3 +608,57 @@
   flex: 1 1 120px;
   padding-block: 12px;
 }
+
+/* ── The day's one board ──────────────────────────────────────────────────── */
+
+.board__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 0;
+  border-bottom: 1px dashed var(--ink-line);
+}
+.board__row:last-child { border-bottom: 0; }
+
+/* Yours, findable without reading every line. */
+.board__row--self { font-weight: 700; }
+
+.board__rank {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-faint);
+  min-width: 2ch;
+  text-align: right;
+}
+
+.board__marks { display: flex; gap: 3px; flex: none; }
+
+/*
+ * Three states and three appearances. Solved, tried and failed, and never
+ * opened are different days, and the shape carries it as well as the colour —
+ * a filled square, a hollow one, and a dotted one read apart without it.
+ */
+.board__mark {
+  width: 11px;
+  height: 11px;
+  border: 1px solid var(--ink);
+  border-radius: 2px;
+}
+.board__mark--on { background: var(--good); }
+.board__mark--off { background: transparent; }
+.board__mark--none { border-style: dotted; opacity: 0.5; }
+
+.board__name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.board__score {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-soft);
+  white-space: nowrap;
+}

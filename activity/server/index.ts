@@ -263,8 +263,16 @@ function totalTimeOnPuzzle(claimed: unknown, verifiedMs: number): number {
 app.get("/api/daily/leaderboard", requireSession, (c) => {
   const session = c.get("session");
   const day = archive.currentDay();
-  const tier = readTier(c.req.query("tier") ?? "easy");
-  return c.json({ day, tier, entries: store.leaderboard(day, session.guildId, tier, LEADERBOARD_SIZE) });
+  // All three at once. They are one day, and a board you have to click between
+  // is three boards — the player wants to know how their server did today, not
+  // how it did at one difficulty.
+  return c.json({
+    day,
+    boards: DAILY_TIERS.map((tier) => ({
+      tier,
+      entries: store.leaderboard(day, session.guildId, tier, LEADERBOARD_SIZE),
+    })),
+  });
 });
 
 // ── Bot-facing endpoints ─────────────────────────────────────────────────────

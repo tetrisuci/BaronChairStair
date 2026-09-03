@@ -204,8 +204,11 @@ export class Api {
     return this.request("/api/daily/run", { method: "POST", body: JSON.stringify(body) });
   }
 
-  leaderboard(tier: DailyTier): Promise<{ day: number; tier: DailyTier; entries: readonly StoredRun[] }> {
-    return this.request(`/api/daily/leaderboard?tier=${tier}`);
+  leaderboard(): Promise<{
+    day: number;
+    boards: readonly { tier: DailyTier; entries: readonly StoredRun[] }[];
+  }> {
+    return this.request("/api/daily/leaderboard");
   }
 
   rush(): Promise<RushState> {
