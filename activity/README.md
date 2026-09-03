@@ -277,10 +277,24 @@ human made them, and a scripted client beats it. A fixed sequence per day also
 means whoever plays later knows what is coming — the daily's own trade, forty
 puzzles at a time.
 
+## Placing a piece
+
+**Only a hard drop places a piece.** There is no lock delay and no limit on
+moves or rotations: gravity is zero, so a piece stays exactly where it is put,
+for as long as it is left there, and soft drop seats it against the stack
+without committing it. A puzzle is a placement problem, and a timer that took
+the piece out of the player's hands after a fixed number of frames was a
+reaction test hidden inside one ([#8](https://github.com/tetrisuci/BaronChairStair/issues/8)).
+
+This is one config, shared: the browser plays under it and the server replays
+every submitted log under it, so the two cannot disagree about when a piece
+went down.
+
 ## Controls
 
 Fully rebindable, with TETR.IO handling: DAS, ARR, DCD, SDF, safe lock, DAS
-cancel, 20G movement, and initial rotation/hold. Settings are stored locally and
+cancel, 20G movement, and initial rotation/hold. Lock delay is absent rather
+than configurable — see above. Settings are stored locally and
 mirrored to the player's Discord account, so they follow them to another device.
 
 **Timings are in milliseconds**, matching the club's own board and every

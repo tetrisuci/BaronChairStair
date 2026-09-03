@@ -344,21 +344,50 @@ describe("handling units", () => {
   });
 });
 
-describe("verifyRun timing", () => {
+describe("nothing places a piece but the player", () => {
+  const setup = { board: EMPTY_BOARD, queue: ["T", "O", "S"] as Mino[], hold: null };
+  const at = (frame: number, key: string, type: "keydown" | "keyup"): InputEvent =>
+    ({ frame, type, data: { key, subframe: 0 } }) as InputEvent;
+
   /**
-   * Pieces do not only lock on hard drop. Seated with soft drop they lock when
-   * the lock delay expires, which is after the last key the player pressed — so
-   * a replay that stops at the final input scores a real solve as a failure.
+   * The inverse of what this file used to assert.
+   *
+   * Pieces used to lock on a timer once they were resting, so a soft drop held
+   * and never released placed the whole queue on its own. Issue #8 took the
+   * timer away: a piece rests where it is put, for as long as the player leaves
+   * it there, and only a hard drop commits it.
    */
-  test("counts pieces that lock after the last input", () => {
-    const setup = { board: EMPTY_BOARD, queue: ["T", "O", "S"] as Mino[], hold: null };
-    // One key, never released: soft drop seats each piece, the lock delay does
-    // the rest, and nothing else is ever pressed.
-    const held: InputEvent[] = [
-      { frame: 0, type: "keydown", data: { key: "softDrop", subframe: 0 } },
+  test("a piece seated with soft drop and left there is never placed", () => {
+    const seated = [at(0, "softDrop", "keydown")];
+    expect(verifyRun(setup, DEFAULT_HANDLING, seated).placements).toEqual([]);
+  });
+
+  test("a piece rests through a long log that never asks it to drop", () => {
+    // Two minutes of holding left, well past any lock delay that ever existed.
+    const shuffling = [at(0, "moveLeft", "keydown"), at(7200, "moveLeft", "keyup")];
+    expect(verifyRun(setup, DEFAULT_HANDLING, shuffling).placements).toEqual([]);
+  });
+
+  test("rotating past the old reset limit still does not place it", () => {
+    // The engine used to place a piece once it had spent its lock resets, which
+    // was fifteen. This spins it forty times.
+    const spinning: InputEvent[] = [];
+    for (let i = 0; i < 40; i++) {
+      spinning.push(at(i * 4, "rotateCW", "keydown"), at(i * 4 + 2, "rotateCW", "keyup"));
+    }
+    expect(verifyRun(setup, DEFAULT_HANDLING, spinning).placements).toEqual([]);
+  });
+
+  test("hard drop is what places it, and places exactly one", () => {
+    const dropped = [
+      at(0, "softDrop", "keydown"),
+      at(4, "hardDrop", "keydown"),
+      at(6, "hardDrop", "keyup"),
+      at(8, "softDrop", "keyup"),
     ];
-    const result = verifyRun(setup, DEFAULT_HANDLING, held);
-    expect(result.placements.map((placement) => placement.piece)).toEqual(["T", "O", "S"]);
+    expect(verifyRun(setup, DEFAULT_HANDLING, dropped).placements.map((p) => p.piece)).toEqual([
+      "T",
+    ]);
   });
 });
 

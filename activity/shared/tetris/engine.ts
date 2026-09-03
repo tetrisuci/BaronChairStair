@@ -139,6 +139,28 @@ export interface PuzzleSetup {
 }
 
 /**
+ * Lock delay, in frames, put beyond any run this app can produce.
+ *
+ * A piece locks when the player hard drops it and at no other time. The engine
+ * locks on three conditions — the lock timer running out, a forced lock, and
+ * running out of lock resets — and `infinite` below switches off the third
+ * while this switches off the first. The forced lock is the one that stays: it
+ * is what a hard drop raises, and it is also what the reset-exhaustion path
+ * raises, which `infinite` has already made unreachable.
+ *
+ * A large number rather than `Infinity` deliberately. The engine only ever
+ * compares it, so both behave the same here — but `Infinity` does not survive a
+ * JSON round trip, and a `lockTime` that came back as `null` would compare as
+ * zero and lock every piece on the frame it landed. The failure mode is not
+ * worth the tidiness.
+ *
+ * MAX_FRAMES in the verifier is 108,000 — thirty minutes, the longest run that
+ * can exist — and the counter this is compared against grows by at most one a
+ * frame.
+ */
+const NEVER_ON_A_TIMER = 10_000_000;
+
+/**
  * TETR.IO's modern versus ruleset with the multiplayer parts switched off.
  * Gravity is zero: a puzzle is a placement problem, not a reaction test.
  */
@@ -176,7 +198,24 @@ export function buildEngineParams(handling: Handling = DEFAULT_HANDLING): Engine
     b2b: { chaining: true, charging: false },
     pc: { garbage: 10, b2b: 0 },
     misc: {
-      movement: { infinite: false, lockResets: 15, lockTime: 30, may20G: true },
+      /**
+       * Move and rotate as long as you like; only a hard drop places a piece.
+       *
+       * Gravity is already zero, so the lock timer was the last thing that
+       * could place a piece without the player asking — a fixed number of
+       * frames resting on the stack, and it was gone. That is a reaction test
+       * hidden inside a placement problem. Soft drop moves the piece down and
+       * leaves it there; it is not a commitment.
+       *
+       * `lockResets` is dead while `infinite` is true and is left at its old
+       * value rather than removed, so what changed here reads as one decision.
+       */
+      movement: {
+        infinite: true,
+        lockResets: 15,
+        lockTime: NEVER_ON_A_TIMER,
+        may20G: true,
+      },
       allowed: { spin180: true, hardDrop: true, hold: true, undo: false, retry: false },
       /**
      * Hold as often as you like, rather than once per piece.
