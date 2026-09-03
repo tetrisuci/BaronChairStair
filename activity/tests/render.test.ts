@@ -345,3 +345,49 @@ describe("the day's one leaderboard", () => {
     expect(mergeBoards(sameName)).toHaveLength(2);
   });
 });
+
+describe("rush on the day's board", () => {
+  const run = (id: string, solved: boolean, totalMs: number) =>
+    ({ player: { id, username: id, avatarUrl: null }, solved, totalMs }) as never;
+  const rushRun = (id: string, solved: number) =>
+    ({ player: { id, username: id, avatarUrl: null }, solved }) as never;
+
+  const boards = [{ tier: "easy" as const, entries: [run("ada", true, 1000)] }];
+
+  test("puts a rush-only player on the board", () => {
+    // Somebody who spent their day on rush did not do nothing, and the daily
+    // boards have no row for them at all.
+    const rows = mergeBoards(boards, [rushRun("bo", 7)]);
+    expect(rows.map((row) => row.id).sort()).toEqual(["ada", "bo"]);
+    expect(rows.find((row) => row.id === "bo")!.solved).toBe(0);
+  });
+
+  test("a rush of zero is not the same as no rush at all", () => {
+    // null is the blank. Zero means they ran one and cleared nothing, which is
+    // a different day and should read differently.
+    const [ran] = mergeBoards([], [rushRun("bo", 0)]);
+    expect(ran!.rush).toBe(0);
+    const [never] = mergeBoards(boards, []);
+    expect(never!.rush).toBeNull();
+  });
+
+  test("the daily still decides the order, with rush breaking ties", () => {
+    // Not added together: three puzzles chosen for you and as many as you can
+    // take in five minutes are not the same unit.
+    const rows = mergeBoards(boards, [rushRun("bo", 40)]);
+    expect(rows[0]!.id).toBe("ada");
+
+    const tied = mergeBoards(
+      [{ tier: "easy" as const, entries: [run("cy", true, 500), run("di", true, 500)] }],
+      [rushRun("di", 9)],
+    );
+    expect(tied[0]!.id).toBe("di");
+  });
+
+  test("keeps the best rush when a player ran more than one", () => {
+    // Replays are unlimited and unscored, but the board should show the best
+    // of them rather than whichever came back last.
+    const [row] = mergeBoards([], [rushRun("ada", 3), rushRun("ada", 8), rushRun("ada", 5)]);
+    expect(row!.rush).toBe(8);
+  });
+});

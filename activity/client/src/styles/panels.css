@@ -662,3 +662,23 @@
   color: var(--ink-soft);
   white-space: nowrap;
 }
+
+/*
+ * The wordmark, as a control that does not look like one.
+ *
+ * It is a button for the keyboard and the screen reader, and a plain mark for
+ * everybody else — the header should not grow a third thing that reads as a
+ * button beside the ones that are.
+ */
+.masthead__home {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+.masthead__home:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }

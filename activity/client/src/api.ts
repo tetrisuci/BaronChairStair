@@ -207,6 +207,7 @@ export class Api {
   leaderboard(): Promise<{
     day: number;
     boards: readonly { tier: DailyTier; entries: readonly StoredRun[] }[];
+    rush: readonly RushRun[];
   }> {
     return this.request("/api/daily/leaderboard");
   }

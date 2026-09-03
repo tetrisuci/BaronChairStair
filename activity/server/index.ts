@@ -272,6 +272,10 @@ app.get("/api/daily/leaderboard", requireSession, (c) => {
       tier,
       entries: store.leaderboard(day, session.guildId, tier, LEADERBOARD_SIZE),
     })),
+    // The day's rush, in the same answer. It belongs on the same board — a
+    // player who spent their day on rush is not somebody who did nothing —
+    // and a second round trip to say so would only be a second thing to fail.
+    rush: store.rushLeaderboard(day, session.guildId, LEADERBOARD_SIZE),
   });
 });
 

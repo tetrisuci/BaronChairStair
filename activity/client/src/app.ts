@@ -58,7 +58,7 @@ const CLOCK_TICK_MS = 100;
 const TOAST_MS = 2200;
 
 export class App {
-  private readonly masthead = createMasthead();
+  private readonly masthead = createMasthead(() => this.showHome());
   private readonly credits = createCredits();
   private readonly hud = createHud({
     onUndo: () => this.stepHistory("undo"),
@@ -1100,11 +1100,11 @@ export class App {
 
   private async loadLeaderboard(): Promise<void> {
     try {
-      const { boards } = await this.connection.api.leaderboard();
+      const { boards, rush } = await this.connection.api.leaderboard();
       const self = this.connection.player.id;
       // One call, two readers: the home screen shows the day whole, and the
       // panel beside a board shows the tier being played.
-      this.dailyBoard.update(boards, self);
+      this.dailyBoard.update(boards, rush, self);
       const mine = boards.find((board) => board.tier === this.dailyTier);
       this.leaderboard.update(mine?.entries ?? [], self);
     } catch {

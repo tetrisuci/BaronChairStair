@@ -65,17 +65,29 @@ export interface Masthead {
   mountControl(control: HTMLElement): void;
 }
 
-export function createMasthead(): Masthead {
+export function createMasthead(onHome: () => void = () => {}): Masthead {
   const puzzleNumber = tally("puzzle");
   const streak = tally("streak");
   const solved = tally("solved");
   const controls = el("div", { class: "masthead__controls" });
 
+  /*
+   * The wordmark is the way home.
+   *
+   * It is where anybody looks for one — the top-left mark is a home link
+   * everywhere else — and it was inert, which made the header the one part of
+   * the app that ignored a click. A button rather than a span with a handler,
+   * so it is reachable by keyboard and announces itself as a control.
+   */
+  const home = el("button", { class: "masthead__home", title: "Back to the main menu" },
+    blockMark(),
+    el("span", { class: "masthead__mark", text: "Puzzle" }));
+  home.addEventListener("click", () => onHome());
+
   const element = el(
     "header",
     { class: "masthead" },
-    blockMark(),
-    el("span", { class: "masthead__mark", text: "Puzzle" }),
+    home,
     el("span", { class: "masthead__spacer" }),
     el(
       "div",

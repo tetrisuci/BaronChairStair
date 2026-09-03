@@ -11,7 +11,7 @@
  * the very top, on a total of zero.
  */
 
-import type { StoredRun } from "../api";
+import type { RushRun, StoredRun } from "../api";
 import type { DailyTier } from "@shared/daily";
 import { el, formatDuration, panel, replaceChildren } from "./dom";
 
@@ -21,6 +21,7 @@ export interface DailyBoard {
   readonly element: HTMLElement;
   update(
     boards: readonly { tier: DailyTier; entries: readonly StoredRun[] }[],
+    rush: readonly RushRun[],
     selfId: string,
   ): void;
 }
@@ -31,11 +32,14 @@ interface Row {
   readonly marks: Map<DailyTier, boolean>;
   solved: number;
   totalMs: number;
+  /** Puzzles cleared in today's rush, or null if they never ran one. */
+  rush: number | null;
 }
 
 /** Everybody once, best first. Exported for the tests that pin the ordering. */
 export function mergeBoards(
   boards: readonly { tier: DailyTier; entries: readonly StoredRun[] }[],
+  rush: readonly RushRun[] = [],
 ): Row[] {
   const rows = new Map<string, Row>();
   for (const board of boards) {
@@ -49,6 +53,7 @@ export function mergeBoards(
         marks: new Map<DailyTier, boolean>(),
         solved: 0,
         totalMs: 0,
+        rush: null,
       };
       row.marks.set(board.tier, run.solved);
       if (run.solved) {
@@ -58,7 +63,28 @@ export function mergeBoards(
       rows.set(id, row);
     }
   }
-  return [...rows.values()].sort((a, b) => b.solved - a.solved || a.totalMs - b.totalMs);
+
+  // Rush can put somebody on the board who filed no daily at all, so this adds
+  // rows as well as filling them in.
+  for (const run of rush) {
+    const row = rows.get(run.player.id) ?? {
+      id: run.player.id,
+      username: run.player.username,
+      marks: new Map<DailyTier, boolean>(),
+      solved: 0,
+      totalMs: 0,
+      rush: null,
+    };
+    row.rush = Math.max(row.rush ?? 0, run.solved);
+    rows.set(run.player.id, row);
+  }
+
+  // The daily decides the order and rush breaks ties, rather than the two being
+  // added together: three puzzles chosen for you and as many as you can take in
+  // five minutes are not the same unit, and summing them would say they are.
+  return [...rows.values()].sort(
+    (a, b) => b.solved - a.solved || a.totalMs - b.totalMs || (b.rush ?? -1) - (a.rush ?? -1),
+  );
 }
 
 /** Solved, tried and failed, and never opened are three different days. */
@@ -77,10 +103,10 @@ export function createDailyBoard(): DailyBoard {
 
   return {
     element,
-    update(boards, selfId) {
-      const merged = mergeBoards(boards);
+    update(boards, rush, selfId) {
+      const merged = mergeBoards(boards, rush);
       note.textContent = merged.length
-        ? "Solved, then fastest. Squares are easy, medium, hard."
+        ? "Solved, then fastest. Squares are easy, medium, hard; ⚡ is today's rush."
         : "Nobody has played yet today. Be first.";
       replaceChildren(
         rows,
@@ -93,7 +119,12 @@ export function createDailyBoard(): DailyBoard {
             el("span", { class: "board__name", text: row.username }),
             el("span", {
               class: "board__score",
-              text: row.solved > 0 ? `${row.solved}/3 · ${formatDuration(row.totalMs)}` : "0/3",
+              // A rush of zero solves is a rush that happened, and reads
+              // differently from never having run one — so null is the blank,
+              // not zero.
+              text:
+                (row.solved > 0 ? `${row.solved}/3 · ${formatDuration(row.totalMs)}` : "0/3") +
+                (row.rush === null ? "" : ` · ⚡${row.rush}`),
             }),
           ),
         ),
