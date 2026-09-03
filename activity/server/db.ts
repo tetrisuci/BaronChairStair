@@ -38,6 +38,15 @@ interface DayBoardRaw {
   hard: number;
 }
 
+/** One player's best rush ever, for the all-time board. */
+export interface RushRecord {
+  readonly player: PlayerProfile;
+  readonly solved: number;
+  readonly timeToLastSolveMs: number;
+  /** The day it was set, so a record can be dated. */
+  readonly day: number;
+}
+
 export interface RunResult {
   readonly solved: boolean;
   readonly attack: number;
@@ -160,6 +169,9 @@ CREATE TABLE IF NOT EXISTS rush_runs (
 );
 
 CREATE INDEX IF NOT EXISTS rush_by_day ON rush_runs (day, guild_id);
+-- The all-time board asks a different question to the daily one: every run a
+-- player has ever filed, best first, rather than one day across everybody.
+CREATE INDEX IF NOT EXISTS rush_records ON rush_runs (player_id, solved DESC, time_to_last_ms ASC);
 
 CREATE TABLE IF NOT EXISTS preferences (
   player_id  TEXT PRIMARY KEY REFERENCES players(id),
@@ -711,6 +723,50 @@ export class Store {
   }
 
   /** A player's best rush ever, for the sign-off after a run. */
+  /**
+   * The all-time rush board: each player's best run, best first.
+   *
+   * Not a day. The daily board answers "who ran today" and is empty for most
+   * of a morning; this one is a record book, and a record that expired at
+   * midnight would not be one. `guildId` narrows it to a server, and null asks
+   * across all of them — the same board, two scopes, so a server can see both
+   * where it stands and who it is standing against.
+   *
+   * Only ranked runs are ever stored, so practice cannot reach this.
+   *
+   * The window function picks each player's own best row before anything is
+   * ranked; a plain GROUP BY with MAX(solved) would give the right count
+   * attached to the wrong run's time, and the time is the tiebreak.
+   */
+  rushRecords(guildId: string | null, limit = 25): RushRecord[] {
+    return this.db
+      .query<RushRecord & { id: string; username: string; avatarUrl: string | null }, [string | null, number]>(
+        `SELECT id, username, avatarUrl, solved, timeToLastSolveMs, day FROM (
+           SELECT players.id AS id, players.username AS username,
+                  players.avatar_url AS avatarUrl,
+                  rush_runs.solved AS solved,
+                  rush_runs.time_to_last_ms AS timeToLastSolveMs,
+                  rush_runs.day AS day,
+                  ROW_NUMBER() OVER (
+                    PARTITION BY rush_runs.player_id
+                    ORDER BY rush_runs.solved DESC, rush_runs.time_to_last_ms ASC
+                  ) AS seat
+           FROM rush_runs JOIN players ON players.id = rush_runs.player_id
+           WHERE (?1 IS NULL OR rush_runs.guild_id = ?1)
+         )
+         WHERE seat = 1
+         ORDER BY solved DESC, timeToLastSolveMs ASC
+         LIMIT ?2`,
+      )
+      .all(guildId, limit)
+      .map((row) => ({
+        player: { id: row.id, username: row.username, avatarUrl: row.avatarUrl },
+        solved: row.solved,
+        timeToLastSolveMs: row.timeToLastSolveMs,
+        day: row.day,
+      }));
+  }
+
   bestRush(playerId: string): number {
     return (
       this.db

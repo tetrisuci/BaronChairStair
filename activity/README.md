@@ -193,6 +193,14 @@ player.
 Ranking is by solves, and between two players on the same count, by whoever
 reached their last solve soonest.
 
+**The all-time board never resets.** Beside the day's rush board is a record
+book: every player's best run ever, in two scopes — everyone, and this server.
+The daily board answers "who ran today" and is empty for most of a morning; a
+record that expired at midnight would not be a record. Each row is dated with
+the day it was set, because a board that never resets otherwise reads as though
+everything on it happened recently. Only ranked runs are ever stored, so
+practice and replays cannot reach it.
+
 **The sequence is derived, not stored**, from the day number alone — the same
 discipline as the daily rotation, for a stronger reason: the server has to be
 able to re-derive exactly what a player was given in order to check a run it

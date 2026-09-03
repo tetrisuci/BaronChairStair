@@ -45,6 +45,7 @@ import {
 } from "./ui/duel";
 import {
   createRushBoard,
+  createRushRecords,
   createRushIntro,
   createRushPanel,
   createRushResultCard,
@@ -88,6 +89,12 @@ export class App {
 
   private readonly rushPanel = createRushPanel(() => this.rush?.giveUp());
   private readonly rushBoard = createRushBoard();
+  private readonly rushRecords = createRushRecords((scope) => {
+    this.rushScope = scope;
+    void this.loadRushRecords();
+  });
+  /** Which population the record book is showing. Not a day; it never resets. */
+  private rushScope: import("./api").RushScope = "global";
   private readonly rushIntro;
   private readonly rushResult;
   private readonly explorer;
@@ -718,7 +725,8 @@ export class App {
       best: this.rushState?.best ?? 0,
       playedToday: this.rushState?.run ?? null,
     });
-    this.showScreen({}, this.rushIntro.element, this.rushBoard.element);
+    this.showScreen({}, this.rushIntro.element, this.rushBoard.element, this.rushRecords.element);
+    void this.loadRushRecords();
     void this.loadRushState();
   }
 
@@ -847,7 +855,8 @@ export class App {
       this.rush?.dispose();
       this.rush = null;
       this.rushTicket = null;
-      this.showScreen({}, this.rushResult.element, this.rushBoard.element);
+      this.showScreen({}, this.rushResult.element, this.rushBoard.element, this.rushRecords.element);
+      void this.loadRushRecords();
     }
   }
 
@@ -1106,6 +1115,16 @@ export class App {
       this.walkthrough.element,
     );
     this.relayout();
+  }
+
+  /** The all-time board. Its own call: it does not change when a day does. */
+  private async loadRushRecords(): Promise<void> {
+    try {
+      const { entries, scope } = await this.connection.api.rushRecords(this.rushScope);
+      this.rushRecords.update(entries, scope, this.connection.player.id);
+    } catch {
+      // A record book is not worth an error where somebody's result should be.
+    }
   }
 
   private async loadLeaderboard(): Promise<void> {

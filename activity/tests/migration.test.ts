@@ -278,3 +278,84 @@ describe("the day as one board", () => {
     }
   });
 });
+
+describe("the all-time rush board", () => {
+  const someone = (id: string) => ({ id, username: id, avatarUrl: null });
+  const rush = (solved: number, timeToLastSolveMs: number) => ({
+    solved,
+    attempted: solved + 1,
+    skipsUsed: 0,
+    timeToLastSolveMs,
+    elapsedMs: 300_000,
+  });
+
+  test("keeps a player's best run, not their latest", () => {
+    const store = new Store(path);
+    try {
+      store.recordRushRun(1, someone("ada"), "g1", rush(9, 200_000));
+      store.recordRushRun(2, someone("ada"), "g1", rush(4, 100_000));
+      const [row] = store.rushRecords(null);
+      expect(row!.solved).toBe(9);
+      // And the time from that run, not from the other one. A GROUP BY with
+      // MAX(solved) would pair the right count with the wrong run's time, and
+      // the time is the tiebreak.
+      expect(row!.timeToLastSolveMs).toBe(200_000);
+      expect(row!.day).toBe(1);
+    } finally {
+      store.close();
+    }
+  });
+
+  test("does not reset with the day", () => {
+    // The point of the feature: a record set weeks ago still stands. The daily
+    // board would be empty for every one of these days but the last.
+    const store = new Store(path);
+    try {
+      store.recordRushRun(1, someone("ada"), "g1", rush(12, 200_000));
+      store.recordRushRun(90, someone("bo"), "g1", rush(5, 100_000));
+      expect(store.rushRecords(null).map((row) => row.player.id)).toEqual(["ada", "bo"]);
+    } finally {
+      store.close();
+    }
+  });
+
+  test("one player, one row, however many rushes they have run", () => {
+    const store = new Store(path);
+    try {
+      for (let day = 1; day <= 5; day++) {
+        store.recordRushRun(day, someone("ada"), "g1", rush(day, 100_000));
+      }
+      const rows = store.rushRecords(null);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.solved).toBe(5);
+    } finally {
+      store.close();
+    }
+  });
+
+  test("ties break on reaching it sooner", () => {
+    const store = new Store(path);
+    try {
+      store.recordRushRun(1, someone("slow"), "g1", rush(7, 250_000));
+      store.recordRushRun(1, someone("quick"), "g1", rush(7, 90_000));
+      expect(store.rushRecords(null).map((row) => row.player.id)).toEqual(["quick", "slow"]);
+    } finally {
+      store.close();
+    }
+  });
+
+  test("the server scope is one server, and global is all of them", () => {
+    const store = new Store(path);
+    try {
+      store.recordRushRun(1, someone("here"), "g1", rush(6, 100_000));
+      store.recordRushRun(1, someone("elsewhere"), "g2", rush(20, 100_000));
+      expect(store.rushRecords("g1").map((row) => row.player.id)).toEqual(["here"]);
+      expect(store.rushRecords(null).map((row) => row.player.id)).toEqual([
+        "elsewhere",
+        "here",
+      ]);
+    } finally {
+      store.close();
+    }
+  });
+});

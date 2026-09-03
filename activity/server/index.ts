@@ -776,6 +776,22 @@ function timeToLastSolve(
   return Math.min(ceiling, Math.max(Math.min(played, ceiling), value));
 }
 
+/**
+ * The all-time rush board, in two scopes.
+ *
+ * `scope=server` narrows to the caller's guild; anything else is global. The
+ * guild comes from the session and never from the query, so "server" cannot be
+ * pointed at somebody else's.
+ */
+app.get("/api/rush/records", requireSession, (c) => {
+  const session = c.get("session");
+  const server = c.req.query("scope") === "server";
+  return c.json({
+    scope: server ? "server" : "global",
+    entries: store.rushRecords(server ? session.guildId : null, LEADERBOARD_SIZE),
+  });
+});
+
 app.get("/api/rush/leaderboard", requireSession, (c) => {
   const session = c.get("session");
   const day = archive.currentDay();

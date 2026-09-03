@@ -108,6 +108,16 @@ export interface RushPlayed {
   readonly solved: boolean;
 }
 
+/** One player's best rush ever. */
+export interface RushRecord {
+  readonly player: PlayerProfile;
+  readonly solved: number;
+  readonly timeToLastSolveMs: number;
+  readonly day: number;
+}
+
+export type RushScope = "global" | "server";
+
 export interface RushSubmitResponse {
   readonly ranked: boolean;
   /** In play order, and only the puzzles actually reached. */
@@ -211,6 +221,10 @@ export class Api {
     totalMs: number;
   }): Promise<SubmitResponse> {
     return this.request("/api/daily/run", { method: "POST", body: JSON.stringify(body) });
+  }
+
+  rushRecords(scope: RushScope): Promise<{ scope: RushScope; entries: readonly RushRecord[] }> {
+    return this.request(`/api/rush/records?scope=${scope}`);
   }
 
   leaderboard(): Promise<{
