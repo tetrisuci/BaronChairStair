@@ -264,7 +264,6 @@ export class App {
       return;
     }
 
-    this.masthead.setDay(this.daily.day);
     this.masthead.setStreak(this.daily.streak, this.daily.totalSolved);
     this.showHome();
   }

@@ -53,6 +53,17 @@
 
 .masthead__spacer { flex: 1 1 auto; }
 
+/*
+ * The controls had no rule of their own, so they inherited nothing and sat
+ * flush against each other — five buttons reading as one long bar.
+ */
+.masthead__controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .masthead__meta {
   display: flex;
   align-items: center;
