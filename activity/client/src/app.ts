@@ -18,6 +18,7 @@ import { InputRouter } from "./game/input";
 import { type LocalAction, keyName } from "@shared/keybinds";
 import { RushSession, type RushSummary } from "./game/rush";
 import { PuzzleRun, type RunSnapshot } from "./game/runner";
+import { activeRun } from "./game/active-run";
 import { SolutionPlayer } from "./game/solution-player";
 import { BoardRenderer } from "./render/board";
 import type { SettingsStore } from "./settings";
@@ -640,6 +641,12 @@ export class App {
       this.rushSkips = start.skips;
       this.rushRanked = start.ranked;
       this.mode = "rush";
+      // The last rush's sign-off is still on the stage: it is shown when a rush
+      // ends and deliberately never times out, because the result screen covers
+      // the board and it is only ever seen again if the board comes back. "Play
+      // again" is exactly that, and it enters here rather than through
+      // `enterRush`, which is where the other two ways in clear it.
+      this.badge.hide();
 
       // The handling is frozen for the whole rush, not per puzzle: the server
       // replays every segment under the one it is given, so a mid-rush change
@@ -1037,20 +1044,18 @@ export class App {
   /**
    * The run the player is actually looking at, if there is one.
    *
-   * Keyed on the mode rather than on whichever session is still non-null, and
-   * deliberately not `??`: a rush between two puzzles has no live run, and that
-   * has to read as nothing rather than reaching past it to the daily attempt
-   * waiting underneath.
-   *
    * Every caller that repaints the board needs this rather than `this.run`.
    * `this.run` is the daily's, and it is null for the whole of a duel or a
    * rush — so anything that redraws through it draws nothing at all in the two
-   * modes that have their own runs.
+   * modes that have their own runs. The choice itself lives in `active-run.ts`,
+   * where it can be tested without a browser.
    */
   private get activeRun(): PuzzleRun | null {
-    if (this.mode === "duel") return this.duel?.currentRun ?? null;
-    if (this.mode === "rush") return this.rush?.currentRun ?? null;
-    return this.run;
+    return activeRun(this.mode, {
+      daily: this.run,
+      rush: this.rush?.currentRun,
+      duel: this.duel?.currentRun,
+    });
   }
 
   private stepHistory(direction: "undo" | "redo"): void {
