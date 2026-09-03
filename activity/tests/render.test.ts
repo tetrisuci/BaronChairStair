@@ -1,0 +1,215 @@
+/**
+ * The screen itself: structure and the CSS contracts the layout turns on.
+ *
+ * These exist because three bugs in a row reached a player through a gap the
+ * rest of the suite cannot see. `bun test` has no document, so mounting order,
+ * canvas sizing and scroll containers were all invisible here and every one of
+ * them was found by hand in Discord and fixed by reading.
+ *
+ * happy-dom closes part of that gap and not all of it. It builds a real DOM and
+ * cascades real stylesheets, so "which rules apply to this element" is testable
+ * and is what these assert. It does **no layout**: nothing here can tell you a
+ * card overflowed its screen, that a wheel event chained, or that a canvas was
+ * cleared. Those are still read, not run.
+ */
+
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { Window } from "happy-dom";
+import { activeRun } from "../client/src/game/active-run";
+import { createRushResultCard } from "../client/src/ui/rush";
+import type { RushPlayed } from "../client/src/api";
+
+let window: Window;
+const saved = {
+  document: globalThis.document,
+  getComputedStyle: globalThis.getComputedStyle,
+};
+
+beforeAll(() => {
+  // Scoped to this file rather than registered as a preload: `bun test` shares
+  // one process, and the server suite leans on Bun's own fetch/Request, which a
+  // global DOM registration would shadow.
+  window = new Window({ url: "https://local.test/" });
+  globalThis.document = window.document as unknown as Document;
+  globalThis.getComputedStyle = window.getComputedStyle.bind(
+    window,
+  ) as unknown as typeof getComputedStyle;
+
+  const style = window.document.createElement("style");
+  style.textContent = readFileSync("client/src/styles/panels.css", "utf8");
+  window.document.head.append(style);
+});
+
+afterAll(() => {
+  globalThis.document = saved.document;
+  globalThis.getComputedStyle = saved.getComputedStyle;
+});
+
+const played = (count: number): RushPlayed[] =>
+  Array.from({ length: count }, (_, index) => ({
+    id: 100 + index,
+    title: `sheet ${100 + index}`,
+    solved: index % 2 === 0,
+  }));
+
+function mountedResultCard(onRetry: (id: number) => void = () => {}) {
+  const card = createRushResultCard(
+    () => {},
+    () => {},
+    onRetry,
+  );
+  window.document.body.append(card.element as never);
+  return card;
+}
+
+describe("the rush end screen's puzzle list", () => {
+  /**
+   * The bug this pins: `.explore__list` is a scroller in its own right with
+   * `overscroll-behavior: contain`, which is right where the list *is* the
+   * screen and wrong on a card that scrolls as a whole. Contained, the wheel
+   * died wherever the pointer sat over a row — most of that card — and the
+   * list grew past the card instead of scrolling inside it.
+   */
+  test("does not contain the wheel, so the screen scrolls under the cursor", () => {
+    const card = mountedResultCard();
+    card.update({
+      run: { solved: 3, attempted: 5, skipsUsed: 0, timeToLastSolveMs: 12_400 },
+      played: played(5),
+      ranked: true,
+      isFirst: true,
+      best: 5,
+    });
+
+    const list = window.document.querySelector(".explore__list")!;
+    const style = window.getComputedStyle(list as never);
+    expect(list.className).toContain("explore__list--flow");
+    expect(style.overscrollBehavior).not.toBe("contain");
+    expect(style.overflowY).toBe("visible");
+    // A min-height is what made it grow rather than scroll; on this screen the
+    // card's own height is the only one that should matter.
+    expect(style.minHeight).toBe("0");
+  });
+
+  test("a list that is the whole screen still keeps its scrolling to itself", () => {
+    // The explorer and the 1v1 room list are mounted with `screen--fill`, where
+    // the card owns the height and the list is the thing that moves. The fix
+    // above must not have reached them.
+    const plain = window.document.createElement("div");
+    plain.className = "explore__list";
+    window.document.body.append(plain);
+    const style = window.getComputedStyle(plain as never);
+    expect(style.overscrollBehavior).toBe("contain");
+    expect(style.overflowY).toBe("auto");
+  });
+});
+
+describe("the rush end screen's contents", () => {
+  test("lists every puzzle played, in order, marked as the server scored it", () => {
+    const card = mountedResultCard();
+    card.update({
+      run: { solved: 3, attempted: 5, skipsUsed: 0, timeToLastSolveMs: 12_400 },
+      played: played(5),
+      ranked: true,
+      isFirst: true,
+      best: 5,
+    });
+
+    const rows = [...card.element.querySelectorAll(".explore__item")];
+    expect(rows).toHaveLength(5);
+    expect(rows.map((row) => row.querySelector(".explore__id")!.textContent)).toEqual([
+      "1",
+      "2",
+      "3",
+      "4",
+      "5",
+    ]);
+    expect(rows.map((row) => row.querySelector(".explore__meta")!.textContent)).toEqual([
+      "solved",
+      "not solved",
+      "solved",
+      "not solved",
+      "solved",
+    ]);
+  });
+
+  test("a row hands back the puzzle it names, not the one it sits at", () => {
+    // The row index and the puzzle id are different numbers, and the retry has
+    // to carry the id — an off-by-one here opens somebody else's puzzle.
+    const opened: number[] = [];
+    const card = mountedResultCard((id) => opened.push(id));
+    card.update({
+      run: { solved: 1, attempted: 3, skipsUsed: 0, timeToLastSolveMs: 900 },
+      played: played(3),
+      ranked: false,
+      isFirst: false,
+      best: 1,
+    });
+
+    const rows = [...card.element.querySelectorAll(".explore__item")];
+    (rows[2] as unknown as HTMLElement).click();
+    expect(opened).toEqual([102]);
+  });
+
+  test("the buttons come after the list, so the list never sits below them", () => {
+    const card = mountedResultCard();
+    card.update({
+      run: { solved: 0, attempted: 1, skipsUsed: 0, timeToLastSolveMs: 0 },
+      played: played(1),
+      ranked: true,
+      isFirst: true,
+      best: 0,
+    });
+    const children = [...card.element.children].map((child) => child.className);
+    expect(children.indexOf("explore__list explore__list--flow")).toBeLessThan(
+      children.indexOf("btnrow"),
+    );
+  });
+
+  test("shows no list at all when the run was never filed", () => {
+    // The filing failed, so there is no account of which puzzles were solved.
+    // An empty list saying "no puzzle was reached" would be a lie about a run
+    // that reached several.
+    const card = mountedResultCard();
+    card.update({
+      run: { solved: 2, attempted: 4, skipsUsed: 1, timeToLastSolveMs: 8_000 },
+      played: [],
+      ranked: false,
+      isFirst: false,
+      best: 2,
+    });
+    const list = card.element.querySelector(".explore__list") as unknown as HTMLElement;
+    expect(list.hidden).toBe(true);
+    expect(card.element.querySelectorAll(".explore__item")).toHaveLength(0);
+  });
+});
+
+describe("which run a repaint asks for", () => {
+  // The bug: relayout redrew `this.run`, the daily's, which is null for the
+  // whole of a duel or a rush. Resizing a canvas clears it, and the resize
+  // observer fires just after the playfield is mounted — so the first puzzle
+  // of a duel or a rush was painted, wiped, and redrawn as nothing. It stayed
+  // blank until an input produced the next frame, which in a puzzle with no
+  // gravity means until the player pressed a key.
+  const sessions = { daily: "daily-run", rush: "rush-run", duel: "duel-run" };
+
+  test("a duel is asked for the duel's run, not the daily's", () => {
+    expect(activeRun("duel", sessions)).toBe("duel-run");
+  });
+
+  test("a rush is asked for the rush's run", () => {
+    expect(activeRun("rush", sessions)).toBe("rush-run");
+  });
+
+  test("the daily and the explorer share the daily's run", () => {
+    expect(activeRun("daily", sessions)).toBe("daily-run");
+    expect(activeRun("explore", sessions)).toBe("daily-run");
+  });
+
+  test("a rush between two puzzles has nothing to repaint", () => {
+    // Not a fallthrough to the daily attempt waiting underneath: that is what a
+    // chain of `??` would do, and it would draw the daily's board over a rush.
+    expect(activeRun("rush", { ...sessions, rush: null })).toBeNull();
+    expect(activeRun("duel", { ...sessions, duel: undefined })).toBeNull();
+  });
+});
