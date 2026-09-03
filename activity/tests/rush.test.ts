@@ -15,7 +15,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { puzzleIndexForDay } from "../shared/daily";
+import { byTier, DAILY_TIERS, puzzleIndexForDay } from "../shared/daily";
 import { seededShuffle, shuffledIndices } from "../shared/rng";
 import {
   decodeBoard,
@@ -307,11 +307,18 @@ describe("the rush seed against the daily rotation's own", () => {
   const OPENER_COLLISION_CEILING = 12;
 
   test("the opener is not locked to the puzzle the player just played", () => {
+    // The day deals three now, one per tier, each on its own rotation — so the
+    // opener has three puzzles to avoid rather than one. The streams here must
+    // match PuzzleArchive.STREAM or this measures a rotation nobody plays.
+    const tiers = byTier(puzzles);
+    const streams = { easy: 1, medium: 2, hard: 3 } as const;
     let collisions = 0;
     for (let day = 1; day <= YEAR_OF_DAYS; day++) {
-      const daily = puzzles[puzzleIndexForDay(day, puzzles.length)]!;
+      const today = DAILY_TIERS.map(
+        (tier) => tiers[tier][puzzleIndexForDay(day, tiers[tier].length, streams[tier])]!.id,
+      );
       const opener = rushSequence(puzzles, dailyRushSeed(day))[0]!;
-      if (opener.id === daily.id) collisions++;
+      if (today.includes(opener.id)) collisions++;
     }
     expect(collisions).toBeLessThanOrEqual(OPENER_COLLISION_CEILING);
   });

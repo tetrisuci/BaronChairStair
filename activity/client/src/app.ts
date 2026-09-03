@@ -10,7 +10,7 @@
 import { BOARD_HEIGHT, type PuzzlePrompt, type SolutionStep } from "@shared/puzzle";
 import type { InputEvent } from "@shared/tetris/verify";
 import type { Connection } from "./discord";
-import type { DailyResponse, RushState, StoredRun } from "./api";
+import type { DailyEntry, DailyResponse, RushState, StoredRun } from "./api";
 import type { ArchiveListing } from "@shared/puzzle";
 import { filterArchive } from "@shared/archive-filter";
 import { ApiError } from "./api";
@@ -18,6 +18,10 @@ import { InputRouter } from "./game/input";
 import { type LocalAction, keyName } from "@shared/keybinds";
 import { RushSession, type RushSummary } from "./game/rush";
 import { PuzzleRun, type RunSnapshot } from "./game/runner";
+import { createDailyMenu } from "./ui/daily-tiers";
+import { createDailyBoard } from "./ui/daily-board";
+import { createHome } from "./ui/home";
+import type { DailyTier } from "@shared/daily";
 import { activeRun } from "./game/active-run";
 import { SolutionPlayer } from "./game/solution-player";
 import { BoardRenderer } from "./render/board";
@@ -54,7 +58,7 @@ const CLOCK_TICK_MS = 100;
 const TOAST_MS = 2200;
 
 export class App {
-  private readonly masthead = createMasthead();
+  private readonly masthead = createMasthead(() => this.showHome());
   private readonly credits = createCredits();
   private readonly hud = createHud({
     onUndo: () => this.stepHistory("undo"),
@@ -62,6 +66,7 @@ export class App {
   });
   private readonly badge = createVerdictBadge();
   private readonly leaderboard = createLeaderboardPanel();
+  private readonly dailyBoard = createDailyBoard();
   private readonly canvas = el("canvas", {
     class: "field",
     attrs: { role: "img", "aria-label": "Puzzle playfield" },
@@ -114,7 +119,24 @@ export class App {
   private rushState: RushState | null = null;
   private mode: "daily" | "rush" | "explore" | "duel" = "daily";
   private solutionPlayer: SolutionPlayer | null = null;
+  private readonly dailyMenu = createDailyMenu((tier) => this.showDailyTier(tier));
+  private readonly home = createHome({
+    onDaily: () => this.showDailyMenu(),
+    onRush: () => this.enterRush(),
+    onDuel: () => this.enterDuel(),
+    onExplore: () => this.enterExplorer(),
+    onPlayTier: (tier) => this.showDailyTier(tier),
+  });
   private daily: DailyResponse | null = null;
+  /**
+   * Which of the day's three is on the board.
+   *
+   * The day holds three now, and only one can be played at a time — this is
+   * the one the sheet, the credits, the submission and the leaderboard are all
+   * about. It opens on the easy one: a day should start somewhere anybody can
+   * begin, and the other two are a click away.
+   */
+  private dailyTier: DailyTier = "easy";
   private submitting = false;
   private toastTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -238,17 +260,97 @@ export class App {
       return;
     }
 
-    this.masthead.setDay(this.daily.day);
     this.masthead.setStreak(this.daily.streak, this.daily.totalSolved);
-    this.credits.update({ day: this.daily.day, puzzle: this.daily.puzzle });
-    this.sheet = { puzzle: this.daily.puzzle, solution: this.daily.solution, scored: true };
-    this.hud.setPuzzle(this.daily.puzzle);
+    this.showHome();
+  }
 
-    if (this.daily.run) {
-      this.showFiledRun(this.daily.puzzle, this.daily.run, this.daily.solution);
-    } else {
-      this.startRun();
-    }
+  /**
+   * The front door: what the day looks like, where to go, and a board.
+   *
+   * Every mode leaves through here now, and the activity opens on it. Four
+   * things to do is one too many for a row of small buttons in the furniture.
+   */
+  /**
+   * The prologue every screen shares.
+   *
+   * Each `enter*`/`show*` used to hand-roll these four lines, and two of the
+   * screens added with the front door forgot the first one — so clicking Home
+   * mid-rush left the rush running: its frame loop, its buzzer, and five
+   * minutes later a filed run yanking whatever screen you had moved to. A duel
+   * left the socket open while the keyboard stopped routing to it, which is a
+   * forfeit nobody chose. `disposeActiveMode`'s own comment says it exists so
+   * "the next mode added" is not the one that forgets; the next screen added
+   * forgot, so the prologue is now one place instead of eight.
+   */
+  private leaveForScreen(): void {
+    this.disposeActiveMode();
+    this.mode = "daily";
+    this.input.setGameInputEnabled(false);
+    this.badge.hide();
+  }
+
+  private showHome(): void {
+    if (!this.daily) return;
+    this.leaveForScreen();
+    this.home.update(this.daily.day, this.daily.puzzles, this.daily.streak);
+    this.home.mountBoard(this.dailyBoard.element);
+    this.showScreen({ wide: true, fill: true }, this.home.element);
+    void this.loadLeaderboard();
+  }
+
+  /**
+   * The day's three, to choose between.
+   *
+   * Where the daily now opens, and where it comes back to. Dropping somebody
+   * straight onto one of three puzzles picks for them, and picks the same one
+   * every day — which is the easy one, for a player who might have wanted the
+   * hard one, or the reverse.
+   */
+  private showDailyMenu(): void {
+    if (!this.daily) return;
+    this.leaveForScreen();
+    this.dailyMenu.update(this.daily.day, this.daily.puzzles);
+    this.showScreen({ wide: true, fill: true }, this.dailyMenu.element);
+  }
+
+  /**
+   * Puts one of the day's three on the board.
+   *
+   * The single funnel for it: the sheet, the credits strip, the goal panel, the
+   * picker's own highlight and whether a filed run is shown all have to agree
+   * about which puzzle is in front of the player, and they only do that if one
+   * place sets them.
+   */
+  private showDailyTier(tier: DailyTier): void {
+    if (!this.daily) return;
+    // Clicking the tier you are already playing is a no-op, not a restart.
+    // Both the home row and the chooser can raise it, and rebuilding here
+    // throws away an attempt in progress.
+    if (tier === this.dailyTier && this.run) return;
+    this.dailyTier = tier;
+    const entry = this.dailyEntry;
+    if (!entry) return;
+    this.sheet = { puzzle: entry.puzzle, solution: entry.solution, scored: true };
+    this.credits.update({ day: this.daily.day, puzzle: entry.puzzle });
+    this.hud.setPuzzle(entry.puzzle);
+    // Rebuilt rather than left alone: a filed tier puts the walkthrough in this
+    // rail, and switching from it to an unplayed one would otherwise keep the
+    // last puzzle's solution where the queue belongs.
+    replaceChildren(
+      this.hud.right,
+      this.hud.panels.goal,
+      this.hud.panels.meter,
+      this.hud.panels.queue,
+    );
+    // The board itself. The chooser is a screen and holds the whole deck, so
+    // without this the run starts correctly and invisibly, underneath it —
+    // which is what clicking a tier appeared to do: nothing.
+    this.input.setGameInputEnabled(true);
+    this.showPlayfield();
+    // Mounted first, painted second, as everywhere else: showPlayfield relays
+    // out, a relayout resizes the canvas, and resizing a canvas clears it.
+    if (entry.run) this.showFiledRun(entry.puzzle, entry.run, entry.solution);
+    else this.startRun();
   }
 
   // ── Practice ───────────────────────────────────────────────────────────────
@@ -261,9 +363,23 @@ export class App {
    * counts, so it is kept out of the shuffle and shown greyed in the explorer
    * until the daily is on the board. Afterwards it is just another puzzle.
    */
-  private lockedPuzzleId(): number | null {
-    if (!this.daily || this.daily.run) return null;
-    return this.daily.puzzle.id;
+  /** The one of the day's three currently on the board. */
+  private get dailyEntry(): DailyEntry | null {
+    return this.daily?.puzzles.find((entry) => entry.tier === this.dailyTier) ?? null;
+  }
+
+  /**
+   * The puzzles practice will not open, because they have not been filed yet.
+   *
+   * Three of them now, and each is locked on its own run: rehearsing today's
+   * hard puzzle in the explorer before filing it is the thing this stops, and
+   * solving the easy one does not unlock the other two.
+   */
+  private lockedPuzzleIds(): ReadonlySet<number> {
+    const locked = (this.daily?.puzzles ?? [])
+      .filter((entry) => !entry.run)
+      .map((entry) => entry.puzzle.id);
+    return new Set(locked);
   }
 
   private async loadArchive(): Promise<readonly ArchiveListing[]> {
@@ -274,10 +390,10 @@ export class App {
   private async startPractice(): Promise<void> {
     try {
       const archive = await this.loadArchive();
-      const locked = this.lockedPuzzleId();
+      const locked = this.lockedPuzzleIds();
       const choices = filterArchive(archive, this.settings.value.filter).filter(
         // Never the puzzle already on the table, so "random" always changes it.
-        (entry) => entry.id !== locked && entry.id !== this.sheet?.puzzle.id,
+        (entry) => !locked.has(entry.id) && entry.id !== this.sheet?.puzzle.id,
       );
       const pick = choices[Math.floor(Math.random() * choices.length)];
       if (!pick) {
@@ -291,8 +407,8 @@ export class App {
   }
 
   private async openArchivePuzzle(id: number): Promise<void> {
-    if (id === this.lockedPuzzleId()) {
-      this.toast("That is today's puzzle — play it on the daily first");
+    if (this.lockedPuzzleIds().has(id)) {
+      this.toast("That is one of today's three — play it on the daily first");
       return;
     }
     try {
@@ -354,7 +470,7 @@ export class App {
   }
 
   private paintExplorer(): void {
-    this.explorer.update(this.archive ?? [], this.settings.value.filter, this.lockedPuzzleId());
+    this.explorer.update(this.archive ?? [], this.settings.value.filter, this.lockedPuzzleIds());
   }
 
   private leaveExplorer(): void {
@@ -368,14 +484,10 @@ export class App {
 
   private returnToDaily(): void {
     if (!this.daily) return;
-    this.sheet = { puzzle: this.daily.puzzle, solution: this.daily.solution, scored: true };
-    this.credits.update({ day: this.daily.day, puzzle: this.daily.puzzle });
-    this.hud.setPuzzle(this.daily.puzzle);
-    if (this.daily.run) {
-      this.showFiledRun(this.daily.puzzle, this.daily.run, this.daily.solution);
-    } else {
-      this.startRun();
-    }
+    // Home, not the last puzzle and not the chooser. Leaving a rush or a duel
+    // means leaving the thing you were doing, and the front door is where the
+    // next choice gets made.
+    this.showHome();
   }
 
   /** The three-column play layout: rails either side of the board. */
@@ -760,6 +872,16 @@ export class App {
       this.settingsDialog.element,
       this.toastNode,
     );
+    // First control, and the only one that is a way *back* rather than a way
+    // somewhere else: every screen can be left without knowing which one it is.
+    this.masthead.mountControl(
+      el("button", {
+        class: "btn",
+        text: "Home",
+        title: "The day, the boards, and everything else",
+        on: { click: () => this.showHome() },
+      }),
+    );
     this.masthead.mountControl(
       el("button", {
         class: "btn",
@@ -875,6 +997,10 @@ export class App {
     this.toast("Filing sheet…");
     try {
       const response = await this.connection.api.submitRun({
+        // Which of the three this log was played on. The server replays it
+        // against that board, so naming the wrong one fails to solve rather
+        // than filing anything.
+        tier: this.dailyTier,
         // The handling the attempt was played under, not whatever is set now.
         handling: this.run?.handling ?? this.settings.value.handling,
         events,
@@ -883,8 +1009,17 @@ export class App {
       });
       this.masthead.setStreak(response.streak, response.totalSolved);
       // Remember the filed sheet so returning from practice restores it.
+      // Only the tier that was filed. The other two are untouched — and their
+      // solutions must stay null, or filing the easy one would reveal them.
       if (this.daily) {
-        this.daily = { ...this.daily, run: response.run, solution: response.solution };
+        this.daily = {
+          ...this.daily,
+          puzzles: this.daily.puzzles.map((entry) =>
+            entry.tier === response.tier
+              ? { ...entry, run: response.run, solution: response.solution }
+              : entry,
+          ),
+        };
       }
       this.presentVerdict(this.toShareFields(snapshot, response.run), response.run);
       this.leaderboard.update(response.leaderboard, this.connection.player.id);
@@ -975,8 +1110,13 @@ export class App {
 
   private async loadLeaderboard(): Promise<void> {
     try {
-      const { entries } = await this.connection.api.leaderboard();
-      this.leaderboard.update(entries, this.connection.player.id);
+      const { board, rush } = await this.connection.api.leaderboard();
+      const self = this.connection.player.id;
+      // One call, two readers: the home screen shows the day whole, and the
+      // panel beside a board shows the tier being played.
+      this.dailyBoard.update(board, rush, self);
+      // The verdict rail's panel wants per-run rows, which the day board no
+      // longer carries; it is refreshed from the submit response instead.
     } catch {
       // The result card is still useful without the leaderboard.
     }

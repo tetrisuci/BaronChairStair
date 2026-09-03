@@ -80,30 +80,41 @@ async function guestToken(): Promise<string> {
 describe("the answer is withheld until it is earned", () => {
   test("GET /api/daily sends no solution to a player who has not solved it", async () => {
     const body = (await (await get("/api/daily", await guestToken())).json()) as {
-      solution: unknown;
-      puzzle: { id: number };
+      puzzles: { tier: string; solution: unknown; puzzle: { id: number } }[];
     };
-    expect(body.solution).toBeNull();
-    expect(body.puzzle.id).toBeGreaterThan(0);
+    // All three of them. The gate is per tier now, and a day where one of the
+    // three leaked its answer would be a day the other two vouched for.
+    expect(body.puzzles.map((entry) => entry.tier)).toEqual(["easy", "medium", "hard"]);
+    for (const entry of body.puzzles) {
+      expect(entry.solution).toBeNull();
+      expect(entry.puzzle.id).toBeGreaterThan(0);
+    }
   });
 
   test("the practice archive withholds today's puzzle", async () => {
     const token = await guestToken();
-    const daily = (await (await get("/api/daily", token)).json()) as { puzzle: { id: number } };
-    const practice = (await (await get(`/api/archive/${daily.puzzle.id}`, token)).json()) as {
-      solution: unknown;
+    const daily = (await (await get("/api/daily", token)).json()) as {
+      puzzles: { puzzle: { id: number } }[];
     };
-    expect(practice.solution).toBeNull();
+    // Every one of today's three, not just the first. Solving none of them and
+    // asking the archive for any of them must come back empty.
+    for (const entry of daily.puzzles) {
+      const practice = (await (await get(`/api/archive/${entry.puzzle.id}`, token)).json()) as {
+        solution: unknown;
+      };
+      expect(practice.solution).toBeNull();
+    }
   });
 
   test("filing an empty run does not buy the solution", async () => {
     const token = await guestToken();
-    const body = (await (await post("/api/daily/run", { events: [], resets: 0 }, token)).json()) as {
-      run: { solved: boolean };
-      solution: unknown;
-    };
-    expect(body.run.solved).toBe(false);
-    expect(body.solution).toBeNull();
+    for (const tier of ["easy", "medium", "hard"]) {
+      const body = (await (
+        await post("/api/daily/run", { tier, events: [], resets: 0 }, token)
+      ).json()) as { run: { solved: boolean }; solution: unknown };
+      expect(body.run.solved).toBe(false);
+      expect(body.solution).toBeNull();
+    }
   });
 });
 
@@ -605,15 +616,16 @@ describe("the daily recap", () => {
     );
     const body = (await (await recap(`guild=g1&day=${today - 1}`)).json()) as {
       day: number;
-      puzzle: { id: number; title: string };
+      puzzles: { tier: string; id: number; title: string }[];
       streak: number;
-      daily: { entries: unknown[]; total: number };
+      daily: { rows: { player: { id: string }; marks: Record<string, boolean> }[]; total: number };
       rush: { entries: unknown[]; total: number };
     };
     expect(body.day).toBe(today - 1);
-    expect(Number.isInteger(body.puzzle.id)).toBe(true);
+    expect(body.puzzles.map((puzzle) => puzzle.tier)).toEqual(["easy", "medium", "hard"]);
+    expect(body.puzzles.every((puzzle) => Number.isInteger(puzzle.id))).toBe(true);
     expect(body.streak).toBeGreaterThanOrEqual(0);
-    expect(Array.isArray(body.daily.entries)).toBe(true);
+    expect(Array.isArray(body.daily.rows)).toBe(true);
     expect(Array.isArray(body.rush.entries)).toBe(true);
     // No solution or board anywhere in it — the bot never needs the answer.
     expect(JSON.stringify(body)).not.toContain("solution");
@@ -623,7 +635,7 @@ describe("the daily recap", () => {
 describe("Store.guildStreak", () => {
   const path = join(tmpdir(), `puzzle-streak-${process.pid}.sqlite`);
   const solve = (store: Store, day: number, playerId: string, guildId: string, solved = true) =>
-    store.recordRun(day, 1, { id: playerId, username: playerId, avatarUrl: null }, guildId, {
+    store.recordRun(day, "easy", 1, { id: playerId, username: playerId, avatarUrl: null }, guildId, {
       solved, attack: solved ? 10 : 1, targetAttack: 10, durationMs: 1000,
       totalMs: 1000, resets: 0, piecesPlaced: 3, clears: [],
     });

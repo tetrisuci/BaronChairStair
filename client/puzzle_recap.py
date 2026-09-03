@@ -35,6 +35,16 @@ GROUP_CAP = 20
 MAX_MESSAGE = 2000
 # A run of one is not a streak worth announcing.
 MIN_STREAK = 2
+
+# The day's three, in the order they are always shown.
+TIER_ORDER = ("easy", "medium", "hard")
+
+# One mark per tier, in that order. Three states, not two: a puzzle somebody
+# filed and failed is a different day from one they never opened, and the grid
+# is the only place that difference is visible.
+MARK_SOLVED = "\N{LARGE GREEN SQUARE}"
+MARK_MISSED = "\N{LARGE RED SQUARE}"
+MARK_ABSENT = "\N{BLACK LARGE SQUARE}"
 # Rush placings named. The rush board is a footnote to the daily here.
 RUSH_SHOWN = 3
 # Long enough to work out why a recap never arrived, and no longer.
@@ -163,32 +173,55 @@ def _headline(day: int, streak: int, anybody_solved: bool) -> str:
     return head
 
 
-def _daily_lines(entries: list[dict]) -> list[str]:
+def _rows(payload_daily: dict) -> list[dict]:
     """
-    Solvers fastest first, then everybody who did not get there.
+    The day's board, already merged by the server.
+
+    This used to be a second implementation of the merge, keyed on the player
+    id and sorted the same way — and it had the same defect as its TypeScript
+    twin: each tier arrived under its own limit, so a player near the bottom of
+    one and the top of another lost a mark. The grouping is one SQL query now
+    and both renderers only format.
+    """
+    return list(payload_daily.get("rows") or [])
+
+
+def _grid(marks: dict) -> str:
+    """The three marks, always three and always in the same order."""
+    return "".join(
+        MARK_SOLVED if marks.get(tier) else MARK_MISSED if tier in marks else MARK_ABSENT
+        for tier in TIER_ORDER
+    )
+
+
+def _daily_lines(rows: list[dict]) -> list[str]:
+    """
+    Everybody once, best first, with their three marks beside them.
 
     No grouping by score, unlike the Wordle bot it borrows from: a time is
     continuous, so no two players ever share a bucket and grouping would put
-    one name on every line anyway. The only line that genuinely groups is the
-    last one, which is this game's version of Wordle's `X/6`.
+    one name on every line anyway.
     """
-    solved = [entry for entry in entries if entry.get("solved")]
-    missed = [entry for entry in entries if not entry.get("solved")]
+    if not rows:
+        return []
 
-    lines = [
-        f"{'👑 ' if index == 0 else ''}{_mention(entry)} — "
-        f"{format_duration(entry.get('totalMs', 0))}"
-        for index, entry in enumerate(solved[:RANKED_SHOWN])
-    ]
-    if solved[RANKED_SHOWN:]:
-        lines.append(f"also solved — {_names(solved[RANKED_SHOWN:])}")
-    if missed:
-        lines.append(f"missed — {_names(missed)}")
-    elif len(entries) > 1:
-        # "opened it", because the board holds no roster. Somebody who never
-        # started the puzzle has no row and cannot be counted either way, so
-        # this must never read as "everybody in the server".
-        lines.append("Everyone who opened it solved it.")
+    lines = []
+    for index, row in enumerate(rows[:RANKED_SHOWN]):
+        crown = "\N{CROWN} " if index == 0 and row.get("solved", 0) > 0 else ""
+        tail = (
+            f" — {format_duration(row.get('totalMs', 0))}"
+            if row.get("solved", 0) > 0
+            else ""
+        )
+        lines.append(f"{crown}{_grid(row.get('marks') or {})} {_mention(row)}{tail}")
+
+    rest = rows[RANKED_SHOWN:]
+    if rest:
+        lines.append(f"also played — {_names(rest)}")
+
+    swept = [row for row in rows if row.get("solved", 0) == len(TIER_ORDER)]
+    if swept:
+        lines.append(f"All three: {_names(swept)}")
     return lines
 
 
@@ -227,20 +260,20 @@ def format_recap(payload: dict) -> str:
     about no-one.
     """
     daily = payload.get("daily") or {}
-    entries = list(daily.get("entries") or [])
-    if not entries:
+    rows = _rows(daily)
+    if not rows:
         return ""
 
     lines = [_headline(
         payload.get("day", 0),
         payload.get("streak", 0),
-        any(entry.get("solved") for entry in entries),
+        any(row.get("solved", 0) > 0 for row in rows),
     )]
-    lines += _daily_lines(entries)
+    lines += _daily_lines(rows)
 
     # The board is capped server-side and misses sort last, so a very busy
     # server would lose exactly the people this message exists to tease.
-    hidden = (daily.get("total") or len(entries)) - len(entries)
+    hidden = (daily.get("total") or len(rows)) - len(rows)
     if hidden > 0:
         lines.append(f"…and {hidden} more who played.")
 

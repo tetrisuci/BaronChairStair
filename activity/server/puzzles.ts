@@ -7,12 +7,21 @@
  */
 
 import { readFileSync } from "node:fs";
-import { type DayOptions, dayNumber, nextResetAt, puzzleIndexForDay } from "../shared/daily";
+import {
+  byTier,
+  DAILY_TIERS,
+  type DailyTier,
+  type DayOptions,
+  dayNumber,
+  nextResetAt,
+  puzzleIndexForDay,
+} from "../shared/daily";
 import { BOARD_WIDTH, type Puzzle, type PuzzlePrompt, toPrompt } from "../shared/puzzle";
 
-export interface DailyPuzzle {
+export interface DailyPuzzles {
   readonly day: number;
-  readonly puzzle: Puzzle;
+  /** One puzzle per tier: within reach, worth working at, and a wall. */
+  readonly puzzles: Readonly<Record<DailyTier, Puzzle>>;
   readonly resetsAt: number;
 }
 
@@ -50,13 +59,31 @@ function assertValid(puzzle: unknown, index: number): Puzzle {
 
 export class PuzzleArchive {
   private readonly byId: ReadonlyMap<number, Puzzle>;
+  private readonly tiers: Readonly<Record<DailyTier, readonly Puzzle[]>>;
 
   private constructor(
     readonly puzzles: readonly Puzzle[],
     private readonly dayOptions: DayOptions,
   ) {
     this.byId = new Map(puzzles.map((puzzle) => [puzzle.id, puzzle]));
+    // Partitioned once, and sorted by id inside each tier. The rotation is an
+    // index into these arrays, so an order that depended on how the file
+    // happened to be written would deal different puzzles after a rebuild.
+    const tiers = byTier([...puzzles].sort((a, b) => a.id - b.id));
+    this.tiers = tiers;
+    for (const tier of DAILY_TIERS) {
+      if (tiers[tier].length === 0) {
+        throw new Error(`The archive has no ${tier} puzzles; a day needs one of each`);
+      }
+    }
   }
+
+  /** Each tier walks its own rotation; the stream keeps them from marching together. */
+  private static readonly STREAM: Readonly<Record<DailyTier, number>> = {
+    easy: 1,
+    medium: 2,
+    hard: 3,
+  };
 
   static load(path: string, dayOptions: DayOptions = {}): PuzzleArchive {
     let parsed: { puzzles?: unknown[] };
@@ -79,14 +106,42 @@ export class PuzzleArchive {
     return this.byId.get(id);
   }
 
-  /** The puzzle for a given day number, defaulting to today. */
-  forDay(day: number = dayNumber(Date.now(), this.dayOptions)): DailyPuzzle {
-    const puzzle = this.puzzles[puzzleIndexForDay(day, this.puzzles.length)]!;
-    return { day, puzzle, resetsAt: nextResetAt(Date.now(), this.dayOptions) };
+  /** One tier's puzzle for a day. */
+  forTier(day: number, tier: DailyTier): Puzzle {
+    const pool = this.tiers[tier];
+    return pool[puzzleIndexForDay(day, pool.length, PuzzleArchive.STREAM[tier])]!;
   }
 
-  today(): DailyPuzzle {
+  /**
+   * The three puzzles for a given day number, defaulting to today.
+   *
+   * Memoised on the day. Everything in here is constant for a calendar day and
+   * four routes ask for it per request; the cost is dominated by `nextResetAt`,
+   * which formats a wall clock three times through Intl.
+   */
+  private cached: DailyPuzzles | null = null;
+
+  forDay(day: number = dayNumber(Date.now(), this.dayOptions)): DailyPuzzles {
+    if (this.cached?.day === day) return this.cached;
+    this.cached = {
+      day,
+      puzzles: {
+        easy: this.forTier(day, "easy"),
+        medium: this.forTier(day, "medium"),
+        hard: this.forTier(day, "hard"),
+      },
+      resetsAt: nextResetAt(Date.now(), this.dayOptions),
+    };
+    return this.cached;
+  }
+
+  today(): DailyPuzzles {
     return this.forDay();
+  }
+
+  /** Which of a day's three a puzzle is, or null if it is not one of them. */
+  tierOfDay(day: number, puzzleId: number): DailyTier | null {
+    return DAILY_TIERS.find((tier) => this.forTier(day, tier).id === puzzleId) ?? null;
   }
 
   currentDay(): number {

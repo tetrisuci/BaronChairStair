@@ -33,8 +33,8 @@ export interface ExplorerCallbacks {
 
 export interface Explorer {
   readonly element: HTMLElement;
-  /** `locked` is today's puzzle while it is still unplayed. */
-  update(entries: readonly ArchiveListing[], filter: ArchiveFilter, locked: number | null): void;
+  /** `locked` is whichever of today's three are still unplayed. */
+  update(entries: readonly ArchiveListing[], filter: ArchiveFilter, locked: ReadonlySet<number>): void;
 }
 
 function labelled(label: string, ...controls: (HTMLElement | string)[]): HTMLElement {
@@ -224,7 +224,7 @@ export function createExplorer(callbacks: ExplorerCallbacks): Explorer {
       sort.value = next.sort;
 
       const matches = filterArchive(entries, next);
-      random.disabled = matches.filter((entry) => entry.id !== locked).length === 0;
+      random.disabled = !matches.some((entry) => !locked.has(entry.id));
       count.textContent =
         matches.length === entries.length
           ? `All ${entries.length} puzzles`
@@ -240,7 +240,7 @@ export function createExplorer(callbacks: ExplorerCallbacks): Explorer {
       }
       replaceChildren(
         list,
-        ...matches.slice(0, MAX_ROWS).map((entry) => row(entry, entry.id === locked)),
+        ...matches.slice(0, MAX_ROWS).map((entry) => row(entry, locked.has(entry.id))),
         matches.length > MAX_ROWS
           ? el("p", { class: "note", text: `…and ${matches.length - MAX_ROWS} more.` })
           : null,

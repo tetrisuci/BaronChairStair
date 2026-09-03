@@ -2,7 +2,9 @@
  * The page's fixed furniture: the header and the credits strip along the bottom.
  *
  * The header carries the club's block mark and the two numbers a daily game
- * lives on — streak and total solved. The strip underneath credits whoever
+ * lives on — streak and total solved. It used to carry the day's number too,
+ * which meant something while a day was one puzzle and named nothing once it
+ * became three. The strip underneath credits whoever
  * drew the puzzle, which the archive records and which is half the fun of
  * playing a club's own puzzles — and, in its far corner, Petr.
  */
@@ -59,28 +61,37 @@ function tally(key: string): { element: HTMLElement; value: HTMLElement } {
 
 export interface Masthead {
   readonly element: HTMLElement;
-  setDay(day: number): void;
   setStreak(streak: number, solved: number): void;
   /** Slots a control into the header's right-hand end. */
   mountControl(control: HTMLElement): void;
 }
 
-export function createMasthead(): Masthead {
-  const puzzleNumber = tally("puzzle");
+export function createMasthead(onHome: () => void = () => {}): Masthead {
   const streak = tally("streak");
   const solved = tally("solved");
   const controls = el("div", { class: "masthead__controls" });
 
+  /*
+   * The wordmark is the way home.
+   *
+   * It is where anybody looks for one — the top-left mark is a home link
+   * everywhere else — and it was inert, which made the header the one part of
+   * the app that ignored a click. A button rather than a span with a handler,
+   * so it is reachable by keyboard and announces itself as a control.
+   */
+  const home = el("button", { class: "masthead__home", title: "Back to the main menu" },
+    blockMark(),
+    el("span", { class: "masthead__mark", text: "Puzzle" }));
+  home.addEventListener("click", () => onHome());
+
   const element = el(
     "header",
     { class: "masthead" },
-    blockMark(),
-    el("span", { class: "masthead__mark", text: "Puzzle" }),
+    home,
     el("span", { class: "masthead__spacer" }),
     el(
       "div",
       { class: "masthead__meta" },
-      puzzleNumber.element,
       streak.element,
       solved.element,
       controls,
@@ -89,9 +100,6 @@ export function createMasthead(): Masthead {
 
   return {
     element,
-    setDay(day) {
-      puzzleNumber.value.textContent = `#${day}`;
-    },
     setStreak(current, total) {
       streak.value.textContent = String(current);
       solved.value.textContent = String(total);

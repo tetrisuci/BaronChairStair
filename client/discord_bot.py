@@ -86,7 +86,7 @@ from render import top_attack_bursts
 import presence_tracker
 import puzzle_commands
 import puzzle_recap
-from puzzle_commands import puzzle_group
+from puzzle_commands import puzzle_command
 
 log = logging.getLogger(__name__)
 
@@ -1473,7 +1473,7 @@ async def activity_now(interaction: discord.Interaction,
 
 
 bot.tree.add_command(activity)
-bot.tree.add_command(puzzle_group)
+bot.tree.add_command(puzzle_command)
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

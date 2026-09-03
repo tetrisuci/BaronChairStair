@@ -551,3 +551,98 @@
   color: var(--ink-soft);
   white-space: nowrap;
 }
+
+/*
+ * The day's three, across the top of the left rail.
+ *
+ * Wrapping rather than scrolling: three short labels fit on one line at any
+ * width the activity is given, and a row that scrolled would hide one of them
+ * — which is the one thing this control exists to prevent.
+ */
+.tiers {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.tiers__pick { flex: 1 1 auto; }
+
+
+
+/* The chooser's rows carry a goal and a byline, so they stack. */
+.explore__by { color: var(--ink-soft); font-size: 11px; }
+.explore__goal {
+  display: block;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-soft);
+  white-space: normal;
+}
+
+/* Done, and still worth being able to open again. */
+.explore__item--done .explore__id { background: var(--good); }
+
+/*
+ * The front door's four ways on.
+ *
+ * Wrapping, and each one wide enough to be a target rather than a word: this
+ * is the first thing a player meets, and Discord gives the activity a window
+ * whose shape nobody controls.
+ */
+.home__nav {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 12px 0;
+}
+
+.home__go {
+  flex: 1 1 120px;
+  padding-block: 12px;
+}
+
+/* ── The day's one board ──────────────────────────────────────────────────── */
+
+/*
+ * Only the marks. The row, its rank, name, score and self-highlight are
+ * `board-list__*` in overlays.css, shared with the daily and rush boards —
+ * a third copy of them was how this board lost its height cap.
+ */
+.board__marks { display: flex; gap: 3px; flex: none; }
+
+/*
+ * Three states and three appearances. Solved, tried and failed, and never
+ * opened are different days, and the shape carries it as well as the colour —
+ * a filled square, a hollow one, and a dotted one read apart without it.
+ */
+.board__mark {
+  width: 11px;
+  height: 11px;
+  border: 1px solid var(--ink);
+  border-radius: 2px;
+}
+.board__mark--on { background: var(--good); }
+.board__mark--off { background: transparent; }
+.board__mark--none { border-style: dotted; opacity: 0.5; }
+
+
+/*
+ * The wordmark, as a control that does not look like one.
+ *
+ * It is a button for the keyboard and the screen reader, and a plain mark for
+ * everybody else — the header should not grow a third thing that reads as a
+ * button beside the ones that are.
+ */
+.masthead__home {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+.masthead__home:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }

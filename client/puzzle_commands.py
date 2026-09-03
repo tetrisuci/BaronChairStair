@@ -21,7 +21,6 @@ Environment (see example.env):
 import logging
 import os
 import sqlite3
-from collections.abc import Callable
 from urllib.parse import urlparse
 
 import aiohttp
@@ -40,7 +39,6 @@ HTTP_TIMEOUT = aiohttp.ClientTimeout(total=8)
 
 # The club's own yellow, so the embed matches tetrisatuci.org and the activity.
 PUZZLE_COLOUR = discord.Colour.from_rgb(0xFC, 0xD7, 0x50)
-MISSING_COLOUR = discord.Colour.from_rgb(0xC8, 0x40, 0x2F)
 
 # The archive's difficulty is a loose vibe scale, so it is shown as a band.
 GRADE_BANDS = (
@@ -51,12 +49,6 @@ GRADE_BANDS = (
     (10, "V · severe"),
 )
 
-STANDINGS_SHOWN = 10
-
-# Both boards are per guild, and both can be handed a reply they cannot read,
-# so the two sentences live in one place rather than drifting apart.
-SERVER_ONLY = "Standings are per server, so this only works in a server."
-UNEXPECTED_REPLY = "The puzzle server sent something unexpected. Try again later."
 
 # Lent by discord_bot at boot so /puzzle play can note where it announced the
 # day. Left as None when nothing wired it up: this module stays importable on
@@ -79,10 +71,6 @@ def _grade(difficulty: float) -> str:
         if difficulty <= ceiling:
             return label
     return "VI · brutal"
-
-
-# One definition, shared with the recap that formats the same times.
-_duration = puzzle_recap.format_duration
 
 
 def _not_configured(missing: str) -> str:
@@ -126,15 +114,19 @@ async def _get(path: str, *, api_key: str | None = None) -> dict:
             "Couldn't reach the puzzle server. Try again in a minute.") from exc
 
 
-puzzle_group = app_commands.Group(
+# One command, not a group.
+#
+# There were four: play, standings, rush and help. Discord will not let a
+# command be both invocable and a group, so `/puzzle` being a thing you can
+# type at all means the subcommands cannot exist — and they should not. Three
+# of them rendered in Discord what the activity itself now shows on its own
+# front screen, each in its own embed, each a second place for a board to be
+# wrong. The one job left here is the one Discord is actually for: announcing
+# the day in a channel, with a way in.
+@app_commands.command(
     name="puzzle",
-    description="The daily Tetris puzzle")
-
-
-@puzzle_group.command(
-    name="play",
-    description="Post today's puzzle sheet and a link to open it.")
-async def puzzle_play(interaction: discord.Interaction):
+    description="Open the daily Tetris puzzle.")
+async def puzzle_command(interaction: discord.Interaction):
     app_id = _app_id()
     if not app_id:
         await interaction.response.send_message(
@@ -146,7 +138,7 @@ async def puzzle_play(interaction: discord.Interaction):
 
     try:
         today = await _get("/api/today")
-        puzzle = today["puzzle"]
+        puzzles = today["puzzles"]
         day = today["day"]
         solved = today["solvedCount"]
     except (PuzzleServerUnavailable, KeyError, TypeError) as exc:
@@ -157,15 +149,27 @@ async def puzzle_play(interaction: discord.Interaction):
         return
     embed = discord.Embed(
         title=f"Puzzle #{day}",
-        description=puzzle.get("goal") or "Match the reference solution.",
+        description="Three today — solving any one of them keeps your streak.",
         colour=PUZZLE_COLOUR,
         url=launch)
-    embed.add_field(name="Difficulty", value=_grade(puzzle.get("difficulty", 0)))
-    embed.add_field(name="Pieces", value=str(puzzle.get("pieces", "?")))
-    embed.add_field(name="Target", value=f"{puzzle.get('targetAttack', '?')} attack")
+    # One field per tier rather than three embeds: they are one day's puzzle,
+    # and splitting them would read as three announcements to scroll past.
+    for entry in puzzles:
+        tier = str(entry.get("tier", "")).title() or "Puzzle"
+        embed.add_field(
+            name=f"{tier} · {_grade(entry.get('difficulty', 0))}",
+            value=(f"{entry.get('goal') or 'Match the reference solution.'}\n"
+                   f"{entry.get('pieces', '?')} pieces · "
+                   f"{entry.get('targetAttack', '?')} attack\n"
+                   f"_“{entry.get('title', 'untitled')}” "
+                   f"by {entry.get('author', 'unknown')}_"),
+            inline=False)
+    # People, not results: the server counts players who solved anything today,
+    # so this does not treble now that a day holds three puzzles.
     embed.add_field(name="Solved by", value=f"{solved} so far", inline=False)
-    embed.set_footer(
-        text=f"“{puzzle.get('title', 'untitled')}” by {puzzle.get('author', 'unknown')}")
+    # Leaderboards, rush and the rules all live one click away now, so the
+    # embed says where rather than reproducing any of them.
+    embed.set_footer(text="Boards, rush and 1v1 are inside — open it to see them.")
 
     # `wait=True` so the send comes back with a message: without it discord.py
     # returns None and there is nothing for tomorrow's recap to reply to.
@@ -205,193 +209,3 @@ async def recap_payload(guild_id: int, day: int) -> dict:
     if not api_key:
         raise PuzzleServerUnavailable(_not_configured("PUZZLE_API_KEY"))
     return await _get(f"/api/recap?guild={guild_id}&day={day}", api_key=api_key)
-
-
-def _standings_lines(entries: list[dict], detail: Callable[[dict], str]) -> list[str]:
-    """
-    One line per player, in the order the server sent them.
-
-    What follows the name is the only thing a daily board and a rush board
-    disagree about, so it arrives as `detail`. Raises KeyError/TypeError on an
-    unexpected shape, whether from here or from inside `detail`.
-    """
-    lines = []
-    for rank, entry in enumerate(entries[:STANDINGS_SHOWN], start=1):
-        # Display names are player-chosen and embeds render masked links, so a
-        # username like "[Free Nitro](https://…)" would become a live link.
-        name = discord.utils.escape_markdown(entry["player"]["username"])
-        lines.append(f"`{rank:>2}` **{name}** — {detail(entry)}")
-    return lines
-
-
-def _daily_detail(entry: dict) -> str:
-    """Time on the puzzle, or how close an unsolved attempt came."""
-    if not entry["solved"]:
-        return f"unsolved · {entry['attack']}/{entry['targetAttack']}"
-    detail = _duration(entry["totalMs"])
-    if entry["resets"]:
-        detail += f" · {entry['resets']} restart{'s' if entry['resets'] != 1 else ''}"
-    return detail
-
-
-def _rush_detail(entry: dict) -> str:
-    """
-    Solves lead, because that is what the rush ranks by; the time only tells
-    two players on the same count apart. A run with nothing solved has no such
-    time — the server sends zero — so it says what it did instead.
-    """
-    solved = entry["solved"]
-    if not solved:
-        return f"no solves · {entry['attempted']} attempted"
-    detail = (f"{solved} solve{'s' if solved != 1 else ''}"
-              f" · {_duration(entry['timeToLastSolveMs'])}")
-    if entry["skipsUsed"]:
-        detail += f" · {entry['skipsUsed']} skip{'s' if entry['skipsUsed'] != 1 else ''}"
-    return detail
-
-
-@puzzle_group.command(
-    name="standings",
-    description="Today's puzzle leaderboard for this server.")
-async def puzzle_standings(interaction: discord.Interaction):
-    api_key = os.environ.get("PUZZLE_API_KEY", "").strip()
-    if not api_key:
-        await interaction.response.send_message(
-            _not_configured("PUZZLE_API_KEY"), ephemeral=True)
-        return
-    if interaction.guild_id is None:
-        await interaction.response.send_message(SERVER_ONLY, ephemeral=True)
-        return
-
-    await interaction.response.defer(thinking=True)
-    try:
-        data = await _get(f"/api/standings?guild={interaction.guild_id}",
-                          api_key=api_key)
-        entries = data["entries"]
-        day = data["day"]
-    except PuzzleServerUnavailable as exc:
-        await interaction.followup.send(str(exc))
-        return
-    except (KeyError, TypeError) as exc:
-        log.warning("puzzle /api/standings unusable: %s", exc)
-        await interaction.followup.send(UNEXPECTED_REPLY)
-        return
-
-    if not entries:
-        await interaction.followup.send(f"Nobody has solved #{day} yet. Be first.")
-        return
-
-    # Built inside its own guard: the interaction is already deferred, so an
-    # unexpected shape here would leave the user watching a spinner forever.
-    try:
-        lines = _standings_lines(entries, _daily_detail)
-    except (KeyError, TypeError) as exc:
-        log.warning("puzzle standings entry unusable: %s", exc)
-        await interaction.followup.send(UNEXPECTED_REPLY)
-        return
-
-    embed = discord.Embed(
-        title=f"Puzzle #{day} — leaderboard",
-        description="\n".join(lines),
-        colour=PUZZLE_COLOUR)
-    if len(entries) > STANDINGS_SHOWN:
-        embed.set_footer(text=f"and {len(entries) - STANDINGS_SHOWN} more")
-    await interaction.followup.send(embed=embed)
-
-
-@puzzle_group.command(
-    name="rush",
-    description="Today's five-minute puzzle rush board for this server.")
-async def puzzle_rush(interaction: discord.Interaction):
-    api_key = os.environ.get("PUZZLE_API_KEY", "").strip()
-    if not api_key:
-        await interaction.response.send_message(
-            _not_configured("PUZZLE_API_KEY"), ephemeral=True)
-        return
-    if interaction.guild_id is None:
-        await interaction.response.send_message(SERVER_ONLY, ephemeral=True)
-        return
-
-    await interaction.response.defer(thinking=True)
-    try:
-        data = await _get(f"/api/rush/standings?guild={interaction.guild_id}",
-                          api_key=api_key)
-        entries = data["entries"]
-        day = data["day"]
-    except PuzzleServerUnavailable as exc:
-        await interaction.followup.send(str(exc))
-        return
-    except (KeyError, TypeError) as exc:
-        log.warning("puzzle /api/rush/standings unusable: %s", exc)
-        await interaction.followup.send(UNEXPECTED_REPLY)
-        return
-
-    if not entries:
-        await interaction.followup.send(f"Nobody has run rush #{day} yet. Be first.")
-        return
-
-    # Built inside its own guard: the interaction is already deferred, so an
-    # unexpected shape here would leave the user watching a spinner forever.
-    try:
-        lines = _standings_lines(entries, _rush_detail)
-    except (KeyError, TypeError) as exc:
-        log.warning("puzzle rush entry unusable: %s", exc)
-        await interaction.followup.send(UNEXPECTED_REPLY)
-        return
-
-    embed = discord.Embed(
-        title=f"Puzzle rush #{day} — leaderboard",
-        description="\n".join(lines),
-        colour=PUZZLE_COLOUR)
-    if len(entries) > STANDINGS_SHOWN:
-        embed.set_footer(text=f"and {len(entries) - STANDINGS_SHOWN} more")
-    await interaction.followup.send(embed=embed)
-
-
-@puzzle_group.command(
-    name="help",
-    description="What the daily puzzle is and how it is scored.")
-async def puzzle_help(interaction: discord.Interaction):
-    app_id = _app_id()
-    embed = discord.Embed(
-        title="Daily Puzzle",
-        description=(
-            "One modern Tetris puzzle a day, from the Tetris at UCI archive. "
-            "Everyone gets the same puzzle, and it changes at midnight."),
-        colour=PUZZLE_COLOUR if app_id else MISSING_COLOUR)
-    embed.add_field(
-        name="How it is scored",
-        value=("Each puzzle has a fixed queue and an attack target taken from "
-               "the author's own solution. Reach the target and it counts. "
-               "Restart as often as you like — only the attempt that solves "
-               "it is recorded."),
-        inline=False)
-    embed.add_field(
-        name="Puzzle rush",
-        value=("Five minutes against one shared sequence that ramps in "
-               "difficulty, with two skips. A dead board just restarts the "
-               "same puzzle, so time is all it costs. One ranked rush each "
-               "day; practice rushes are unlimited and never recorded."),
-        inline=False)
-    embed.add_field(
-        name="Controls",
-        value=("Fully rebindable, with TETR.IO-style handling: DAS, ARR, DCD, "
-               "SDF, safe lock, DAS cancel, and initial rotation/hold. Open "
-               "**Settings** in the activity, or press Esc."),
-        inline=False)
-    embed.add_field(
-        name="Leaderboards",
-        value=("`/puzzle standings` ranks today's solvers in this server by "
-               "total time on the puzzle, and `/puzzle rush` ranks today's "
-               "rushes by solves, then by who reached that count soonest. "
-               "Times come from the player's own client, so treat them as a "
-               "friendly scoreboard, not a record book."),
-        inline=False)
-    if app_id:
-        embed.add_field(
-            name="Open it",
-            value=ACTIVITY_LAUNCH_URL.format(app_id=app_id),
-            inline=False)
-    else:
-        embed.set_footer(text=_not_configured("PUZZLE_APP_ID"))
-    await interaction.response.send_message(embed=embed, ephemeral=True)

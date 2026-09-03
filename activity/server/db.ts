@@ -4,6 +4,10 @@
  */
 
 import { Database } from "bun:sqlite";
+import { DAILY_TIERS, type DailyTier } from "../shared/daily";
+
+/** Marks a run filed when a day held one puzzle and there was nothing to name. */
+const LEGACY_SLOT = "legacy";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
@@ -11,6 +15,27 @@ export interface PlayerProfile {
   readonly id: string;
   readonly username: string;
   readonly avatarUrl: string | null;
+}
+
+/** A day's board row: one player, and how each of the three went for them. */
+export interface DayBoardRow {
+  readonly player: PlayerProfile;
+  readonly solved: number;
+  readonly totalMs: number;
+  /** Missing means never opened; false means filed and not solved. */
+  readonly marks: Partial<Record<DailyTier, boolean>>;
+}
+
+/** The raw shape of a {@link Store.dayBoard} row: marks as 0 absent, 1 filed, 2 solved. */
+interface DayBoardRaw {
+  id: string;
+  username: string;
+  avatarUrl: string | null;
+  solved: number;
+  totalMs: number;
+  easy: number;
+  medium: number;
+  hard: number;
 }
 
 export interface RunResult {
@@ -107,7 +132,10 @@ CREATE TABLE IF NOT EXISTS runs (
   pieces_placed INTEGER NOT NULL,
   clears        TEXT NOT NULL,
   created_at    INTEGER NOT NULL,
-  PRIMARY KEY (day, player_id)
+  -- Which of the day's three puzzles this run is. 'legacy' marks a row filed
+  -- when a day held one puzzle and there was nothing to name.
+  slot          TEXT NOT NULL DEFAULT 'legacy',
+  PRIMARY KEY (day, player_id, slot)
 );
 
 CREATE INDEX IF NOT EXISTS runs_by_day    ON runs (day, guild_id);
@@ -191,6 +219,19 @@ export class Store {
     this.db.exec("PRAGMA journal_mode = WAL");
     this.db.exec("PRAGMA foreign_keys = ON");
     this.db.run(SCHEMA);
+    // Before anything else touches `runs`: a database written when a day held
+    // one puzzle has the wrong primary key, and no amount of ADD COLUMN fixes
+    // that.
+    this.addSlotsToRuns();
+    // After the rebuild, never in SCHEMA: it names `slot`, and SCHEMA runs
+    // against a database that may not have that column yet.
+    //
+    // A board is one day, one guild, one tier, ordered. Without the slot and
+    // the sort columns each of the three boards walks the whole day and
+    // rebuilds the same sort — measured at 281us for the three, 83us with it.
+    this.db.run(
+      "CREATE INDEX IF NOT EXISTS runs_board ON runs (day, guild_id, slot, solved DESC, total_ms ASC)",
+    );
     // `CREATE TABLE IF NOT EXISTS` leaves an existing table untouched, so a
     // database made before this column existed needs it added explicitly.
     this.addMissingColumn(
@@ -202,6 +243,65 @@ export class Store {
       // ahead of everybody at a displayed time of zero.
       "UPDATE runs SET total_ms = duration_ms WHERE total_ms = 0",
     );
+  }
+
+  /**
+   * Gives `runs` a slot, and a primary key that admits three a day.
+   *
+   * `PRIMARY KEY (day, player_id)` was the rule "one run per player per day",
+   * and it was enforced by the key itself rather than by any code. SQLite
+   * cannot alter a primary key, so this is the documented rebuild: new table,
+   * copy, drop, rename. `addMissingColumn` cannot do it — a slot column added
+   * to the old table would leave the old key in place, and the second puzzle of
+   * a day would still be swallowed by the conflict clause.
+   *
+   * Existing rows become 'legacy' rather than being guessed into a tier. They
+   * were filed against a day's single puzzle, which is not one of the three
+   * that day now deals, and calling one of them "the easy one" would be a
+   * fabrication that then shows up on a leaderboard. They still count for
+   * streaks and totals, which ask only whether a day was solved.
+   *
+   * Foreign keys are switched off around the swap and not inside it: the
+   * pragma is a no-op within a transaction, and `runs.player_id` references
+   * `players(id)`, so dropping the old table with them on would be refused.
+   */
+  private addSlotsToRuns(): void {
+    const columns = this.db.query<{ name: string }, []>("PRAGMA table_info(runs)").all();
+    if (columns.some((column) => column.name === "slot")) return;
+
+    const carried = columns.map((column) => column.name).join(", ");
+    this.db.exec("PRAGMA foreign_keys = OFF");
+    try {
+      this.db.transaction(() => {
+        this.db.run(`CREATE TABLE runs_rebuilt (
+          day           INTEGER NOT NULL,
+          player_id     TEXT NOT NULL REFERENCES players(id),
+          guild_id      TEXT,
+          puzzle_id     INTEGER NOT NULL,
+          solved        INTEGER NOT NULL,
+          attack        INTEGER NOT NULL,
+          target_attack INTEGER NOT NULL,
+          duration_ms   INTEGER NOT NULL,
+          total_ms      INTEGER NOT NULL DEFAULT 0,
+          resets        INTEGER NOT NULL,
+          pieces_placed INTEGER NOT NULL,
+          clears        TEXT NOT NULL,
+          created_at    INTEGER NOT NULL,
+          slot          TEXT NOT NULL DEFAULT 'legacy',
+          PRIMARY KEY (day, player_id, slot)
+        )`);
+        this.db.run(
+          `INSERT INTO runs_rebuilt (${carried}, slot) SELECT ${carried}, '${LEGACY_SLOT}' FROM runs`,
+        );
+        this.db.run("DROP TABLE runs");
+        this.db.run("ALTER TABLE runs_rebuilt RENAME TO runs");
+        this.db.run("CREATE INDEX IF NOT EXISTS runs_by_day    ON runs (day, guild_id)");
+        this.db.run("CREATE INDEX IF NOT EXISTS runs_by_player ON runs (player_id, day)");
+        this.db.run("CREATE INDEX IF NOT EXISTS runs_by_guild  ON runs (guild_id, solved, day)");
+      })();
+    } finally {
+      this.db.exec("PRAGMA foreign_keys = ON");
+    }
   }
 
   /**
@@ -254,6 +354,7 @@ export class Store {
    */
   recordRun(
     day: number,
+    slot: DailyTier,
     puzzleId: number,
     player: PlayerProfile,
     guildId: string | null,
@@ -264,12 +365,17 @@ export class Store {
       .query(
         `INSERT INTO runs (day, player_id, guild_id, puzzle_id, solved, attack,
                            target_attack, duration_ms, total_ms, resets,
-                           pieces_placed, clears, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
-         ON CONFLICT(day, player_id) DO UPDATE SET
+                           pieces_placed, clears, created_at, slot)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+         ON CONFLICT(day, player_id, slot) DO UPDATE SET
            guild_id = excluded.guild_id,
            solved = excluded.solved,
            attack = excluded.attack,
+           -- Both of these were left out while a day had one puzzle and the
+           -- identity could not change. It can now: a slot is a tier, and the
+           -- tier deals a different puzzle each day.
+           puzzle_id = excluded.puzzle_id,
+           target_attack = excluded.target_attack,
            duration_ms = excluded.duration_ms,
            total_ms = excluded.total_ms,
            resets = excluded.resets,
@@ -292,22 +398,93 @@ export class Store {
         result.piecesPlaced,
         JSON.stringify(result.clears),
         Date.now(),
+        slot,
       );
 
-    const run = this.runFor(day, player.id);
+    const run = this.runFor(day, player.id, slot);
     if (!run) throw new Error("Run vanished immediately after being written");
     return { run, isFirst: changes.changes > 0 };
   }
 
-  runFor(day: number, playerId: string): StoredRun | null {
+  runFor(day: number, playerId: string, slot: DailyTier): StoredRun | null {
     const row = this.db
-      .query<RunRow, [number, string]>(
+      .query<RunRow, [number, string, string]>(
         `SELECT ${RUN_COLUMNS} FROM runs
+         JOIN players ON players.id = runs.player_id
+         WHERE runs.day = ?1 AND runs.player_id = ?2 AND runs.slot = ?3`,
+      )
+      .get(day, playerId, slot);
+    return row ? toStoredRun(row) : null;
+  }
+
+  /**
+   * The day as one board: a row per player, with what they did to each tier.
+   *
+   * The merge belongs here and not in the two clients that were doing it. Three
+   * per-tier boards each carried their own `LIMIT`, and the limit was applied
+   * *before* anything joined them up — so a player twenty-sixth on easy and
+   * first on hard came back on the hard board only, and both renderers drew a
+   * row that silently dropped their easy mark. One query, one grouping, one
+   * limit over the merged rows.
+   *
+   * Marks are encoded 0/1/2 rather than as two columns: absent, filed and
+   * failed, solved. Those are three different days and a boolean cannot hold
+   * them. `MAX` over the encoding picks the best a player did on a tier, which
+   * matters because a miss can be upgraded by a later solve.
+   *
+   * 'legacy' rows are excluded. They were filed against a day's single puzzle,
+   * which is none of the three that day deals now.
+   */
+  dayBoard(day: number, guildId: string | null, limit = 25): DayBoardRow[] {
+    const rows = this.db
+      .query<DayBoardRaw, [number, string | null, number]>(
+        `SELECT players.id AS id, players.username AS username,
+                players.avatar_url AS avatarUrl,
+                SUM(runs.solved) AS solved,
+                SUM(CASE WHEN runs.solved = 1 THEN runs.total_ms ELSE 0 END) AS totalMs,
+                MAX(CASE WHEN runs.slot = 'easy'   THEN runs.solved + 1 ELSE 0 END) AS easy,
+                MAX(CASE WHEN runs.slot = 'medium' THEN runs.solved + 1 ELSE 0 END) AS medium,
+                MAX(CASE WHEN runs.slot = 'hard'   THEN runs.solved + 1 ELSE 0 END) AS hard
+         FROM runs JOIN players ON players.id = runs.player_id
+         WHERE runs.day = ?1 AND (?2 IS NULL OR runs.guild_id = ?2)
+           AND runs.slot IN ('easy', 'medium', 'hard')
+         GROUP BY runs.player_id
+         ORDER BY solved DESC, totalMs ASC
+         LIMIT ?3`,
+      )
+      .all(day, guildId, limit);
+
+    return rows.map((row) => {
+      const marks: Partial<Record<DailyTier, boolean>> = {};
+      for (const tier of DAILY_TIERS) {
+        const state = row[tier];
+        if (state > 0) marks[tier] = state === 2;
+      }
+      return {
+        player: { id: row.id, username: row.username, avatarUrl: row.avatarUrl },
+        solved: row.solved,
+        totalMs: row.totalMs,
+        marks,
+      };
+    });
+  }
+
+  /** Every slot this player has filed for a day, keyed by tier. */
+  runsFor(day: number, playerId: string): Partial<Record<DailyTier, StoredRun>> {
+    const rows = this.db
+      .query<RunRow & { slot: string }, [number, string]>(
+        `SELECT ${RUN_COLUMNS}, runs.slot FROM runs
          JOIN players ON players.id = runs.player_id
          WHERE runs.day = ?1 AND runs.player_id = ?2`,
       )
-      .get(day, playerId);
-    return row ? toStoredRun(row) : null;
+      .all(day, playerId);
+    const runs: Partial<Record<DailyTier, StoredRun>> = {};
+    for (const row of rows) {
+      // 'legacy' rows are from a day that held one puzzle. They are kept for
+      // streaks and totals, and belong to none of today's three.
+      if (DAILY_TIERS.includes(row.slot as DailyTier)) runs[row.slot as DailyTier] = toStoredRun(row);
+    }
+    return runs;
   }
 
   /**
@@ -315,26 +492,26 @@ export class Store {
    * time spent on the puzzle.
    * Scoped to a guild when there is one.
    */
-  leaderboard(day: number, guildId: string | null, limit = 25): StoredRun[] {
+  leaderboard(day: number, guildId: string | null, slot: DailyTier, limit = 25): StoredRun[] {
     const rows = guildId
       ? this.db
+          .query<RunRow, [number, string, string, number]>(
+            `SELECT ${RUN_COLUMNS} FROM runs
+             JOIN players ON players.id = runs.player_id
+             WHERE runs.day = ?1 AND runs.guild_id = ?2 AND runs.slot = ?3
+             ORDER BY runs.solved DESC, runs.total_ms ASC, runs.attack DESC
+             LIMIT ?4`,
+          )
+          .all(day, guildId, slot, limit)
+      : this.db
           .query<RunRow, [number, string, number]>(
             `SELECT ${RUN_COLUMNS} FROM runs
              JOIN players ON players.id = runs.player_id
-             WHERE runs.day = ?1 AND runs.guild_id = ?2
+             WHERE runs.day = ?1 AND runs.slot = ?2
              ORDER BY runs.solved DESC, runs.total_ms ASC, runs.attack DESC
              LIMIT ?3`,
           )
-          .all(day, guildId, limit)
-      : this.db
-          .query<RunRow, [number, number]>(
-            `SELECT ${RUN_COLUMNS} FROM runs
-             JOIN players ON players.id = runs.player_id
-             WHERE runs.day = ?1
-             ORDER BY runs.solved DESC, runs.total_ms ASC, runs.attack DESC
-             LIMIT ?2`,
-          )
-          .all(day, limit);
+          .all(day, slot, limit);
     return rows.map(toStoredRun);
   }
 
@@ -342,7 +519,11 @@ export class Store {
   streak(playerId: string, day: number): number {
     const rows = this.db
       .query<{ day: number }, [string, number]>(
-        `SELECT day FROM runs
+        // DISTINCT is what makes this a streak and not a count of solves: a
+        // day now holds three puzzles, and solving two of them would otherwise
+        // put the same day in this list twice and stop the walk dead on the
+        // duplicate. Solving any one of the three keeps the day.
+        `SELECT DISTINCT day FROM runs
          WHERE player_id = ?1 AND solved = 1 AND day <= ?2
          ORDER BY day DESC LIMIT 400`,
       )
@@ -408,7 +589,8 @@ export class Store {
     return (
       this.db
         .query<{ n: number }, [number, string]>(
-          "SELECT COUNT(*) AS n FROM runs WHERE day = ?1 AND guild_id = ?2",
+          // DISTINCT: three rows a day per player, and this counts people.
+          "SELECT COUNT(DISTINCT player_id) AS n FROM runs WHERE day = ?1 AND guild_id = ?2",
         )
         .get(day, guildId)?.n ?? 0
     );
@@ -430,7 +612,7 @@ export class Store {
     return (
       this.db
         .query<{ n: number }, [number]>(
-          "SELECT COUNT(*) AS n FROM runs WHERE day = ?1 AND solved = 1",
+          "SELECT COUNT(DISTINCT player_id) AS n FROM runs WHERE day = ?1 AND solved = 1",
         )
         .get(day)?.n ?? 0
     );
@@ -440,7 +622,10 @@ export class Store {
     return (
       this.db
         .query<{ n: number }, [string]>(
-          "SELECT COUNT(*) AS n FROM runs WHERE player_id = ?1 AND solved = 1",
+          // Days, not rows. The header calls this "solved", and a day holding
+          // three puzzles would otherwise let one day count three times — the
+          // same correction dayCount and solvedCount needed.
+          "SELECT COUNT(DISTINCT day) AS n FROM runs WHERE player_id = ?1 AND solved = 1",
         )
         .get(playerId)?.n ?? 0
     );

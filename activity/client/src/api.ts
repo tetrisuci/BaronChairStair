@@ -6,6 +6,7 @@
  * Discord and running on localhost, so it is handled once, here.
  */
 
+import type { DailyTier } from "@shared/daily";
 import type { ClearName, PuzzlePrompt, SolutionStep } from "@shared/puzzle";
 
 export interface PlayerProfile {
@@ -31,17 +32,35 @@ export interface StoredRun {
   readonly createdAt: number;
 }
 
-export interface DailyResponse {
-  readonly day: number;
-  readonly resetsAt: number;
+/** A day's board row: one player, and how each of the three went for them. */
+export interface DayBoardRow {
+  readonly player: PlayerProfile;
+  readonly solved: number;
+  readonly totalMs: number;
+  /** Missing means never opened; false means filed and not solved. */
+  readonly marks: Partial<Record<DailyTier, boolean>>;
+}
+
+/** One of the day's three, with whatever this player has done to it. */
+export interface DailyEntry {
+  readonly tier: DailyTier;
   readonly puzzle: PuzzlePrompt;
   readonly run: StoredRun | null;
-  readonly streak: number;
-  readonly totalSolved: number;
+  /** Sent only once *this* puzzle is solved; solving another buys nothing. */
   readonly solution: readonly SolutionStep[] | null;
 }
 
+export interface DailyResponse {
+  readonly day: number;
+  readonly resetsAt: number;
+  /** Easiest first, and always all three. */
+  readonly puzzles: readonly DailyEntry[];
+  readonly streak: number;
+  readonly totalSolved: number;
+}
+
 export interface SubmitResponse {
+  readonly tier: DailyTier;
   readonly run: StoredRun;
   readonly isFirst: boolean;
   readonly streak: number;
@@ -184,6 +203,8 @@ export class Api {
   }
 
   submitRun(body: {
+    /** Which of the day's three this log was played on. */
+    tier: DailyTier;
     handling: unknown;
     events: unknown;
     resets: number;
@@ -192,7 +213,11 @@ export class Api {
     return this.request("/api/daily/run", { method: "POST", body: JSON.stringify(body) });
   }
 
-  leaderboard(): Promise<{ day: number; entries: readonly StoredRun[] }> {
+  leaderboard(): Promise<{
+    day: number;
+    board: readonly DayBoardRow[];
+    rush: readonly RushRun[];
+  }> {
     return this.request("/api/daily/leaderboard");
   }
 
