@@ -551,3 +551,25 @@
   color: var(--ink-soft);
   white-space: nowrap;
 }
+
+/*
+ * The day's three, across the top of the left rail.
+ *
+ * Wrapping rather than scrolling: three short labels fit on one line at any
+ * width the activity is given, and a row that scrolled would hide one of them
+ * — which is the one thing this control exists to prevent.
+ */
+.tiers {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.tiers__pick { flex: 1 1 auto; }
+
+/* The one you are on, in the same ink the masthead uses for a live control. */
+.tiers__pick--on {
+  background: var(--ink);
+  color: var(--sun);
+}

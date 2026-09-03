@@ -6,6 +6,7 @@
  * Discord and running on localhost, so it is handled once, here.
  */
 
+import type { DailyTier } from "@shared/daily";
 import type { ClearName, PuzzlePrompt, SolutionStep } from "@shared/puzzle";
 
 export interface PlayerProfile {
@@ -31,17 +32,26 @@ export interface StoredRun {
   readonly createdAt: number;
 }
 
-export interface DailyResponse {
-  readonly day: number;
-  readonly resetsAt: number;
+/** One of the day's three, with whatever this player has done to it. */
+export interface DailyEntry {
+  readonly tier: DailyTier;
   readonly puzzle: PuzzlePrompt;
   readonly run: StoredRun | null;
-  readonly streak: number;
-  readonly totalSolved: number;
+  /** Sent only once *this* puzzle is solved; solving another buys nothing. */
   readonly solution: readonly SolutionStep[] | null;
 }
 
+export interface DailyResponse {
+  readonly day: number;
+  readonly resetsAt: number;
+  /** Easiest first, and always all three. */
+  readonly puzzles: readonly DailyEntry[];
+  readonly streak: number;
+  readonly totalSolved: number;
+}
+
 export interface SubmitResponse {
+  readonly tier: DailyTier;
   readonly run: StoredRun;
   readonly isFirst: boolean;
   readonly streak: number;
@@ -184,6 +194,8 @@ export class Api {
   }
 
   submitRun(body: {
+    /** Which of the day's three this log was played on. */
+    tier: DailyTier;
     handling: unknown;
     events: unknown;
     resets: number;
@@ -192,8 +204,8 @@ export class Api {
     return this.request("/api/daily/run", { method: "POST", body: JSON.stringify(body) });
   }
 
-  leaderboard(): Promise<{ day: number; entries: readonly StoredRun[] }> {
-    return this.request("/api/daily/leaderboard");
+  leaderboard(tier: DailyTier): Promise<{ day: number; tier: DailyTier; entries: readonly StoredRun[] }> {
+    return this.request(`/api/daily/leaderboard?tier=${tier}`);
   }
 
   rush(): Promise<RushState> {
