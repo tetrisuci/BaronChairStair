@@ -181,7 +181,6 @@
   overflow: auto;
 }
 
-.spec[hidden] { display: none; }
 
 .spec__sheet {
   width: min(780px, 100%);

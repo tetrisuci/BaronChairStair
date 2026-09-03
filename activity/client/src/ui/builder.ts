@@ -26,35 +26,33 @@
  * - **The painted board carries colour only.** The swatches are labelled, so
  *   choosing a paint is colour-safe; telling S from Z from garbage on the board
  *   is not. Letters in 24px cells were tried and read as noise.
- * - **Nothing here checks that a puzzle is solvable.** It writes a position;
- *   whether the position has an answer is the author's problem.
+ * - **Nothing here proves a puzzle is solvable except playing it.** Test hands
+ *   the draft to the app, which runs it on this same grid and reports what the
+ *   author managed against the goal they wrote — see `builder-test.ts`. Static
+ *   validation still claims nothing: a board that nobody has solved is a board
+ *   whose solvability is unknown, not one that is broken.
  */
 
 import { COLUMNS } from "@shared/blueprint/playfield";
 import { BlueprintDecodeError } from "@shared/blueprint/decode";
-import type { ClearName } from "@shared/puzzle";
+import type { PuzzlePrompt } from "@shared/puzzle";
+import type { RunSnapshot } from "../game/runner";
+import type { BoardView } from "../render/board";
 import { MINO_INK } from "../render/skin";
 import { pieceGlyph } from "../render/piece-glyph";
-import { el, panel, replaceChildren } from "./dom";
+import { el, panel, replaceChildren, writeBackOnBlur } from "./dom";
 import { copyText } from "./share";
 import {
   type BuilderState,
-  type GoalSpec,
   type Paint,
   type PaintedCell,
   cellIndex,
-  EMPTY_GOAL,
   EMPTY_STATE,
-  formatGoal,
   formatPieces,
   fromPage,
-  GOAL_LABELS,
-  goalFits,
   HISTORY_LIMIT,
   lossFromPage,
   MAX_GOAL,
-  MAX_GOAL_ATTACK,
-  MAX_GOAL_COUNT,
   MAX_QUEUE,
   MAX_ROWS,
   PALETTE,
@@ -65,12 +63,13 @@ import {
   parsePieces,
   sanitizeGoal,
   summaryOf,
+  testBlocker,
   toCode,
-  unusedClears,
+  toPuzzle,
   warningFor,
-  withGoalAttack,
-  withGoalEntry,
 } from "./builder-state";
+import { createGoalControls } from "./builder-goal";
+import { createTestPanel, paintFrame } from "./builder-test";
 
 /** How long a copy button wears its own result before going back to its label. */
 const COPIED_MESSAGE_MS = 1600;
@@ -80,6 +79,17 @@ const RIGHT_BUTTON = 2;
 
 export interface BuilderCallbacks {
   readonly onClose: () => void;
+  /**
+   * Play this draft.
+   *
+   * The app owns the run, as it owns every other one: the handling, the
+   * keyboard and the frame loop are all its, and it feeds the frames back
+   * through `showTest`. The builder owns the screen and nothing else, which is
+   * why a test needs no engine import in here.
+   */
+  readonly onTest: (puzzle: PuzzlePrompt) => void;
+  /** Put the run away. The app answers by calling `endTest`. */
+  readonly onStopTest: () => void;
 }
 
 /**
@@ -95,6 +105,10 @@ export interface Builder {
   readonly board: HTMLElement;
   readonly left: HTMLElement;
   readonly right: HTMLElement;
+  /** One frame of a test run, painted onto the cells the author paints on. */
+  readonly showTest: (view: BoardView, snapshot: RunSnapshot) => void;
+  /** Give the board back to the palette. A no-op when nothing is playing. */
+  readonly endTest: () => void;
 }
 
 function swatchLabel(paint: Paint): string {
@@ -108,25 +122,6 @@ function inkFor(paint: PaintedCell): string {
 
 function clamp(low: number, value: number, high: number): number {
   return Math.min(Math.max(value, low), high);
-}
-
-/**
- * A small whole-number box, the explorer's.
- *
- * On `change` rather than `input` for the same reason the explorer's are: the
- * value is read whole, so the "1" on the way to "12" never becomes the goal and
- * the row does not vanish under the caret when the field is briefly empty.
- */
-function numberBox(max: number, label: string, onChange: (value: number) => void): HTMLInputElement {
-  const input = el("input", {
-    class: "explore__number",
-    attrs: { type: "number", min: 0, max, inputmode: "numeric", "aria-label": label },
-  });
-  input.addEventListener("change", () => {
-    const value = Number(input.value);
-    if (Number.isFinite(value)) onChange(value);
-  });
-  return input;
 }
 
 /** One entry on the undo stack: the state to go back to, and how much of it. */
@@ -143,6 +138,18 @@ export function createBuilder(callbacks: BuilderCallbacks): Builder {
   let bench: BuilderState = EMPTY_STATE;
   let paint: Paint = "g";
   let history: Step[] = [];
+  /** Steps undo took off `history`, newest last, for redo to put back. */
+  let future: Step[] = [];
+  /**
+   * Whether a run is on the board.
+   *
+   * The grid is the playfield while this is true, so painting is off, the
+   * editing controls are away, and every key the board is given belongs to the
+   * game rather than to the palette.
+   */
+  let testing = false;
+  /** The hold and next the bays were last drawn for, so a frame is not a rebuild. */
+  let baysShowing = "";
   /** A cell index, for the keyboard. Not a selection — nothing else reads it. */
   let cursor = 0;
   /** Non-null only between a pointerdown and the pointerup that ends the stroke. */
@@ -155,14 +162,6 @@ export function createBuilder(callbacks: BuilderCallbacks): Builder {
   } | null = null;
   /** Grid children, top-left first. Rebuilt only when the board changes height. */
   let cellNodes: HTMLElement[] = [];
-  /** The live count boxes, by clear, so a redraw refills them instead of
-   *  replacing them — a rebuilt input is one the caret has just been thrown out
-   *  of, and every keystroke here redraws. */
-  let goalCounts = new Map<ClearName, HTMLInputElement>();
-  /** The clears the rows on screen were built for, and the picker's options. */
-  let goalShape = "";
-  let pickShape = "";
-
   // ── Controls ───────────────────────────────────────────────────────────────
 
   const swatches = PALETTE.map((option) => {
@@ -239,33 +238,11 @@ export function createBuilder(callbacks: BuilderCallbacks): Builder {
     },
   });
 
-  /**
-   * The counters, and the one rule that keeps them out of the author's way.
-   *
-   * Only the clears a goal already names get a row. Ten rows of mostly zeroes
-   * would be the whole rail, and a zero is not part of a goal anyway — so a
-   * clear enters through the picker below and leaves through its own ×.
-   */
-  const goalRows = el("div", { class: "build__goals" });
-  const attackBox = numberBox(MAX_GOAL_ATTACK, "Attack", (value) =>
-    setGoal(withGoalAttack(goalSpec(), value)),
-  );
-  // An empty box is a goal that does not name a figure, not a goal of zero
-  // attack, and the word is the difference.
-  attackBox.placeholder = "none";
-  const attackRow = el(
-    "div",
-    { class: "build__goal" },
-    attackBox,
-    el("span", { class: "explore__label", text: "Attack" }),
-  );
-  const goalPick = el("select", {
-    class: "spec__select build__goal-pick",
-    attrs: { "aria-label": "Clear type to add" },
+  const goalControls = createGoalControls({
+    read: () => bench.goal,
+    write: (goal) => edit({ ...bench, goal }),
+    redraw: () => render(),
   });
-  const goalAdd = el("button", { class: "btn btn--small", text: "Add" });
-  const goalPicker = el("div", { class: "explore__controls build__goal-add" }, goalPick, goalAdd);
-  const goalNote = el("p", { class: "note build__goal-note" });
 
   const codeField = el("input", {
     class: "build__field build__code",
@@ -285,6 +262,7 @@ export function createBuilder(callbacks: BuilderCallbacks): Builder {
   const copy = el("button", { class: "btn btn--small", text: "Copy" });
   const load = el("button", { class: "btn btn--small", text: "Load" });
   const undoButton = el("button", { class: "btn btn--small", text: "Undo" });
+  const redoButton = el("button", { class: "btn btn--small", text: "Redo" });
   const clear = el("button", { class: "btn btn--small", text: "Clear board" });
   const close = el("button", { class: "btn", text: "Back to the menu" });
 
@@ -298,21 +276,37 @@ export function createBuilder(callbacks: BuilderCallbacks): Builder {
    */
   const board = el("div", { class: "build__board" }, grid);
 
-  const left = el(
-    "div",
-    { class: "rail rail--left" },
-    panel(
-      "Paint",
-      {},
-      el("p", { class: "rush__blurb", text: "Pick a block and drag on the board." }),
-      palette,
-      el("p", {
-        class: "note build__legend",
-        text: "arrows move · space fills · backspace clears",
-      }),
-    ),
-    panel("Edit", {}, el("div", { class: "btnrow" }, undoButton, clear)),
-    close,
+  const test = createTestPanel({
+    onStart: () => startTest(),
+    onAgain: () => startTest(),
+    onStop: () => callbacks.onStopTest(),
+    onAdopt: (attack) => adoptAttack(attack),
+  });
+
+  const paintPanel = panel(
+    "Paint",
+    {},
+    el("p", { class: "rush__blurb", text: "Pick a block and drag on the board." }),
+    palette,
+    el("p", {
+      class: "note build__legend",
+      text: "arrows move · space fills · backspace clears",
+    }),
+  );
+  const editPanel = panel(
+    "Edit",
+    {},
+    el("div", { class: "btnrow" }, undoButton, redoButton, clear),
+  );
+
+  const left = el("div", { class: "rail rail--left" }, paintPanel, editPanel, test.element, close);
+
+  const codePanel = panel(
+    "Code",
+    {},
+    codeField,
+    el("div", { class: "btnrow" }, copy, load),
+    el("p", { class: "note", text: "Copy it out when the board looks right." }),
   );
 
   const right = el(
@@ -326,14 +320,16 @@ export function createBuilder(callbacks: BuilderCallbacks): Builder {
      * the thing being edited. The counters are a way of writing it, not a
      * separate truth beside it.
      */
-    panel("Goal", {}, goalField, goalRows, attackRow, goalPicker, goalNote, count, warning),
     panel(
-      "Code",
+      "Goal",
       {},
-      codeField,
-      el("div", { class: "btnrow" }, copy, load),
-      el("p", { class: "note", text: "Copy it out when the board looks right." }),
+      goalField,
+      ...goalControls.nodes,
+      test.goalElement,
+      count,
+      warning,
     ),
+    codePanel,
   );
 
   // ── The one funnel ─────────────────────────────────────────────────────────
@@ -357,6 +353,10 @@ export function createBuilder(callbacks: BuilderCallbacks): Builder {
     // step at all — it is a press of Undo that appears to have been ignored.
     if (next === bench) return;
     history = [...history, { state: bench, restores }].slice(-HISTORY_LIMIT);
+    // A new stroke is a new branch, and the one that was redone is no longer
+    // reachable from here. Keeping it would put back a board that never
+    // followed from the one on screen.
+    future = [];
     setBench(next);
   }
 
@@ -371,43 +371,37 @@ export function createBuilder(callbacks: BuilderCallbacks): Builder {
     setBench(next);
   }
 
-  /** The counts behind the goal on the bench. Empty when it is prose. */
-  function goalSpec(): GoalSpec {
-    return parseGoal(bench.goal) ?? EMPTY_GOAL;
-  }
-
   /**
-   * The only place the counters write the goal text — and the only place they
-   * are allowed to. A load never comes through here, which is what leaves a
-   * pasted goal worded exactly as its author wrote it.
+   * One step along the history, in either direction.
    *
-   * An overflow is dropped rather than truncated: half a sentence would stop
-   * parsing, and the author would be left holding text the counters disown. The
-   * controls are disabled ahead of it, so this is the belt to that braces.
+   * Undo and redo are the same move read the other way round: the stack being
+   * left holds the state to go to, and the stack being joined is handed the
+   * state being left behind. `restores` travels with the step in both
+   * directions, which is what keeps a stroke cells-only — a goal typed after a
+   * stroke must not disappear when the stroke is lifted, and must not come back
+   * up with it either.
    */
-  /** Set when the last goal edit was too long to fit the comment. */
-  let refusedGoal = false;
-
-  function setGoal(spec: GoalSpec): void {
-    if (!goalFits(spec)) {
-      // Refused, not ignored. Returning here without a redraw left the box
-      // showing a number the goal and the code did not carry, and said
-      // nothing — the author's edit was gone and the screen claimed it landed.
-      refusedGoal = true;
-      render();
-      return;
+  function walk(direction: "undo" | "redo"): void {
+    const from = direction === "undo" ? history : future;
+    const step = from[from.length - 1];
+    if (!step) return;
+    const back: Step = { state: bench, restores: step.restores };
+    if (direction === "undo") {
+      history = history.slice(0, -1);
+      future = [...future, back];
+    } else {
+      future = future.slice(0, -1);
+      history = [...history, back];
     }
-    refusedGoal = false;
-    edit({ ...bench, goal: formatGoal(spec) });
+    setBench(step.restores === "everything" ? step.state : { ...bench, cells: step.state.cells });
   }
 
   function undo(): void {
-    const step = history[history.length - 1];
-    if (!step) return;
-    history = history.slice(0, -1);
-    setBench(
-      step.restores === "everything" ? step.state : { ...bench, cells: step.state.cells },
-    );
+    walk("undo");
+  }
+
+  function redo(): void {
+    walk("redo");
   }
 
   // ── Drawing ────────────────────────────────────────────────────────────────
@@ -471,85 +465,6 @@ export function createBuilder(callbacks: BuilderCallbacks): Builder {
     replaceChildren(grid, ...rows);
   }
 
-  /** One row per clear the goal names: how many, which, and a way out. */
-  function buildGoalRows(spec: GoalSpec): void {
-    goalCounts = new Map();
-    const rows = spec.clears.map((entry) => {
-      const label = GOAL_LABELS[entry.clear];
-      const box = numberBox(MAX_GOAL_COUNT, `${label} count`, (value) =>
-        setGoal(withGoalEntry(goalSpec(), entry.clear, value)),
-      );
-      goalCounts.set(entry.clear, box);
-      const drop = el("button", {
-        class: "btn btn--small build__goal-drop",
-        text: "×",
-        attrs: { type: "button", "aria-label": `Remove ${label}` },
-      });
-      drop.addEventListener("click", () => setGoal(withGoalEntry(goalSpec(), entry.clear, 0)));
-      return el(
-        "div",
-        { class: "build__goal" },
-        box,
-        el("span", { class: "explore__label", text: label }),
-        drop,
-      );
-    });
-    replaceChildren(goalRows, ...rows);
-  }
-
-  function renderGoal(): void {
-    const spec = parseGoal(bench.goal);
-    // Prose is the common case for a goal brought in from anywhere else, and it
-    // is not an error: the counters step aside and the text field stays the
-    // whole control. Nothing rewrites what is in it.
-    const prose = spec === null;
-    for (const node of [goalRows, attackRow, goalPicker]) node.hidden = prose;
-    goalNote.hidden = !prose;
-    if (spec === null) {
-      goalNote.textContent =
-        "This goal is written out in full, so the counters cannot show it. " +
-        "Empty the field to build one from the list.";
-      goalShape = "";
-      pickShape = "";
-      goalCounts = new Map();
-      replaceChildren(goalRows);
-      return;
-    }
-
-    const shape = spec.clears.map((entry) => entry.clear).join("|");
-    if (shape !== goalShape) {
-      goalShape = shape;
-      buildGoalRows(spec);
-    }
-    // Same guard as the text fields: the caret in a focused box is not ours.
-    for (const entry of spec.clears) {
-      const box = goalCounts.get(entry.clear);
-      if (box && document.activeElement !== box) box.value = String(entry.count);
-    }
-    if (document.activeElement !== attackBox) {
-      // Blank rather than "0": no attack stated is not an attack of zero, and
-      // the placeholder says which it is.
-      attackBox.value = spec.attack > 0 ? String(spec.attack) : "";
-    }
-
-    const spare = unusedClears(spec);
-    const picks = spare.join("|");
-    if (picks !== pickShape) {
-      pickShape = picks;
-      replaceChildren(
-        goalPick,
-        ...spare.map((clear) =>
-          el("option", { text: GOAL_LABELS[clear], attrs: { value: clear } }),
-        ),
-      );
-    }
-    const picked = goalPick.value as ClearName | "";
-    goalPick.disabled = spare.length === 0;
-    // The cap is the comment's, not ours: a goal naming every clear runs past
-    // the length a code can carry, and Add going grey is where that shows.
-    goalAdd.disabled = picked === "" || !goalFits(withGoalEntry(spec, picked, 1));
-  }
-
   function render(): void {
     cursor = clamp(0, cursor, MAX_ROWS * COLUMNS - 1);
     const code = toCode(bench);
@@ -561,37 +476,41 @@ export function createBuilder(callbacks: BuilderCallbacks): Builder {
     });
 
     if (grid.childElementCount !== MAX_ROWS) rebuildGrid();
-    for (let fromTop = 0; fromTop < MAX_ROWS; fromTop++) {
-      for (let column = 0; column < COLUMNS; column++) {
-        const index = cellIndex(column, MAX_ROWS - 1 - fromTop);
-        const node = cellNodes[fromTop * COLUMNS + column];
-        if (node) applyCell(node, index, bench.cells.get(index));
+    // The board and the bays belong to the run while one is on them. Painting
+    // the draft over a falling piece is the one thing a redraw must not do.
+    if (!testing) {
+      for (let fromTop = 0; fromTop < MAX_ROWS; fromTop++) {
+        for (let column = 0; column < COLUMNS; column++) {
+          const index = cellIndex(column, MAX_ROWS - 1 - fromTop);
+          const node = cellNodes[fromTop * COLUMNS + column];
+          if (node) applyCell(node, index, bench.cells.get(index));
+        }
       }
+      // Without this the keyboard cursor is a dashed outline and nothing else:
+      // focus never leaves the grid, so a screen reader is never told it moved.
+      grid.setAttribute("aria-activedescendant", cellId(cursor));
+
+      replaceChildren(
+        holdBay,
+        bench.hold
+          ? pieceGlyph(bench.hold, { cell: HOLD_GLYPH_CELL })
+          : el("span", { class: "label", text: "empty" }),
+      );
+
+      replaceChildren(
+        strip,
+        ...bench.queue.map((piece, index) => {
+          const glyph = pieceGlyph(piece, { cell: QUEUE_GLYPH_CELL });
+          return index === 0
+            ? el(
+                "span",
+                { class: "build__strip-first", title: "Starts as the falling piece" },
+                glyph,
+              )
+            : glyph;
+        }),
+      );
     }
-    // Without this the keyboard cursor is a dashed outline and nothing else:
-    // focus never leaves the grid, so a screen reader is never told it moved.
-    grid.setAttribute("aria-activedescendant", cellId(cursor));
-
-    replaceChildren(
-      holdBay,
-      bench.hold
-        ? pieceGlyph(bench.hold, { cell: HOLD_GLYPH_CELL })
-        : el("span", { class: "label", text: "empty" }),
-    );
-
-    replaceChildren(
-      strip,
-      ...bench.queue.map((piece, index) => {
-        const glyph = pieceGlyph(piece, { cell: QUEUE_GLYPH_CELL });
-        return index === 0
-          ? el(
-              "span",
-              { class: "build__strip-first", title: "Starts as the falling piece" },
-              glyph,
-            )
-          : glyph;
-      }),
-    );
 
     // Written back only when the field is not the one being typed into — the
     // same guard the explorer's search box uses, and for the same reason: the
@@ -599,23 +518,114 @@ export function createBuilder(callbacks: BuilderCallbacks): Builder {
     if (document.activeElement !== pieces) pieces.value = formatPieces(bench.queue);
     if (document.activeElement !== holdField) holdField.value = bench.hold ?? "";
     if (document.activeElement !== goalField) goalField.value = bench.goal;
-    renderGoal();
+    goalControls.render();
     if (document.activeElement !== codeField) codeField.value = code;
 
     count.textContent = summaryOf(bench);
     // A refused edit outranks the board's own warnings: it is the thing that
     // just happened, and the author is looking at a box whose number did not
     // take. Cleared by the next edit that fits.
-    const note = refusedGoal
-      ? "That goal is longer than a blueprint comment holds, so the change was not made."
-      : warningFor(bench);
+    const note = goalControls.refusal() ?? warningFor(bench);
     warning.textContent = note ?? "";
     warning.hidden = note === null;
 
     undoButton.disabled = history.length === 0;
+    redoButton.disabled = future.length === 0;
     // The button lighting up *is* the "you pasted something" signal.
     const typed = codeField.value.trim();
     load.disabled = typed === "" || typed === code;
+    applyMode();
+  }
+
+  // ── Testing ────────────────────────────────────────────────────────────────
+
+  /**
+   * Which half of the screen is live: the palette and its fields, or the run.
+   *
+   * Applied at the end of every render rather than once on the way in, because
+   * the goal's controls decide their own visibility from the goal itself — a
+   * `hidden` set before they run is handed straight back by the next redraw.
+   */
+  function applyMode(): void {
+    const editing = [paintPanel, editPanel, codePanel, holdField, pieces, goalField, count];
+    for (const node of editing) node.hidden = testing;
+    // Not assigned outright: `render` has just set it from the board, and a
+    // board with nothing to say about it leaves it hidden either way.
+    if (testing) warning.hidden = true;
+    goalControls.setHidden(testing);
+    test.goalElement.hidden = !testing;
+  }
+
+  function setTesting(on: boolean): void {
+    if (testing === on) return;
+    testing = on;
+    if (on) {
+      // The cells stop describing themselves. "column 3, row 2 from the floor,
+      // empty" stops being true the moment a piece falls through it, and
+      // rewriting two hundred labels a frame to keep it true would cost more
+      // than the board is worth — the test panel's status line is the spoken
+      // surface while a run is on.
+      for (const node of cellNodes) node.removeAttribute("aria-label");
+      grid.removeAttribute("aria-activedescendant");
+      grid.setAttribute("aria-label", "Test board");
+      baysShowing = "";
+    } else {
+      grid.setAttribute("aria-label", "Puzzle board");
+      test.reset();
+    }
+    render();
+    // Last, so the run has the keyboard the instant the board is its own.
+    if (on) grid.focus();
+  }
+
+  function startTest(): void {
+    const blocked = testBlocker(bench);
+    if (blocked) {
+      say(blocked);
+      return;
+    }
+    callbacks.onTest(toPuzzle(bench));
+  }
+
+  /**
+   * Writes the attack a test run sent into the goal.
+   *
+   * The one thing a test knows that the draft does not. A shipped puzzle takes
+   * its target from a reference solution; a draft has none until somebody plays
+   * it, and the run that just ended is the first one this board has ever had.
+   * The test stops first, so the sentence it changes is on screen when it
+   * changes.
+   */
+  function adoptAttack(attack: number): void {
+    callbacks.onStopTest();
+    goalControls.setAttack(attack);
+  }
+
+  function showTest(view: BoardView, snapshot: RunSnapshot): void {
+    setTesting(true);
+    if (grid.childElementCount !== MAX_ROWS) rebuildGrid();
+    paintFrame(cellNodes, view);
+    // Rebuilt only when they change: a glyph is an element per piece and the
+    // next queue is the same list for the whole of a placement.
+    const bays = `${snapshot.hold ?? ""}|${snapshot.upcoming.join("")}`;
+    if (bays !== baysShowing) {
+      baysShowing = bays;
+      replaceChildren(
+        holdBay,
+        snapshot.hold
+          ? pieceGlyph(snapshot.hold, { cell: HOLD_GLYPH_CELL })
+          : el("span", { class: "label", text: "empty" }),
+      );
+      replaceChildren(
+        strip,
+        ...snapshot.upcoming.map((piece) => pieceGlyph(piece, { cell: QUEUE_GLYPH_CELL })),
+      );
+    }
+    test.update(snapshot, parseGoal(bench.goal));
+  }
+
+  function endTest(): void {
+    setTesting(false);
   }
 
   // ── Painting ───────────────────────────────────────────────────────────────
@@ -684,6 +694,12 @@ export function createBuilder(callbacks: BuilderCallbacks): Builder {
 
   grid.addEventListener("pointerdown", (event) => {
     event.preventDefault();
+    if (testing) {
+      // The board belongs to the run. Focus still moves, which is how somebody
+      // who tabbed into the rails gets the keyboard back onto the game.
+      grid.focus();
+      return;
+    }
     endStroke();
     try {
       grid.setPointerCapture(event.pointerId);
@@ -728,12 +744,28 @@ export function createBuilder(callbacks: BuilderCallbacks): Builder {
   /** Returns true when the builder consumed the key. */
   function handleGridKey(event: KeyboardEvent): boolean {
     const key = event.key;
+    // Every key on the board is the run's while one is playing — the arrows and
+    // the space that would otherwise paint, and the Ctrl+Z that would lift a
+    // stroke out from under a falling piece. Letting them through is what puts
+    // them in front of the app's input router, which is where the game listens.
+    if (testing) return false;
+
     // The universal undo gesture, in a painting tool. Claimed here because the
     // game's input router does not treat a focused div as typing, so this used
     // to bubble out to the run's undo and die there without a word.
-    if ((event.ctrlKey || event.metaKey) && !event.shiftKey && key.toLowerCase() === "z") {
-      undo();
-      return true;
+    if (event.ctrlKey || event.metaKey) {
+      const letter = key.toLowerCase();
+      // Shift is the other direction, on both platforms and in every editor;
+      // Ctrl+Y is the one Windows also answers to.
+      if (letter === "z") {
+        if (event.shiftKey) redo();
+        else undo();
+        return true;
+      }
+      if (letter === "y" && !event.shiftKey) {
+        redo();
+        return true;
+      }
     }
 
     const row = Math.floor(cursor / COLUMNS);
@@ -791,46 +823,9 @@ export function createBuilder(callbacks: BuilderCallbacks): Builder {
   );
   codeField.addEventListener("input", render);
 
-  // A clear enters the goal at 1, which is the count anybody adding one means.
-  goalAdd.addEventListener("click", () => {
-    const picked = goalPick.value as ClearName | "";
-    if (picked !== "") setGoal(withGoalEntry(goalSpec(), picked, 1));
-  });
-  // Re-run only to settle whether Add can afford the newly picked clear.
-  goalPick.addEventListener("change", render);
-
-  /**
-   * Puts the model's own text back on screen once the caret has left.
-   *
-   * `render` cannot: it refuses to write into the focused field, which is the
-   * only reason the caret survives typing. So a dropped emoji or a letter the
-   * queue does not take stays visible in the field while the code carries
-   * something else, right up until Copy ships the difference. On blur there is
-   * no caret to protect, and what is on screen becomes what gets encoded.
-   */
-  function writeBackOnBlur(field: HTMLInputElement, read: () => string): void {
-    field.addEventListener("blur", () => {
-      field.value = read();
-    });
-  }
-
   writeBackOnBlur(pieces, () => formatPieces(bench.queue));
   writeBackOnBlur(holdField, () => bench.hold ?? "");
   writeBackOnBlur(goalField, () => bench.goal);
-  // The number boxes need it for the same reason the text fields do: `change`
-  // fires while the box is still focused, so `renderGoal`'s focus guard skips
-  // it, and a clamped or refused value would otherwise sit on screen —
-  // disagreeing with the goal and the code — until some unrelated redraw.
-  writeBackOnBlur(attackBox, () => {
-    const attack = parseGoal(bench.goal)?.attack ?? 0;
-    return attack > 0 ? String(attack) : "";
-  });
-  for (const [clear, box] of goalCounts) {
-    writeBackOnBlur(box, () => {
-      const found = parseGoal(bench.goal)?.clears.find((entry) => entry.clear === clear);
-      return found ? String(found.count) : "";
-    });
-  }
 
   copy.addEventListener("click", async () => {
     // The field's literal text, so Copy can never disagree with what is on
@@ -863,6 +858,7 @@ export function createBuilder(callbacks: BuilderCallbacks): Builder {
   });
 
   undoButton.addEventListener("click", undo);
+  redoButton.addEventListener("click", redo);
   // Cells only. Repainting a board is the expensive thing to lose; a queue is
   // cleared by selecting the field and typing.
   // The `bench` on an already-empty board is handed back unchanged so `commit`
@@ -873,5 +869,5 @@ export function createBuilder(callbacks: BuilderCallbacks): Builder {
   close.addEventListener("click", () => callbacks.onClose());
 
   render();
-  return { board, left, right };
+  return { board, left, right, showTest, endTest };
 }

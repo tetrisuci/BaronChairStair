@@ -21,8 +21,17 @@ import { Window } from "happy-dom";
 import { type BlueprintPage, decodeBlueprint } from "../shared/blueprint/decode";
 import { encodeBlueprint } from "../shared/blueprint/encode";
 import { COLUMNS } from "../shared/blueprint/playfield";
+import type { PuzzlePrompt } from "../shared/puzzle";
 import { createBuilder } from "../client/src/ui/builder";
-import { MAX_QUEUE, MAX_ROWS } from "../client/src/ui/builder-state";
+import {
+  MAX_GOAL_COUNT,
+  MAX_QUEUE,
+  MAX_ROWS,
+  NO_TARGET,
+} from "../client/src/ui/builder-state";
+import { extraClears, goalReport } from "../client/src/ui/builder-test";
+import type { BoardView } from "../client/src/render/board";
+import type { RunSnapshot } from "../client/src/game/runner";
 import { archive, hasSolutions } from "./archive";
 
 let window: Window;
@@ -55,7 +64,14 @@ function filled(page: BlueprintPage): Filled[] {
 }
 
 function mount() {
-  const builder = createBuilder({ onClose: () => {} });
+  const tested: PuzzlePrompt[] = [];
+  const builder = createBuilder({
+    onClose: () => {},
+    // The app plays the draft; the test stands in for it, so what the
+    // builder hands over is inspectable on its own.
+    onTest: (puzzle) => tested.push(puzzle),
+    onStopTest: () => builder.endTest(),
+  });
   // The builder is three siblings now — a rail, the board, a rail — and the app
   // mounts them straight into the deck. One parent here is the deck's stand-in,
   // so a query below reaches the whole screen the way it used to reach the card.
@@ -111,6 +127,9 @@ function mount() {
     element,
     grid,
     codeField,
+    builder,
+    /** Every draft the builder has handed over to be played. */
+    tested,
     pieces: find<HTMLInputElement>(".build__pieces"),
     holdField: find<HTMLInputElement>(".build__letter"),
     goalField: find<HTMLInputElement>('input[aria-label="Goal"]'),
@@ -157,7 +176,10 @@ function mount() {
     },
 
     /** A key pressed with the board focused, chords included. */
-    key(key: string, modifiers: { ctrlKey?: boolean; metaKey?: boolean } = {}): void {
+    key(
+      key: string,
+      modifiers: { ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean } = {},
+    ): void {
       grid.dispatchEvent(
         new window.KeyboardEvent("keydown", { key, bubbles: true, ...modifiers }) as never,
       );
@@ -389,6 +411,102 @@ describe("stepping back", () => {
   });
 });
 
+describe("a counter the model disagreed with", () => {
+  test("shows the model's number once the caret has left it", () => {
+    // `change` fires while the box is still focused, so the redraw's focus
+    // guard skips it and the clamped value never reaches the screen. The
+    // write-back used to be registered once at start-up, over a map of boxes
+    // that was empty then and rebuilt every time the goal named a different
+    // set of clears — so it was attached to nothing for the whole session.
+    const ui = mount();
+    ui.type(ui.goalField, "Clear 1 TSD");
+    ui.leave(ui.goalField);
+
+    const box = ui.countBox("TSD");
+    ui.setNumber(box, "150");
+    expect(ui.page().comment).toBe(`Clear ${MAX_GOAL_COUNT} TSDs`);
+    // Still showing what was typed, because the caret is in it.
+    expect(box.value).toBe("150");
+
+    ui.leave(box);
+    expect(box.value).toBe(String(MAX_GOAL_COUNT));
+  });
+});
+
+describe("stepping forward again", () => {
+  test("puts back the stroke that was lifted", () => {
+    const ui = mount();
+    ui.paint(ui.bottomRow(), 0);
+    ui.press("Undo");
+    ui.press("Redo");
+
+    expect(filled(ui.page())).toEqual([{ x: 0, y: 0, type: "g" }]);
+  });
+
+  test("answers Ctrl+Shift+Z and Ctrl+Y on the board", () => {
+    // Both, because the gesture is Shift+Z on a Mac and Ctrl+Y on Windows, and
+    // an author who knows one of them should not have to find the button.
+    const ui = mount();
+    ui.paint(ui.bottomRow(), 0);
+    ui.paint(ui.bottomRow(), 1);
+    ui.key("z", { ctrlKey: true });
+    ui.key("z", { ctrlKey: true });
+    expect(filled(ui.page())).toEqual([]);
+
+    ui.key("Z", { ctrlKey: true, shiftKey: true });
+    expect(filled(ui.page())).toEqual([{ x: 0, y: 0, type: "g" }]);
+    ui.key("y", { ctrlKey: true });
+    expect(filled(ui.page())).toEqual([
+      { x: 0, y: 0, type: "g" },
+      { x: 1, y: 0, type: "g" },
+    ]);
+  });
+
+  test("forgets the way forward once a new stroke branches off it", () => {
+    // The board that was redone no longer follows from the one on screen, so
+    // putting it back would be a Redo that lands somewhere the author has
+    // never been.
+    const ui = mount();
+    ui.paint(ui.bottomRow(), 0);
+    ui.press("Undo");
+    ui.paint(ui.bottomRow(), 5);
+    ui.press("Redo");
+
+    expect(filled(ui.page())).toEqual([{ x: 5, y: 0, type: "g" }]);
+  });
+
+  test("redoes a load whole, the way undo took it", () => {
+    // `restores` travels with the step in both directions: a load replaced the
+    // fields as well as the board, so redoing one has to put all of it back.
+    const ui = mount();
+    ui.type(ui.goalField, "mine");
+    ui.load(
+      encodeBlueprint({
+        cells: [{ x: 0, y: 0, type: "g" }],
+        previews: ["T", "S"],
+        hold: "O",
+        comment: "theirs",
+      }),
+    );
+    ui.press("Undo");
+    ui.press("Redo");
+
+    expect(ui.page().comment).toBe("theirs");
+    expect(ui.page().queue.previews).toEqual(["T", "S"]);
+    expect(filled(ui.page())).toEqual([{ x: 0, y: 0, type: "g" }]);
+  });
+
+  test("has nothing to redo until something is undone", () => {
+    const ui = mount();
+    const redo = () =>
+      [...ui.element.querySelectorAll("button")].find((node) => node.textContent === "Redo")!;
+    ui.paint(ui.bottomRow(), 0);
+    expect(redo().disabled).toBe(true);
+    ui.press("Undo");
+    expect(redo().disabled).toBe(false);
+  });
+});
+
 describe("what was typed into the fields", () => {
   test("is what the field shows, once the caret has left it", () => {
     // While the field is focused the caret is not ours to move, so the field
@@ -614,5 +732,205 @@ describe.skipIf(!hasSolutions)("a puzzle the club actually wrote", () => {
       ]);
       expect(again.queue.hold).toBe(original.queue.hold);
     }
+  });
+});
+
+/**
+ * The draft, played.
+ *
+ * The run itself belongs to the app — the builder is handed a puzzle to give
+ * away and frames to draw — so what is checkable here is exactly the seam: what
+ * the draft compiles to, that the board becomes the run's while one is on it,
+ * and that the goal the author typed is read back against what the run managed.
+ */
+describe("testing the draft", () => {
+  const frame = (patch: Partial<BoardView> = {}): BoardView => ({
+    cells: Array.from({ length: MAX_ROWS }, () => Array.from({ length: COLUMNS }, () => null)),
+    visibleRows: MAX_ROWS,
+    active: [],
+    activeInk: null,
+    ghost: [],
+    flashRows: [],
+    flashStrength: 0,
+    dimmed: false,
+    ...patch,
+  });
+
+  const played = (patch: Partial<RunSnapshot> = {}): RunSnapshot => ({
+    phase: "playing",
+    attack: 0,
+    targetAttack: NO_TARGET,
+    piecesPlaced: 0,
+    pieceBudget: 2,
+    clears: [],
+    elapsedMs: 0,
+    resets: 0,
+    hold: null,
+    upcoming: ["T"],
+    holdLocked: false,
+    ...patch,
+  });
+
+  const classAt = (ui: ReturnType<typeof mount>, fromTop: number, column: number) =>
+    (ui.grid.children[fromTop]!.children[column]! as unknown as HTMLElement).className;
+
+  const checkLines = (ui: ReturnType<typeof mount>) => [
+    ...ui.element.querySelectorAll(".build__check-line"),
+  ];
+
+  test("hands over a puzzle to play, not a code to read", () => {
+    const ui = mount();
+    ui.type(ui.pieces, "TL");
+    ui.paint(ui.bottomRow(), 0);
+    ui.press("Test");
+
+    expect(ui.tested).toHaveLength(1);
+    expect(ui.tested[0]!.queue).toEqual(["T", "L"]);
+    expect(ui.tested[0]!.board).toEqual(["G........."]);
+  });
+
+  test("refuses a draft with nothing to place, and says why", () => {
+    const ui = mount();
+    ui.paint(ui.bottomRow(), 0);
+    ui.press("Test");
+
+    expect(ui.tested).toEqual([]);
+    expect(ui.warning.textContent).toContain("queue");
+  });
+
+  test("the board is the run's while one is on it", () => {
+    // The failure this catches is the builder repainting its own stack over a
+    // falling piece — the draft and the run both want these two hundred cells,
+    // and a redraw from either side while the other holds them is a board
+    // showing a position that does not exist.
+    const ui = mount();
+    ui.type(ui.pieces, "T");
+    ui.paint(ui.bottomRow(), 0);
+    const floor = ui.bottomRow();
+
+    ui.builder.showTest(frame({ active: [[4, 0]], activeInk: "#b93ecc" }), played());
+
+    expect(classAt(ui, floor, 4)).toContain("build__cell--on");
+    expect(classAt(ui, floor, 0)).not.toContain("build__cell--on");
+    // And the fields that would edit what is being played are away.
+    expect(ui.pieces.hidden).toBe(true);
+  });
+
+  test("a click or a keypress on it belongs to the game, not the palette", () => {
+    const ui = mount();
+    ui.type(ui.pieces, "T");
+    ui.paint(ui.bottomRow(), 0);
+
+    ui.builder.showTest(frame(), played());
+    ui.paint(ui.bottomRow(), 7);
+    ui.key(" ");
+    ui.key("z", { ctrlKey: true });
+    ui.builder.endTest();
+
+    // Nothing painted, nothing erased, and the undo the run wanted did not
+    // lift the stroke out from under it.
+    expect(filled(ui.page())).toEqual([{ x: 0, y: 0, type: "g" }]);
+  });
+
+  test("gives the board back when the run is put away", () => {
+    const ui = mount();
+    ui.type(ui.pieces, "T");
+    ui.paint(ui.bottomRow(), 0);
+    const floor = ui.bottomRow();
+
+    ui.builder.showTest(frame({ active: [[4, 0]], activeInk: "#b93ecc" }), played());
+    ui.builder.endTest();
+
+    expect(classAt(ui, floor, 0)).toContain("build__cell--on");
+    expect(classAt(ui, floor, 4)).not.toContain("build__cell--on");
+    expect(ui.pieces.hidden).toBe(false);
+  });
+
+  test("reads the goal back clear by clear, not as one number", () => {
+    // The point of the whole feature: "Clear 2 TSDs" is checked as two TSDs.
+    // An attack total cannot tell those from a quad and a single.
+    const ui = mount();
+    ui.type(ui.pieces, "TT");
+    ui.type(ui.goalField, "Clear 2 TSDs");
+
+    ui.builder.showTest(frame(), played({ phase: "failed", clears: ["tsd"], attack: 4 }));
+    expect(checkLines(ui)).toHaveLength(1);
+    expect(checkLines(ui)[0]!.textContent).toContain("2 TSD");
+    expect(checkLines(ui)[0]!.className).not.toContain("--met");
+
+    ui.builder.showTest(frame(), played({ phase: "failed", clears: ["tsd", "tsd"], attack: 9 }));
+    expect(checkLines(ui)[0]!.className).toContain("--met");
+  });
+
+  test("offers the attack the run sent as the goal's missing figure", () => {
+    // A shipped puzzle's target comes from its reference solution. This run is
+    // the first solution the draft has ever had, so it is the only place the
+    // number can come from.
+    const ui = mount();
+    ui.type(ui.pieces, "T");
+    ui.type(ui.goalField, "Clear 1 TSD");
+    ui.leave(ui.goalField);
+
+    ui.builder.showTest(frame(), played({ phase: "failed", clears: ["tsd"], attack: 4 }));
+    ui.press("Set the goal to 4 attack");
+
+    expect(ui.page().comment).toBe("Clear 1 TSD for 4 attack");
+    // Adopting it ends the test, so the sentence it changed is on screen.
+    expect(ui.pieces.hidden).toBe(false);
+  });
+
+  test("says a prose goal cannot be checked rather than passing it", () => {
+    const ui = mount();
+    ui.type(ui.pieces, "T");
+    ui.type(ui.goalField, "3TSD not in one combo");
+
+    ui.builder.showTest(frame(), played({ phase: "failed", clears: ["tsd"], attack: 12 }));
+
+    expect(checkLines(ui)).toHaveLength(0);
+    // And nothing offers to write a figure into somebody's sentence.
+    const offers = [...ui.element.querySelectorAll("button")].filter((node) =>
+      node.textContent?.startsWith("Set the goal"),
+    );
+    expect(offers).toEqual([]);
+  });
+});
+
+describe("the goal, against what a run managed", () => {
+  test("counts each clear by name and takes more than asked as met", () => {
+    // A goal is a floor. Somebody who asked for two TSDs and found a line with
+    // three has met it, and saying otherwise is the tool arguing with the
+    // puzzle.
+    const spec = { clears: [{ clear: "tsd" as const, count: 2 }], attack: 0 };
+    expect(goalReport(spec, { clears: ["tsd", "tsd", "tsd"], attack: 12 })[0]!.met).toBe(true);
+    expect(goalReport(spec, { clears: ["tsd", "quad"], attack: 8 })[0]).toEqual({
+      label: "TSD",
+      want: 2,
+      got: 1,
+      met: false,
+    });
+  });
+
+  test("checks attack only when the goal names it", () => {
+    expect(goalReport({ clears: [], attack: 0 }, { clears: [], attack: 40 })).toEqual([]);
+    expect(goalReport({ clears: [], attack: 18 }, { clears: [], attack: 18 })).toEqual([
+      { label: "Attack", want: 18, got: 18, met: true },
+    ]);
+  });
+
+  test("has nothing to say about a goal it could not parse", () => {
+    expect(goalReport(null, { clears: ["tsd", "tsd"], attack: 9 })).toEqual([]);
+  });
+
+  test("names the clears the goal never asked for", () => {
+    // The commonest confusing result: a quad that empties the board is reported
+    // by the engine as a perfect clear and by nothing else, so a goal asking
+    // for a quad reads as unmet beside a run that plainly cleared four lines.
+    const quad = { clears: [{ clear: "quad" as const, count: 1 }], attack: 0 };
+    expect(goalReport(quad, { clears: ["perfect clear"], attack: 14 })[0]!.met).toBe(false);
+    expect(extraClears(quad, { clears: ["perfect clear"], attack: 14 })).toBe(
+      "Also made 1 Perfect Clear.",
+    );
+    // Nothing to add when the run did only what was asked.
+    expect(extraClears(quad, { clears: ["quad"], attack: 4 })).toBe("");
   });
 });

@@ -195,7 +195,12 @@ describe("which run a repaint asks for", () => {
   // of a duel or a rush was painted, wiped, and redrawn as nothing. It stayed
   // blank until an input produced the next frame, which in a puzzle with no
   // gravity means until the player pressed a key.
-  const sessions = { daily: "daily-run", rush: "rush-run", duel: "duel-run" };
+  const sessions = {
+    daily: "daily-run",
+    rush: "rush-run",
+    duel: "duel-run",
+    build: "build-run",
+  };
 
   test("a duel is asked for the duel's run, not the daily's", () => {
     expect(activeRun("duel", sessions)).toBe("duel-run");
@@ -208,6 +213,14 @@ describe("which run a repaint asks for", () => {
   test("the daily and the explorer share the daily's run", () => {
     expect(activeRun("daily", sessions)).toBe("daily-run");
     expect(activeRun("explore", sessions)).toBe("daily-run");
+  });
+
+  test("the builder is asked for the draft being tested", () => {
+    // The daily's run is null on the builder screen and the draft's is not
+    // scored by anything, so asking the wrong one here draws an empty board
+    // over a test the author is in the middle of playing.
+    expect(activeRun("build", sessions)).toBe("build-run");
+    expect(activeRun("build", { ...sessions, build: null })).toBeNull();
   });
 
   test("a rush between two puzzles has nothing to repaint", () => {
@@ -327,7 +340,11 @@ describe("rush attached to the day's board", () => {
 
 describe("the builder", () => {
   const mountedBuilder = () => {
-    const builder = createBuilder({ onClose: () => {} });
+    const builder = createBuilder({
+      onClose: () => {},
+      onTest: () => {},
+      onStopTest: () => {},
+    });
     // Mounted the way the app mounts it: three siblings, straight into the deck.
     window.document.body.append(
       builder.left as never,

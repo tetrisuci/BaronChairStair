@@ -22,7 +22,7 @@ import { createDailyMenu } from "./ui/daily-tiers";
 import { createDailyBoard } from "./ui/daily-board";
 import { createHome } from "./ui/home";
 import type { DailyTier } from "@shared/daily";
-import { activeRun } from "./game/active-run";
+import { activeRun, type PlayMode } from "./game/active-run";
 import { SolutionPlayer } from "./game/solution-player";
 import { BoardRenderer } from "./render/board";
 import type { SettingsStore } from "./settings";
@@ -125,7 +125,7 @@ export class App {
   private rushSkips = 0;
   private rushRanked = true;
   private rushState: RushState | null = null;
-  private mode: "daily" | "rush" | "explore" | "duel" = "daily";
+  private mode: PlayMode = "daily";
   private solutionPlayer: SolutionPlayer | null = null;
   private readonly dailyMenu = createDailyMenu((tier) => this.showDailyTier(tier));
   private readonly home = createHome({
@@ -144,6 +144,17 @@ export class App {
    * being laid out, which has to survive a trip to the front door and back.
    */
   private builder: Builder | null = null;
+  /**
+   * The draft being played inside the builder, and the puzzle it was compiled
+   * from.
+   *
+   * Kept apart from `run` on purpose. A test is scored by nobody, files
+   * nothing and belongs to no day, so letting it borrow the daily's run would
+   * put a draft on the leaderboard's clock — and every one of `finishRun`'s
+   * branches reads a `sheet` that a draft has no business having.
+   */
+  private builderRun: PuzzleRun | null = null;
+  private builderPuzzle: PuzzlePrompt | null = null;
   private daily: DailyResponse | null = null;
   /**
    * Which of the day's three is on the board.
@@ -184,6 +195,7 @@ export class App {
       onGameKey: (key, down) => {
         if (this.mode === "duel") this.duel?.input(key, down);
         else if (this.mode === "rush") this.rush?.input(key, down);
+        else if (this.mode === "build") this.builderRun?.input(key, down);
         else this.run?.input(key, down);
       },
       onLocalAction: (action) => this.handleLocalAction(action),
@@ -469,6 +481,14 @@ export class App {
     this.duel?.close();
     this.duel = null;
     this.duelState = null;
+
+    this.builderRun?.dispose();
+    this.builderRun = null;
+    this.builderPuzzle = null;
+    // Whichever way the screen was left, the builder's board goes back to
+    // being something to paint on rather than a frozen last frame with the
+    // palette still hidden behind it.
+    this.builder?.endTest();
   }
 
   // ── Explorer ───────────────────────────────────────────────────────────────
@@ -556,8 +576,45 @@ export class App {
    */
   private enterBuilder(): void {
     this.leaveForScreen();
-    this.builder ??= createBuilder({ onClose: () => this.showHome() });
+    this.builder ??= createBuilder({
+      onClose: () => this.showHome(),
+      onTest: (puzzle) => this.startBuilderTest(puzzle),
+      onStopTest: () => this.stopBuilderTest(),
+    });
     this.showColumns(this.builder.left, this.builder.board, this.builder.right);
+  }
+
+  /**
+   * Plays a draft on the builder's own board.
+   *
+   * The app owns the run because it owns the handling and the keyboard, and
+   * because a run built anywhere else would be one `disposeActiveMode` cannot
+   * put away. Nothing else about the screen moves: the deck still holds the
+   * builder's three columns, and the frames go back to it rather than to the
+   * game's canvas, which is not mounted.
+   */
+  private startBuilderTest(puzzle: PuzzlePrompt): void {
+    this.builderRun?.dispose();
+    this.builderPuzzle = puzzle;
+    this.mode = "build";
+    this.builderRun = new PuzzleRun(puzzle, this.settings.value.handling, {
+      onFrame: (view, snapshot) => this.builder?.showTest(view, snapshot),
+      // Nothing is filed, so the end of a run is just the last frame of it —
+      // which `onFrame` has already delivered, phase and all.
+      onFinish: () => undefined,
+      onLock: () => undefined,
+    });
+    this.input.setGameInputEnabled(true);
+    this.builderRun.renderOnce();
+  }
+
+  private stopBuilderTest(): void {
+    this.builderRun?.dispose();
+    this.builderRun = null;
+    this.builderPuzzle = null;
+    this.mode = "daily";
+    this.input.setGameInputEnabled(false);
+    this.builder?.endTest();
   }
 
   // ── 1v1 ────────────────────────────────────────────────────────────────────
@@ -1023,6 +1080,10 @@ export class App {
    * once the puzzle is already finished.
    */
   private restartForNewHandling(): void {
+    if (this.mode === "build") {
+      if (this.replayBuilderTest()) this.toast("Handling changed — test restarted");
+      return;
+    }
     const phase = this.run?.snapshot().phase;
     if (phase !== "ready" && phase !== "playing") return;
     this.startRun();
@@ -1219,6 +1280,10 @@ export class App {
       case "reset":
         if (this.mode === "duel") this.duel?.restart();
         else if (this.mode === "rush") this.rush?.restart();
+        // Rebuilt rather than restarted: `restart` refuses on a solved run,
+        // and a draft the author has just solved is exactly the one they want
+        // to play again.
+        else if (this.mode === "build") this.replayBuilderTest();
         else this.restartAttempt();
         return;
       case "skip":
@@ -1258,6 +1323,7 @@ export class App {
       daily: this.run,
       rush: this.rush?.currentRun,
       duel: this.duel?.currentRun,
+      build: this.builderRun,
     });
   }
 
@@ -1291,6 +1357,13 @@ export class App {
     if (snapshot.phase === "solved" && this.sheet?.scored) return;
     if (snapshot.phase === "ready" || snapshot.phase === "playing") this.run?.restart();
     else this.startRun();
+  }
+
+  /** The draft on the board again, from the top. False when none is loaded. */
+  private replayBuilderTest(): boolean {
+    if (!this.builderPuzzle) return false;
+    this.startBuilderTest(this.builderPuzzle);
+    return true;
   }
 
   private openSettings(): void {

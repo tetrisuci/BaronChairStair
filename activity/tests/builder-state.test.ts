@@ -36,8 +36,11 @@ import {
   parseGoal,
   parsePieces,
   sanitizeGoal,
+  NO_TARGET,
   summaryOf,
+  testBlocker,
   toCode,
+  toPuzzle,
   unusedClears,
   warningFor,
   withGoalAttack,
@@ -460,5 +463,67 @@ describe("a count typed wrong", () => {
     expect(withGoalEntry(spec, "tsd", 0).clears.map((entry) => entry.clear)).toEqual(["tst"]);
     // And an overshoot is still clamped, not refused.
     expect(withGoalEntry(spec, "tsd", 150).clears[0]!.count).toBe(MAX_GOAL_COUNT);
+  });
+});
+
+describe("the draft as something to play", () => {
+  test("keeps the floor on the floor and renames the author's garbage", () => {
+    // The model already counts up from the floor, which is the direction the
+    // engine reads a board in — so the conversion here has no flip in it, and a
+    // test that passed with one would be a builder that plays every stack
+    // upside down. The only change is `g` becoming `G`, the letter the rest of
+    // the app spells unclearable garbage with.
+    const draft = state({
+      cells: cells([
+        [0, 0, "g"],
+        [9, 0, "I"],
+        [3, 2, "T"],
+      ]),
+      queue: ["T"],
+    });
+
+    expect(toPuzzle(draft).board).toEqual(["G........I", "..........", "...T......"]);
+  });
+
+  test("keeps the rows the screen cannot draw", () => {
+    // Blueprint's field is forty rows and this screen paints twenty, so a code
+    // from anywhere else can carry cells above the board. They ship in the code
+    // and the engine plays on forty rows, so a test has to play the puzzle that
+    // would actually go out, not the twenty rows of it that were visible.
+    const draft = state({ cells: cells([[0, MAX_ROWS + 1, "g"]]), queue: ["T"] });
+
+    expect(toPuzzle(draft).board).toHaveLength(MAX_ROWS + 2);
+    expect(toPuzzle(draft).board[MAX_ROWS + 1]).toBe("G.........");
+  });
+
+  test("takes its target from the goal, and has none when the goal names no figure", () => {
+    // A shipped puzzle's target comes from its reference solution. A draft has
+    // no solution until somebody plays one, so the only figure to go on is the
+    // one the author wrote down — and at a target of zero `meetsTarget` is
+    // already true when the first piece lands, which would end every test
+    // having proved nothing.
+    expect(toPuzzle(state({ goal: "Clear 3 TSDs for 18 attack" })).targetAttack).toBe(18);
+    expect(toPuzzle(state({ goal: "Clear 2 TSDs" })).targetAttack).toBe(NO_TARGET);
+    expect(toPuzzle(state({ goal: "3TSD not in one combo" })).targetAttack).toBe(NO_TARGET);
+    expect(toPuzzle(state({ goal: "" })).targetAttack).toBe(NO_TARGET);
+  });
+
+  test("carries the queue and the hold across as they are", () => {
+    const draft = state({ queue: ["T", "L", "J"], hold: "O", goal: "Send 4 attack" });
+    const puzzle = toPuzzle(draft);
+
+    expect(puzzle.queue).toEqual(["T", "L", "J"]);
+    expect(puzzle.hold).toBe("O");
+    expect(puzzle.goal).toBe("Send 4 attack");
+  });
+
+  test("cannot be played without a queue", () => {
+    // The engine takes the first preview as the falling piece, so an empty
+    // queue opens on a board with nothing on it to move.
+    expect(testBlocker(state({ cells: cells([[0, 0, "g"]]) }))).toContain("queue");
+    expect(testBlocker(state({ queue: ["T"] }))).toBeNull();
+    // A hold with nothing behind it is not a queue: the piece in hold is only
+    // reachable by swapping the one that is falling.
+    expect(testBlocker(state({ hold: "O" }))).not.toBeNull();
   });
 });

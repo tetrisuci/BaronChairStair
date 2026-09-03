@@ -703,6 +703,35 @@
 .build__cell--on { box-shadow: inset 0 0 0 2px var(--ink); }
 .build__cell--cursor { outline: var(--edge) dashed var(--ink); outline-offset: -3px; }
 
+/*
+ * Where a test run's piece would land.
+ *
+ * A wash of the piece's own colour rather than a neutral outline, which is what
+ * the canvas board does and for the same reason: on a cream field a grey ghost
+ * is the first thing to disappear, and the colour says which piece is landing
+ * as well as where. Fading the whole cell takes the ruling with it, which at
+ * this size is what keeps the ghost from reading as a block.
+ */
+.build__cell--ghost { opacity: 0.34; }
+
+/*
+ * The goal, line by line, while a test is on: what was asked for on the left
+ * and what the run managed on the right.
+ */
+.build__check { display: grid; gap: 4px; }
+.build__check-line {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--warn);
+}
+.build__check-line--met { color: var(--good-ink); }
+/* The run's own words for what it did, under the list of what was asked. */
+.build__check-extra { margin: 0; }
+
 .build__hold { min-width: 92px; }
 .build__legend { font-family: var(--mono); font-size: 10px; }
 
@@ -726,9 +755,6 @@
  * filter rows — there the label names a control that could be anything, here it
  * names the count in front of it. Ten fixed rows were the alternative and they
  * filled the rail with zeroes nobody had typed.
- *
- * `[hidden]` is spelled out because a `display` on the class beats the user
- * agent's: without it, a prose goal would show empty counters under itself.
  */
 .build__goals { display: grid; gap: 6px; }
 .build__goal {
@@ -737,9 +763,6 @@
   align-items: center;
   gap: 8px;
 }
-.build__goals[hidden],
-.build__goal[hidden],
-.build__goal-add[hidden] { display: none; }
 /* Square, so the × reads as the row's own control and not as a word. */
 .build__goal-drop { padding: 3px 8px; line-height: 1; }
 /* Never the thing that wraps: the button beside it is two letters wide. */

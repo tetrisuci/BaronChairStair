@@ -10,7 +10,14 @@
 
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { decodeBoard, pieceBudget, type Puzzle } from "../shared/puzzle";
+import {
+  decodeBoard,
+  meetsTarget,
+  pieceBudget,
+  type Puzzle,
+  type SolutionStep,
+} from "../shared/puzzle";
+import { cellIndex, EMPTY_STATE, NO_TARGET, toPuzzle } from "../client/src/ui/builder-state";
 import { createPuzzleEngine, toLetter } from "../shared/tetris/engine";
 import { DEFAULT_HANDLING } from "../shared/tetris/handling";
 import { findPaths } from "../shared/tetris/pathfinder";
@@ -31,9 +38,12 @@ function setupFor(puzzle: Puzzle) {
   };
 }
 
-/** Turns the solution into keystrokes a player could plausibly have made. */
-function inputLogFor(puzzle: Puzzle): InputEvent[] {
-  const { engine } = createPuzzleEngine(setupFor(puzzle), DEFAULT_HANDLING);
+/** Turns a list of placements into keystrokes a player could plausibly have made. */
+function logFor(
+  setup: ReturnType<typeof setupFor>,
+  steps: readonly Pick<SolutionStep, "piece" | "cells">[],
+): InputEvent[] {
+  const { engine } = createPuzzleEngine(setup, DEFAULT_HANDLING);
   const events: InputEvent[] = [];
   let frame = 0;
 
@@ -43,14 +53,14 @@ function inputLogFor(puzzle: Puzzle): InputEvent[] {
     frame += FRAMES_PER_INPUT;
   };
 
-  for (const step of solutionOf(puzzle)) {
+  for (const step of steps) {
     if (toLetter(engine.falling.symbol) !== step.piece) {
       tap("hold");
       engine.hold(false, true);
     }
     const routes = findPaths(engine, step.cells);
     const route = routes[0];
-    if (!route) throw new Error(`unreachable placement for puzzle ${puzzle.id}`);
+    if (!route) throw new Error(`unreachable placement: ${step.piece} at ${JSON.stringify(step.cells)}`);
     for (const key of route) {
       tap(key);
       engine.press(key);
@@ -59,6 +69,11 @@ function inputLogFor(puzzle: Puzzle): InputEvent[] {
     engine.press("hardDrop");
   }
   return events;
+}
+
+/** Turns the solution into keystrokes a player could plausibly have made. */
+function inputLogFor(puzzle: Puzzle): InputEvent[] {
+  return logFor(setupFor(puzzle), solutionOf(puzzle));
 }
 
 describe("puzzle archive", () => {
@@ -113,5 +128,62 @@ describe("input log validation", () => {
     expect(() =>
       parseInputLog([{ frame: 0, type: "keydown", data: { key: "hold", subframe: 1.5 } }]),
     ).toThrow(/subframe/);
+  });
+});
+
+/**
+ * The builder's own end of the same path.
+ *
+ * `toPuzzle` is the only conversion between a board somebody painted and a
+ * board the engine plays, and everything below it here is the shipping path —
+ * the setup the daily builds, and the verifier the server scores with. A flip,
+ * an off-by-one row or the wrong letter for garbage would all still round-trip
+ * through the blueprint encoder and still fail here.
+ */
+describe("a draft the builder compiles", () => {
+  test("is a puzzle the engine plays and the verifier scores", () => {
+    // A T-slot: row 1 open at 3, 4 and 5, row 0 open at 4, and an overhang on
+    // row 2 that leaves only columns 3 and 4 to drop through — so the T has to
+    // be rotated into place rather than dropped there, which is what makes it a
+    // spin. Row 2 survives the clear, or emptying the board would make this a
+    // perfect clear and hide the TSD behind it.
+    const cells = new Map<number, "g">();
+    for (let x = 0; x < 10; x++) if (x !== 4) cells.set(cellIndex(x, 0), "g");
+    for (const x of [0, 1, 2, 6, 7, 8, 9]) cells.set(cellIndex(x, 1), "g");
+    for (const x of [0, 1, 2, 5, 6, 7, 8, 9]) cells.set(cellIndex(x, 2), "g");
+    const puzzle = toPuzzle({ ...EMPTY_STATE, cells, queue: ["T"], goal: "Clear 1 TSD" });
+
+    const setup = {
+      board: decodeBoard(puzzle.board, ENGINE_ROWS),
+      queue: puzzle.queue,
+      hold: puzzle.hold,
+    };
+    const events = parseInputLog(
+      logFor(setup, [
+        {
+          piece: "T",
+          cells: [
+            [3, 1],
+            [4, 1],
+            [5, 1],
+            [4, 0],
+          ],
+        },
+      ]),
+    );
+    const result = verifyRun(setup, DEFAULT_HANDLING, events);
+
+    expect(result.clears).toEqual(["tsd"]);
+    expect(result.attack).toBe(4);
+  });
+
+  test("plays its queue out when the goal names no attack", () => {
+    // At a target of zero `meetsTarget` is true before the first piece lands,
+    // and the test would end having proved nothing. `NO_TARGET` is what makes
+    // the run play on, so the builder can report what the author managed.
+    const draft = { ...EMPTY_STATE, queue: ["T"] as const, goal: "Clear 1 TSD" };
+    expect(toPuzzle(draft).targetAttack).toBe(NO_TARGET);
+    expect(meetsTarget(4, NO_TARGET)).toBe(false);
+    expect(meetsTarget(0, 0)).toBe(true);
   });
 });

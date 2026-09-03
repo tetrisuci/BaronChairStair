@@ -19,7 +19,14 @@ import type { BlueprintPage } from "@shared/blueprint/decode";
 import { BlueprintDecodeError, decodeBlueprint } from "@shared/blueprint/decode";
 import { type BlueprintCell, encodeBlueprint } from "@shared/blueprint/encode";
 import { COLUMNS, ROWS, type PieceType } from "@shared/blueprint/playfield";
-import { BOARD_HEIGHT, type ClearName } from "@shared/puzzle";
+import {
+  BOARD_HEIGHT,
+  type BoardCell,
+  type ClearName,
+  encodeBoard,
+  type PuzzlePrompt,
+  type RowCode,
+} from "@shared/puzzle";
 
 /** What a cell can hold. `u` is the wall outside the field and is never painted. */
 export type PaintedCell = PieceType | "g";
@@ -520,4 +527,88 @@ function lowestFullRow(state: BuilderState): number | null {
 export function summaryOf(state: BuilderState): string {
   const hold = state.hold ? `hold ${state.hold}` : "no hold";
   return `${state.cells.size} cells · ${state.queue.length} pieces · ${hold}`;
+}
+
+// ── The draft as something playable ─────────────────────────────────────────
+
+/**
+ * Why a draft can be played at all, and what it is missing when it cannot.
+ *
+ * The queue is the whole of it. `createPuzzleEngine` takes the first preview as
+ * the falling piece, so a draft with an empty queue opens on a board with
+ * nothing on it to move — which is not a puzzle failing its test, it is a
+ * puzzle that has not been written yet.
+ */
+export function testBlocker(state: BuilderState): string | null {
+  if (state.queue.length === 0) {
+    return "Add pieces to the queue — a test has nothing to place without them.";
+  }
+  return null;
+}
+
+/**
+ * The id every draft plays under.
+ *
+ * Zero, because no archived puzzle has it: a test never touches a leaderboard,
+ * a sitting or a submission, so the only thing this number has to do is fail to
+ * collide with a real sheet if one is ever put beside it.
+ */
+export const DRAFT_ID = 0;
+
+/**
+ * The attack target for a draft whose goal names no figure.
+ *
+ * A real puzzle's target comes from its reference solution, and a draft has no
+ * solution — so there is nothing honest to put here. Past anything a queue can
+ * send is the useful answer rather than zero: at zero `meetsTarget` is true
+ * before the first piece lands and the test ends having proved nothing, where
+ * up here the run plays every piece out and the builder reports what the author
+ * actually managed. That number is then one button from becoming the goal.
+ */
+export const NO_TARGET = Number.MAX_SAFE_INTEGER;
+
+/**
+ * The board as the engine takes it: rows bottom-up, `board[0]` the floor.
+ *
+ * The same direction the cell map already counts in, so there is no flip here —
+ * the only conversion is the author's lowercase `g` becoming the model's `G`.
+ * Rows above the twenty on screen are kept: they are part of the code and the
+ * engine's field is forty tall, so a test plays the puzzle that would ship.
+ */
+function draftBoard(state: BuilderState): RowCode[] {
+  let height = 0;
+  for (const index of state.cells.keys()) {
+    height = Math.max(height, Math.floor(index / COLUMNS) + 1);
+  }
+  const rows = Array.from({ length: height }, (_, y) =>
+    Array.from({ length: COLUMNS }, (_, x): BoardCell => {
+      const cell = state.cells.get(cellIndex(x, y));
+      if (cell === undefined) return null;
+      return cell === "g" ? "G" : cell;
+    }),
+  );
+  return encodeBoard(rows);
+}
+
+/**
+ * The draft as a puzzle to play — everything the engine reads, nothing else.
+ *
+ * The title, author and difficulty are placeholders because a test has no
+ * audience: the only surfaces that would show them are the credits strip and
+ * the archive, and a draft reaches neither.
+ */
+export function toPuzzle(state: BuilderState): PuzzlePrompt {
+  const attack = parseGoal(state.goal)?.attack ?? 0;
+  return {
+    id: DRAFT_ID,
+    title: "Draft",
+    author: "",
+    difficulty: 0,
+    goal: state.goal,
+    set: null,
+    board: draftBoard(state),
+    queue: [...state.queue],
+    hold: state.hold,
+    targetAttack: attack > 0 ? attack : NO_TARGET,
+  };
 }
