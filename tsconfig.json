@@ -26,5 +26,9 @@
     "noUnusedLocals": false,
     "noUnusedParameters": false,
     "noPropertyAccessFromIndexSignature": false
-  }
+  },
+  // A bare directory, not a glob: TypeScript expands it to every extension it
+  // supports, where `server/**/*.ts` silently misses .mts, .cts and .tsx inside
+  // the one directory this include exists to protect.
+  "include": ["server"]
 }
