@@ -222,7 +222,7 @@ the picker shows every command twice — which is what `check_dupes.py` detects.
 | Tool | Version | Install |
 |------|---------|---------|
 | **Bun** | ≥ 1.2 | `curl -fsSL https://bun.sh/install \| bash` |
-| **Python** | ≥ 3.9 | https://python.org |
+| **Python** | ≥ 3.10 | https://python.org |
 
 `bun install` at the repo root pulls `@haelp/teto` for the engine bridge;
 `activity/` has its own dependencies and its own `bun install`.
