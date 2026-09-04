@@ -21,6 +21,7 @@ import { createDailyMenu } from "../client/src/ui/daily-tiers";
 import { withRush } from "../client/src/ui/daily-board";
 import { createRushResultCard } from "../client/src/ui/rush";
 import { createBuilder } from "../client/src/ui/builder";
+import { createStartedPuzzles } from "../client/src/started";
 import { MAX_ROWS } from "../client/src/ui/builder-state";
 import type { RushPlayed } from "../client/src/api";
 
@@ -28,6 +29,10 @@ let window: Window;
 const saved = {
   document: globalThis.document,
   getComputedStyle: globalThis.getComputedStyle,
+  // Bun has no `localStorage`, and `started.ts` swallows the ReferenceError it
+  // would throw — so without lending it happy-dom's, every assertion about
+  // what was remembered would pass by remembering nothing.
+  localStorage: globalThis.localStorage,
 };
 
 beforeAll(() => {
@@ -39,6 +44,7 @@ beforeAll(() => {
   globalThis.getComputedStyle = window.getComputedStyle.bind(
     window,
   ) as unknown as typeof getComputedStyle;
+  globalThis.localStorage = window.localStorage as unknown as Storage;
 
   const style = window.document.createElement("style");
   style.textContent = readFileSync("client/src/styles/panels.css", "utf8");
@@ -48,6 +54,7 @@ beforeAll(() => {
 afterAll(() => {
   globalThis.document = saved.document;
   globalThis.getComputedStyle = saved.getComputedStyle;
+  globalThis.localStorage = saved.localStorage;
 });
 
 const played = (count: number): RushPlayed[] =>
@@ -247,10 +254,10 @@ describe("the day's chooser", () => {
     solution: null,
   });
 
-  const menu = (entries: unknown[]) => {
+  const menu = (entries: unknown[], started: readonly number[] = []) => {
     const made = createDailyMenu(() => {});
     window.document.body.append(made.element as never);
-    made.update(245, entries as never);
+    made.update(245, entries as never, new Set(started));
     return made;
   };
 
@@ -273,6 +280,38 @@ describe("the day's chooser", () => {
     expect(meta[0]).toContain("4 pieces");
   });
 
+  test("a puzzle the player has opened reads as started, not as untouched", () => {
+    // A daily run only reaches the server when it solves, so a puzzle somebody
+    // is halfway through has no run on it and used to read exactly like one
+    // they had never seen — on a screen they had just walked back from it to.
+    const rows = [
+      ...menu(
+        [entry("easy", 2, null), entry("medium", 6, null), entry("hard", 11, null)],
+        [6],
+      ).element.querySelectorAll(".explore__meta"),
+    ].map((meta) => meta.textContent);
+
+    expect(rows[0]).toContain("not played");
+    expect(rows[1]).toContain("started");
+    expect(rows[1]).not.toContain("not played");
+    expect(rows[2]).toContain("not played");
+  });
+
+  test("a filed run outranks having started it", () => {
+    // Solving one does not stop it having been opened, and the row has room
+    // for one word: the one that says how it ended.
+    const rows = [
+      ...menu(
+        [entry("easy", 2, true), entry("medium", 6, false), entry("hard", 11, null)],
+        [2, 6, 11],
+      ).element.querySelectorAll(".explore__meta"),
+    ].map((meta) => meta.textContent);
+
+    expect(rows[0]).toContain("solved");
+    expect(rows[1]).toContain("filed, not solved");
+    expect(rows[2]).toContain("started");
+  });
+
   test("says how the day is going without making you count", () => {
     expect(
       menu([entry("easy", 2, true), entry("medium", 6, null), entry("hard", 11, null)]).element
@@ -293,11 +332,11 @@ describe("the day's chooser", () => {
     const picked: string[] = [];
     const made = createDailyMenu((tier) => picked.push(tier));
     window.document.body.append(made.element as never);
-    made.update(245, [
-      entry("easy", 2, null),
-      entry("medium", 6, null),
-      entry("hard", 11, null),
-    ] as never);
+    made.update(
+      245,
+      [entry("easy", 2, null), entry("medium", 6, null), entry("hard", 11, null)] as never,
+      new Set(),
+    );
     const rows = [...made.element.querySelectorAll(".explore__item")];
     (rows[2] as unknown as HTMLElement).click();
     expect(picked).toEqual(["hard"]);
@@ -389,5 +428,42 @@ describe("the builder", () => {
     const rows = builder.board.querySelectorAll(".build__row");
     expect(rows).toHaveLength(MAX_ROWS);
     expect(rows[0]!.querySelectorAll(".build__cell")).toHaveLength(10);
+  });
+});
+
+describe("remembering which puzzles were opened", () => {
+  test("a puzzle opened in one session is still open in the next", () => {
+    // The whole reason this is not a field on the app: a Discord activity is
+    // closed and reopened constantly, and a record that forgets itself when
+    // the panel closes tells the same lie a minute later.
+    createStartedPuzzles("ada").add(246, 11);
+    expect(createStartedPuzzles("ada").has(246, 11)).toBe(true);
+    expect(createStartedPuzzles("ada").has(246, 12)).toBe(false);
+  });
+
+  test("yesterday's record is not read as today's", () => {
+    const store = createStartedPuzzles("bo");
+    store.add(246, 11);
+    expect(store.has(247, 11)).toBe(false);
+    // And the new day is what gets written, so the old one cannot come back.
+    store.add(247, 12);
+    expect(createStartedPuzzles("bo").has(246, 11)).toBe(false);
+    expect(createStartedPuzzles("bo").has(247, 12)).toBe(true);
+  });
+
+  test("one player's record is not another's", () => {
+    // One origin serves every Discord account that has ever opened the
+    // activity in this browser — the same trap `settings.ts` documents.
+    createStartedPuzzles("cy").add(246, 11);
+    expect(createStartedPuzzles("di").has(246, 11)).toBe(false);
+  });
+
+  test("survives storage it cannot read", () => {
+    localStorage.setItem("puzzle.started.v1.eve", "{not json");
+    expect(createStartedPuzzles("eve").has(246, 11)).toBe(false);
+    // And still records from there, rather than being stuck on the bad value.
+    const store = createStartedPuzzles("eve");
+    store.add(246, 11);
+    expect(createStartedPuzzles("eve").has(246, 11)).toBe(true);
   });
 });

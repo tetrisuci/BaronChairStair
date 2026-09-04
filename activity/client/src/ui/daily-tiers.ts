@@ -22,7 +22,8 @@ const LABELS: Readonly<Record<DailyTier, string>> = {
 
 export interface DailyMenu {
   readonly element: HTMLElement;
-  update(day: number, entries: readonly DailyEntry[]): void;
+  /** `started` is the puzzle ids this player has opened today — see `started.ts`. */
+  update(day: number, entries: readonly DailyEntry[], started: ReadonlySet<number>): void;
 }
 
 /**
@@ -41,7 +42,7 @@ export function createDailyMenu(onPick: (tier: DailyTier) => void): DailyMenu {
 
   return {
     element,
-    update(day, entries) {
+    update(day, entries, started) {
       const solved = entries.filter((entry) => entry.run?.solved).length;
       heading.textContent =
         `Puzzle #${day} — three of them. ` +
@@ -55,7 +56,18 @@ export function createDailyMenu(onPick: (tier: DailyTier) => void): DailyMenu {
         list,
         ...entries.map((entry) => {
           const { puzzle, run } = entry;
-          const state = run?.solved ? "solved" : run ? "filed, not solved" : "not played";
+          // Four states, not three. A daily run reaches the server only when it
+          // solves, so "no run" covers both a puzzle nobody has looked at and
+          // one the player is halfway through — and the second of those is a
+          // row telling somebody they have not played a puzzle they can see the
+          // board of behind this screen.
+          const state = run?.solved
+            ? "solved"
+            : run
+              ? "filed, not solved"
+              : started.has(puzzle.id)
+                ? "started"
+                : "not played";
           const row = el(
             "button",
             { class: `explore__item${run?.solved ? " explore__item--done" : ""}` },

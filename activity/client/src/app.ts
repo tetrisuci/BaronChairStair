@@ -37,6 +37,7 @@ import {
 } from "./ui/results";
 import { createExplorer } from "./ui/explorer";
 import { createBuilder, type Builder } from "./ui/builder";
+import { createStartedPuzzles, type StartedPuzzles } from "./started";
 import { DuelClient } from "./game/duel";
 import {
   createDuelIntro,
@@ -179,6 +180,13 @@ export class App {
    * per puzzle so a detour into practice cannot reset the daily's numbers.
    */
   private readonly sittings = new Map<number, { openedAt: number; resets: number }>();
+  /**
+   * Which of the day's three this player has opened, across sessions.
+   *
+   * Assigned in the constructor rather than here because it is keyed on the
+   * player, and a field initialiser cannot see a constructor parameter.
+   */
+  private readonly started: StartedPuzzles;
   /** When the current puzzle was put in front of the player. */
   private sheetOpenedAt = Date.now();
   /** Keeps the clock moving before the first input and between attempts. */
@@ -190,6 +198,7 @@ export class App {
     private readonly connection: Connection,
     private readonly settings: SettingsStore,
   ) {
+    this.started = createStartedPuzzles(connection.player.id);
     this.input = new InputRouter(settings.value.keybinds, {
       onGameKey: (key, down) => {
         if (this.mode === "duel") this.duel?.input(key, down);
@@ -337,7 +346,7 @@ export class App {
   private showDailyMenu(): void {
     if (!this.daily) return;
     this.leaveForScreen();
-    this.dailyMenu.update(this.daily.day, this.daily.puzzles);
+    this.dailyMenu.update(this.daily.day, this.daily.puzzles, this.startedToday());
     this.showScreen({ wide: true, fill: true }, this.dailyMenu.element);
   }
 
@@ -391,6 +400,16 @@ export class App {
    * counts, so it is kept out of the shuffle and shown greyed in the explorer
    * until the daily is on the board. Afterwards it is just another puzzle.
    */
+  /** The day's puzzles this player has opened, by id. */
+  private startedToday(): ReadonlySet<number> {
+    const day = this.daily?.day ?? 0;
+    return new Set(
+      (this.daily?.puzzles ?? [])
+        .map((entry) => entry.puzzle.id)
+        .filter((id) => this.started.has(day, id)),
+    );
+  }
+
   /** The one of the day's three currently on the board. */
   private get dailyEntry(): DailyEntry | null {
     return this.daily?.puzzles.find((entry) => entry.tier === this.dailyTier) ?? null;
@@ -1046,6 +1065,10 @@ export class App {
     this.sheetOpenedAt = history.openedAt;
 
     this.runningPuzzleId = sheet.puzzle.id;
+    // Opening one of the day's counts, whether or not it is ever finished: a
+    // daily run reaches the server only when it solves, so this is the only
+    // record that a puzzle was ever looked at. Practice is not the day's.
+    if (sheet.scored && this.daily) this.started.add(this.daily.day, sheet.puzzle.id);
     this.run?.dispose();
     this.badge.hide();
     this.leaderboard.setVisible(false);
