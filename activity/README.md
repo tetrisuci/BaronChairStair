@@ -490,6 +490,10 @@ out of the address bar with `replaceState` before the first request goes out,
 and the page renders no outbound links at all, so the token never rides out in
 a `Referer`. A refresh signs you out, which is the intended lifetime.
 
+**Deploying it, and the upgrade order that matters,** are in
+[DEPLOY.md](DEPLOY.md) — written for whoever is doing it on the VPS, including
+an agent with a shell and no other context.
+
 **Two things to check after a deploy**, because the ways this page goes wrong
 are all silent successes — a 200 with the game on it:
 
