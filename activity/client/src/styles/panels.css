@@ -555,11 +555,12 @@
 }
 
 /*
- * The day's three, across the top of the left rail.
+ * A row of two or three short labels that share the width they are given —
+ * now the record book's scopes, and once the day's three difficulties.
  *
- * Wrapping rather than scrolling: three short labels fit on one line at any
- * width the activity is given, and a row that scrolled would hide one of them
- * — which is the one thing this control exists to prevent.
+ * Wrapping rather than scrolling: the labels fit on one line at any width the
+ * activity is given, and a row that scrolled would hide one of them, which is
+ * the one thing a control like this exists to prevent.
  */
 .tiers {
   display: flex;

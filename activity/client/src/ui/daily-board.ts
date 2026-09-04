@@ -89,14 +89,18 @@ export function createDailyBoard(): DailyBoard {
             "div",
             {
               // `--marks` because this row has a fourth column the shared one
-              // does not: the three tier squares, between rank and name.
+              // does not: the three tier squares, which sit with the score.
               class:
                 `board-list__row board-list__row--marks` +
                 (row.player.id === selfId ? " board-list__row--self" : ""),
             },
             el("span", { class: "board-list__rank", text: `${index + 1}` }),
-            el("span", { class: "board__marks" }, ...DAILY_TIERS.map((tier) => mark(row, tier))),
             el("span", { class: "board-list__name", text: row.player.username }),
+            // Beside the score rather than beside the name: the squares are
+            // three of that row's results, and every other result on the row
+            // is at this end. In front of the name they read as a prefix to
+            // it, and pushed every name to a different starting column.
+            el("span", { class: "board__marks" }, ...DAILY_TIERS.map((tier) => mark(row, tier))),
             el("span", {
               class: "board-list__score",
               // A rush of zero solves is a rush that happened, and reads

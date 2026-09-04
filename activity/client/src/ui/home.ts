@@ -9,10 +9,16 @@
  *
  * The board is on it rather than behind a button because a leaderboard is the
  * thing people open a puzzle game to look at when they are not playing it.
+ *
+ * Five buttons and a board, and nothing else. A row of easy/medium/hard sat
+ * above them for a while, which was a second way into the same three puzzles
+ * directly beside the first — Daily opens the chooser, where the three can be
+ * read before one is picked, and that is where a difficulty belongs. The line
+ * above still says how many of the three are done, because that is the state
+ * of the day rather than a control.
  */
 
 import type { DailyEntry } from "../api";
-import type { DailyTier } from "@shared/daily";
 import { el, panel, replaceChildren } from "./dom";
 
 export interface HomeCallbacks {
@@ -21,8 +27,6 @@ export interface HomeCallbacks {
   readonly onDuel: () => void;
   readonly onExplore: () => void;
   readonly onBuild: () => void;
-  /** Straight into one of the day's three, past the chooser. */
-  readonly onPlayTier: (tier: DailyTier) => void;
 }
 
 export interface Home {
@@ -34,7 +38,6 @@ export interface Home {
 
 export function createHome(callbacks: HomeCallbacks): Home {
   const heading = el("p", { class: "rush__blurb", text: "" });
-  const progress = el("div", { class: "tiers" });
   const boardSlot = el("div", {});
 
   const go = (label: string, hint: string, onClick: () => void) => {
@@ -47,7 +50,6 @@ export function createHome(callbacks: HomeCallbacks): Home {
     "Puzzle",
     { class: "explore" },
     heading,
-    progress,
     el(
       "div",
       { class: "home__nav" },
@@ -75,27 +77,6 @@ export function createHome(callbacks: HomeCallbacks): Home {
         (solved === entries.length && entries.length > 0
           ? "All three done today."
           : `${solved} of ${entries.length} solved today.`);
-
-      // Buttons, because they looked like buttons and a control that reads as
-      // clickable and is not is worse than no control. Each one is the short
-      // way into that puzzle; the Daily button below goes to the chooser, which
-      // is where the three can be compared before picking.
-      replaceChildren(
-        progress,
-        ...entries.map((entry) => {
-          const button = el("button", {
-            class: "btn btn--small tiers__pick",
-            text: `${entry.tier}${entry.run?.solved ? " ✓" : entry.run ? " ·" : ""}`,
-            title: entry.run?.solved
-              ? "Solved — open it again"
-              : entry.run
-                ? "Filed, not solved"
-                : "Not played yet",
-          });
-          button.addEventListener("click", () => callbacks.onPlayTier(entry.tier));
-          return button;
-        }),
-      );
     },
   };
 }

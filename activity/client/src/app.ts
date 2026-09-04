@@ -134,7 +134,6 @@ export class App {
     onDuel: () => this.enterDuel(),
     onExplore: () => this.enterExplorer(),
     onBuild: () => this.enterBuilder(),
-    onPlayTier: (tier) => this.showDailyTier(tier),
   });
   /**
    * Built on first use, then kept for the session.

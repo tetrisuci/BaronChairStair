@@ -114,12 +114,13 @@
 }
 
 /*
- * The day's board carries a fourth column: the three marks, between the rank
- * and the name. Without its own template those marks land in the name's column
- * and the score wraps onto a line of its own — the row stops being a row.
+ * The day's board carries a fourth column: the three marks, sitting with the
+ * score at the end of the row. Without its own template those marks land in
+ * the name's column and the score wraps onto a line of its own — the row stops
+ * being a row.
  */
 .board-list__row--marks {
-  grid-template-columns: 20px auto minmax(0, 1fr) auto;
+  grid-template-columns: 20px minmax(0, 1fr) auto auto;
 }
 
 /* ── Solution walkthrough ─────────────────────────────────────────────────── */
