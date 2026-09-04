@@ -368,7 +368,7 @@ export class App {
     const entry = this.dailyEntry;
     if (!entry) return;
     this.sheet = { puzzle: entry.puzzle, solution: entry.solution, scored: true };
-    this.credits.update({ day: this.daily.day, puzzle: entry.puzzle });
+    this.credits.update(entry.puzzle);
     this.hud.setPuzzle(entry.puzzle);
     // Rebuilt rather than left alone: a filed tier puts the walkthrough in this
     // rail, and switching from it to an unplayed one would otherwise keep the
@@ -461,7 +461,7 @@ export class App {
     try {
       const { puzzle, solution } = await this.connection.api.archivePuzzle(id);
       this.sheet = { puzzle, solution, scored: false };
-      this.credits.update({ day: this.daily?.day ?? 0, puzzle });
+      this.credits.update(puzzle);
       if (this.mode === "explore") this.mode = "daily";
       replaceChildren(this.hud.left, this.hud.panels.hold, this.hud.panels.progress);
       this.showPlayfield();
@@ -565,11 +565,26 @@ export class App {
     this.relayout();
   }
 
+  /**
+   * The strip credits the puzzle on the board, so it says nothing when there
+   * is no board.
+   *
+   * `showPlayfield` is the only mount that has one, and its four callers set
+   * the credits in the breath before it — so blanking them belongs to the two
+   * mounts that do not: every screen, and the builder. Without it the strip
+   * outlives the board it describes and names yesterday's puzzle at the foot
+   * of the front door.
+   */
+  private clearCredits(): void {
+    this.credits.update(null);
+  }
+
   /** One centred column, for a moment when there is nothing to play. */
   private showScreen(
     options: { wide?: boolean; fill?: boolean },
     ...cards: HTMLElement[]
   ): void {
+    this.clearCredits();
     this.deck.classList.add("deck--screen");
     const modifiers = [options.wide && "screen--wide", options.fill && "screen--fill"]
       .filter(Boolean)
@@ -599,6 +614,7 @@ export class App {
       onTest: (puzzle) => this.startBuilderTest(puzzle),
       onStopTest: () => this.stopBuilderTest(),
     });
+    this.clearCredits();
     this.showColumns(this.builder.left, this.builder.board, this.builder.right);
   }
 
@@ -723,7 +739,7 @@ export class App {
     this.solutionPlayer = null;
     this.badge.hide();
     this.hud.setPuzzle(puzzle);
-    this.credits.update({ day: this.daily?.day ?? 0, puzzle });
+    this.credits.update(puzzle);
     replaceChildren(this.hud.left, this.duelPanel.element, this.hud.panels.hold);
     replaceChildren(this.hud.right, this.hud.panels.goal, this.hud.panels.meter, this.hud.panels.queue);
     this.showPlayfield();
@@ -901,7 +917,7 @@ export class App {
         },
         onPuzzle: (puzzle) => {
           this.hud.setPuzzle(puzzle);
-          this.credits.update({ day: start.day, puzzle });
+          this.credits.update(puzzle);
           this.relayout();
         },
         onSolved: (snapshot) => {

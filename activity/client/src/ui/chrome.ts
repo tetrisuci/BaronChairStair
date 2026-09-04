@@ -17,11 +17,6 @@ import { el, replaceChildren } from "./dom";
 const MAX_PIPS = 5;
 const PIP_SCALE = 2;
 
-export interface CreditFields {
-  readonly day: number;
-  readonly puzzle: PuzzlePrompt | null;
-}
-
 /** The club's logo motif: four coloured blocks in a square. */
 function blockMark(): HTMLElement {
   const colours = [MINO_INK.T, MINO_INK.O, MINO_INK.I, MINO_INK.S];
@@ -112,7 +107,13 @@ export function createMasthead(onHome: () => void = () => {}): Masthead {
 
 export interface Credits {
   readonly element: HTMLElement;
-  update(fields: CreditFields): void;
+  /**
+   * The puzzle on the board, or null when there is no board.
+   *
+   * It took a `{ day, puzzle }` and read only the puzzle; the day is the
+   * countdown's, and `setCountdown` is where that arrives.
+   */
+  update(puzzle: PuzzlePrompt | null): void;
   setCountdown(text: string): void;
 }
 
@@ -155,10 +156,14 @@ export function createCredits(): Credits {
 
   return {
     element,
-    update({ puzzle }) {
-      title.textContent = puzzle?.title || "Untitled";
+    update(puzzle) {
+      // Blank rather than "Untitled" over five empty pips. The strip is
+      // furniture on every screen, so it outlives the board it describes
+      // unless something says otherwise — and no puzzle is not a puzzle with
+      // no name and no rating. The dash is what it says before the first one.
+      title.textContent = puzzle ? puzzle.title || "Untitled" : "—";
       by.textContent = puzzle ? `by ${puzzle.author}` : "";
-      replaceChildren(pips, difficultyPips(puzzle?.difficulty ?? 0));
+      replaceChildren(pips, puzzle ? difficultyPips(puzzle.difficulty) : null);
     },
     setCountdown(text) {
       countdown.textContent = text;
