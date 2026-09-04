@@ -247,6 +247,14 @@ root and fill in what you need:
 
 ---
 
+## Contributing
+
+`main` is protected. It takes a pull request and one approving review from
+someone other than the author — no direct pushes, no force pushes, no deleting
+the branch. Branch off `main`, open a PR, get a review.
+
+---
+
 ## Licence
 
 See [LICENSE](LICENSE).
