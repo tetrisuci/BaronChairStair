@@ -64,6 +64,34 @@ login fails with PrivilegedIntentsRequired.
 import logging
 import os
 import sys
+
+# ── The Python floor, said out loud ──────────────────────────────────────────
+#
+# This module annotates with PEP 604 unions (`dict | None`) at module scope, and
+# 3.9 evaluates annotations eagerly at definition time — so importing it there
+# dies with `TypeError: unsupported operand type(s) for |` about six hundred
+# lines below, naming an operator rather than a version. Nothing in the failure
+# says "your Python is too old", which is the one thing the reader needs.
+#
+# Checked here rather than in a shared module because this is the only entry
+# point that breaks: the standalone tools carry no PEP 604 and run on 3.9 today,
+# and a guard on those would assert a constraint they do not have. `sys` is
+# imported above and the check is written in syntax every version parses, so it
+# runs before anything it is protecting.
+#
+# There is a second, independent reason for 3.10: the `python-dotenv` that
+# `pip install` resolves today — named in the README's own install line and
+# imported below — declares `Requires-Python: >=3.10`. Older releases of it
+# allowed 3.8, so that half of the argument is about what a fresh install gets
+# rather than about the package for all time. The syntax above is the hard one.
+MINIMUM_PYTHON = (3, 10)
+if sys.version_info < MINIMUM_PYTHON:
+    running = ".".join(str(part) for part in sys.version_info[:3])
+    sys.exit(
+        f"discord_bot.py needs Python {MINIMUM_PYTHON[0]}.{MINIMUM_PYTHON[1]} or newer; "
+        f"this is {running}. Python 3.9 reached end of life in October 2025."
+    )
+
 import asyncio
 import dataclasses
 import importlib.util
