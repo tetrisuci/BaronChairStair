@@ -234,7 +234,9 @@ the picker shows every command twice — which is what `check_dupes.py` detects.
 `activity/` has its own dependencies and its own `bun install`.
 
 Python needs `discord.py`, `python-dotenv`, `aiohttp` and `matplotlib`. The
-engine bridge itself uses only the standard library.
+Python side of the engine bridge (`client/teto_client.py`) uses only the
+standard library; the bridge server itself is TypeScript and needs
+`@haelp/teto` (installed by `bun install` above).
 
 ---
 
