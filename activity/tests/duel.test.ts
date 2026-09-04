@@ -428,7 +428,16 @@ describe("identity comes from the handshake and nowhere else", () => {
 
 // ── Puzzle duels ─────────────────────────────────────────────────────────────
 
-describe("a puzzle duel deals one puzzle to both players", () => {
+/*
+ * Guarded, like every other block that needs the club's reference answers:
+ * `data/solutions.json` is untracked — an answer key beside the puzzles is an
+ * answer key for everybody — so a fresh clone has boards and no solutions, and
+ * `solutionOf` throws rather than returning one. `tests/archive.ts` states the
+ * rule these blocks were missing: a test that builds a solving log skips, so
+ * somebody cloning this repo sees a suite that passes rather than one that
+ * looks broken by their own checkout.
+ */
+describe.skipIf(!hasSolutions)("a puzzle duel deals one puzzle to both players", () => {
   test("open, join, ready — and both are dealt the same round", async () => {
     const { host, guest } = await playPuzzleDuel(3);
     const forHost = await host.take("round");
@@ -520,7 +529,7 @@ describe("a puzzle duel deals one puzzle to both players", () => {
   });
 });
 
-describe("a round is won by a log that solves it", () => {
+describe.skipIf(!hasSolutions)("a round is won by a log that solves it", () => {
   test("a claim that does not solve it is refused, and takes no round", async () => {
     const { host, guest } = await playPuzzleDuel(3);
     const round = await host.take("round");
@@ -842,7 +851,7 @@ async function solveRush(player: Duellist, frame: RushFrame): Promise<RushFrame>
   return player.take("rush");
 }
 
-describe("a rush duel is one stack walked at two paces", () => {
+describe.skipIf(!hasSolutions)("a rush duel is one stack walked at two paces", () => {
   test("both players open on the same puzzle, one clock and a full hand of skips", async () => {
     const { host, guest } = await lobby(rushDuel());
     host.send({ type: "ready" });
@@ -1059,7 +1068,7 @@ async function hostWinsMatch(rounds: number): Promise<Lobby> {
   return seats;
 }
 
-describe("a finished match is played again only if both ask", () => {
+describe.skipIf(!hasSolutions)("a finished match is played again only if both ask", () => {
   test("one player asking tells them both, and restarts nothing", async () => {
     const { host, guest } = await hostWinsMatch(1);
 
@@ -1208,7 +1217,7 @@ describe("a finished match is played again only if both ask", () => {
   });
 });
 
-describe("a rematch offer outlives neither the players nor the day", () => {
+describe.skipIf(!hasSolutions)("a rematch offer outlives neither the players nor the day", () => {
   test("a disconnect while an offer stands kills the offer", async () => {
     const { host, guest } = await hostWinsMatch(1);
     host.send({ type: "rematch" });
@@ -1409,7 +1418,7 @@ describe("the rules of a room are the host's, and only while it is a room", () =
 
 // ── The pause between rounds ─────────────────────────────────────────────────
 
-describe("a puzzle duel rests between rounds", () => {
+describe.skipIf(!hasSolutions)("a puzzle duel rests between rounds", () => {
   test("the round that ended hands both players its solution", async () => {
     // The loser especially: it is the only look they get at a puzzle that just
     // beat them, and it costs nothing, because a duel never deals a puzzle it

@@ -12,7 +12,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { archive, solutionOf } from "./archive";
+import { archive, hasSolutions, solutionOf } from "./archive";
 import { readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -312,7 +312,16 @@ async function errorOf(response: Response): Promise<string> {
  * open five rushes between them. Another start belongs in an existing test
  * rather than in a sixth call.
  */
-describe("puzzle rush", () => {
+/*
+ * Guarded, like every other block that needs the club's reference answers:
+ * `data/solutions.json` is untracked — an answer key beside the puzzles is an
+ * answer key for everybody — so a fresh clone has boards and no solutions, and
+ * `solutionOf` throws rather than returning one. `tests/archive.ts` states the
+ * rule these blocks were missing: a test that builds a solving log skips, so
+ * somebody cloning this repo sees a suite that passes rather than one that
+ * looks broken by their own checkout.
+ */
+describe.skipIf(!hasSolutions)("puzzle rush", () => {
   let token = "";
   let practiceRush: RushStartBody;
 

@@ -15,7 +15,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { archive as puzzles, solutionOf } from "./archive";
+import { archive as puzzles, hasSolutions, solutionOf } from "./archive";
 import { byTier, DAILY_TIERS, puzzleIndexForDay } from "../shared/daily";
 import { seededShuffle, shuffledIndices } from "../shared/rng";
 import {
@@ -430,7 +430,16 @@ function attackThrough(puzzle: Puzzle, steps: number): number {
   return solutionOf(puzzle).slice(0, steps).reduce((total, step) => total + step.attack, 0);
 }
 
-describe("verifyRun on a log that stops mid-solution", () => {
+/*
+ * Guarded, like every other block that needs the club's reference answers:
+ * `data/solutions.json` is untracked — an answer key beside the puzzles is an
+ * answer key for everybody — so a fresh clone has boards and no solutions, and
+ * `solutionOf` throws rather than returning one. `tests/archive.ts` states the
+ * rule these blocks were missing: a test that builds a solving log skips, so
+ * somebody cloning this repo sees a suite that passes rather than one that
+ * looks broken by their own checkout.
+ */
+describe.skipIf(!hasSolutions)("verifyRun on a log that stops mid-solution", () => {
   // The idle bound stops the replay once the log is exhausted and nothing has
   // locked for a while, which is the difference between a skip costing two
   // milliseconds and costing fifteen. It must not be the difference between a

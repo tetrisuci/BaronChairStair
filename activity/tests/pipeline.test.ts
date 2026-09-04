@@ -90,7 +90,16 @@ function inputLogFor(puzzle: Puzzle): InputEvent[] {
   return logFor(setupFor(puzzle), solutionOf(puzzle));
 }
 
-describe("puzzle archive", () => {
+/*
+ * Both blocks below need the club's reference answers, and this file was the
+ * one that imported `hasSolutions` and then never used it — so a checkout
+ * without `data/solutions.json` got 53 errors reading "puzzle N has no solution
+ * loaded" instead of 53 skips. `tests/archive.ts` states the convention its
+ * four siblings follow: a test that builds a solving log guards and skips, so
+ * somebody cloning this repo sees a suite that passes rather than one that
+ * looks broken by their own checkout.
+ */
+describe.skipIf(!hasSolutions)("puzzle archive", () => {
   test("every puzzle has a positive, reachable target", () => {
     expect(puzzles.length).toBeGreaterThan(100);
     for (const puzzle of puzzles) {
@@ -102,7 +111,7 @@ describe("puzzle archive", () => {
   });
 });
 
-describe("verifyRun", () => {
+describe.skipIf(!hasSolutions)("verifyRun", () => {
   // A spread across queue lengths and difficulties rather than the whole
   // archive: the search is quadratic in placements and this runs on every save.
   const sample = puzzles.filter((_, index) => index % 11 === 0);
