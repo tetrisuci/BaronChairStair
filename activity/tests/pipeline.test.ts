@@ -17,7 +17,21 @@ import {
   type Puzzle,
   type SolutionStep,
 } from "../shared/puzzle";
-import { cellIndex, EMPTY_STATE, NO_TARGET, toPuzzle } from "../client/src/ui/builder-state";
+import {
+  type BuilderSolve,
+  cellIndex,
+  EMPTY_STATE,
+  NO_TARGET,
+  submitBlocker,
+  toPuzzle,
+  toSubmission,
+} from "../client/src/ui/builder-state";
+import {
+  readBoardShape,
+  readClaimedDifficulty,
+  readGoal,
+  readTitle,
+} from "../server/submission-input";
 import { createPuzzleEngine, toLetter } from "../shared/tetris/engine";
 import { DEFAULT_HANDLING } from "../shared/tetris/handling";
 import { findPaths } from "../shared/tetris/pathfinder";
@@ -185,5 +199,87 @@ describe("a draft the builder compiles", () => {
     expect(toPuzzle(draft).targetAttack).toBe(NO_TARGET);
     expect(meetsTarget(4, NO_TARGET)).toBe(false);
     expect(meetsTarget(0, 0)).toBe(true);
+  });
+});
+
+/**
+ * The other end of the same path: a draft on its way to review.
+ *
+ * `toSubmission` writes the field names `POST /api/submissions` reads, and
+ * nothing else lines the two up. A rename on either side is a 400 no other test
+ * in this suite can see, because `tests/builder.test.ts` supplies only the
+ * browser's half of the body and `tests/submissions.test.ts` writes its own
+ * board out by hand — deliberately, and it says so: "the builder is the next
+ * step's problem." This is that step.
+ *
+ * The route's validators are imported rather than the route itself.
+ * `server/submission-input` reaches only `server/puzzles`, which reads a JSON
+ * file and no configuration, so importing them here does not enrol this file in
+ * the one-database-per-run contract `tests/submissions.test.ts` documents.
+ */
+describe("the body the builder compiles", () => {
+  /** Only `handling` and `events` are read; the snapshot travels for the type. */
+  const solve: BuilderSolve = {
+    snapshot: {
+      phase: "solved",
+      attack: 4,
+      targetAttack: NO_TARGET,
+      piecesPlaced: 1,
+      pieceBudget: 1,
+      clears: ["tsd"],
+      elapsedMs: 900,
+      resets: 0,
+      hold: null,
+      upcoming: [],
+      holdLocked: false,
+    },
+    events: [{ frame: 0, type: "keydown", data: { key: "hardDrop", subframe: 0 } }],
+    handling: DEFAULT_HANDLING,
+  };
+
+  test("is one the route's own validators take", () => {
+    const cells = new Map<number, "g">();
+    for (const x of [0, 1, 2, 6, 7, 8, 9]) cells.set(cellIndex(x, 0), "g");
+    const draft = {
+      ...EMPTY_STATE,
+      cells,
+      queue: ["T" as const, "L" as const],
+      hold: "O" as const,
+      goal: "Clear 1 TSD",
+      title: "Well Named",
+      difficulty: 12,
+    };
+
+    const body = toSubmission(draft, solve);
+
+    expect(readTitle(body.title)).toBe("Well Named");
+    expect(readGoal(body.goal)).toBe("Clear 1 TSD");
+    expect(readClaimedDifficulty(body.claimedDifficulty)).toBe(12);
+    // The board, queue and hold under the names the route reads them by, and
+    // through the same `boardProblem` an archived puzzle is held to.
+    expect(readBoardShape(body)).toEqual({
+      board: ["GGG...GGGG"],
+      queue: ["T", "L"],
+      hold: "O",
+    });
+  });
+
+  test("is refused by those validators exactly where the builder refuses it", () => {
+    // The two halves of the same rule, checked against each other rather than
+    // each against its own idea of the truth. `submitBlocker` exists so the
+    // author is told while the board is still theirs to fix; it is worth
+    // nothing if it lets through something the route then throws away.
+    const full = new Map<number, "g">();
+    for (let x = 0; x < 10; x++) full.set(cellIndex(x, 0), "g");
+    const draft = {
+      ...EMPTY_STATE,
+      cells: full,
+      queue: ["T" as const],
+      goal: "Clear 1 TSD",
+      title: "Well Named",
+    };
+
+    expect(submitBlocker(draft, solve)).not.toBeNull();
+    expect(() => readBoardShape(toSubmission(draft, solve))).toThrow();
   });
 });

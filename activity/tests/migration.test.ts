@@ -16,6 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store, type PastDays, type RunResult } from "../server/db";
 import type { SubmissionDraft } from "../server/submissions";
+import { COMMUNITY_ID_BASE } from "../shared/puzzle";
 import { DEFAULT_HANDLING } from "../shared/tetris/handling";
 
 let dir: string;
@@ -638,34 +639,65 @@ describe("the submissions table", () => {
     // a lookup while both copies stay in the array and in the rush pool — and
     // `runs.puzzle_id` has no foreign key, so the two puzzles' play history
     // merges with no complaint. The index is the only thing that says no.
+    //
+    // Driven in raw SQL because `acceptSubmission` allocates from `MAX` inside
+    // its own transaction and cannot be made to reissue an id — which is the
+    // point of it. The index is the belt under that brace, for a row written by
+    // a hand at a shell prompt.
     const store = new Store(path);
     try {
       const first = store.recordSubmission(draft("First"));
+      store.acceptSubmission(first.submissionId, {
+        reviewedBy: "an officer",
+        difficulty: 5,
+        note: null,
+      });
+      const taken = store.submission(first.submissionId)!.puzzleId!;
+
       const second = store.recordSubmission(draft("Second"));
-      const decision = { status: "accepted", reviewedBy: "an officer", note: null, difficulty: 5 } as const;
-      store.decideSubmission(first.submissionId, { ...decision, puzzleId: 100_001 });
+      const db = new Database(path);
       expect(() =>
-        store.decideSubmission(second.submissionId, { ...decision, puzzleId: 100_001 }),
+        db.run(
+          "UPDATE submissions SET status = 'accepted', puzzle_id = ?1 WHERE submission_id = ?2",
+          [taken, second.submissionId],
+        ),
       ).toThrow(/UNIQUE/i);
+      db.close();
+
       // Rejections all carry a null puzzle id, and a unique index that counted
       // them would let exactly one puzzle ever be turned down.
-      store.decideSubmission(second.submissionId, {
-        status: "rejected",
-        reviewedBy: "an officer",
-        note: null,
-        puzzleId: null,
-        difficulty: null,
-      });
+      store.rejectSubmission(second.submissionId, { reviewedBy: "an officer", note: "no" });
       const third = store.recordSubmission(draft("Third"));
       expect(() =>
-        store.decideSubmission(third.submissionId, {
-          status: "rejected",
-          reviewedBy: "an officer",
-          note: null,
-          puzzleId: null,
-          difficulty: null,
-        }),
+        store.rejectSubmission(third.submissionId, { reviewedBy: "an officer", note: "no" }),
       ).not.toThrow();
+    } finally {
+      store.close();
+    }
+  });
+
+  test("allocates community ids from the band, upwards, never twice", () => {
+    // The band exists because the club's sheet runs 1-140 with gaps and keeps
+    // allocating; the "upwards from MAX" rule exists because a reused id would
+    // hand a new puzzle another puzzle's recorded runs, and `runs.puzzle_id`
+    // has no foreign key to notice.
+    const store = new Store(path);
+    try {
+      const officer = { reviewedBy: "an officer", difficulty: 5, note: null };
+      const first = store.recordSubmission(draft("First"));
+      const second = store.recordSubmission(draft("Second"));
+      store.acceptSubmission(first.submissionId, officer);
+      store.acceptSubmission(second.submissionId, officer);
+      expect(store.submission(first.submissionId)!.puzzleId).toBe(COMMUNITY_ID_BASE);
+      expect(store.submission(second.submissionId)!.puzzleId).toBe(COMMUNITY_ID_BASE + 1);
+
+      // A losing accept spends nothing: the id came from a SELECT and the
+      // UPDATE's `status = 'pending'` guard changed no row.
+      const again = store.acceptSubmission(first.submissionId, officer);
+      expect(again.isFirst).toBe(false);
+      const third = store.recordSubmission(draft("Third"));
+      store.acceptSubmission(third.submissionId, officer);
+      expect(store.submission(third.submissionId)!.puzzleId).toBe(COMMUNITY_ID_BASE + 2);
     } finally {
       store.close();
     }

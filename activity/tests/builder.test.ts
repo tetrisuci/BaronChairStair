@@ -23,7 +23,11 @@ import { encodeBlueprint } from "../shared/blueprint/encode";
 import { COLUMNS } from "../shared/blueprint/playfield";
 import type { PuzzlePrompt } from "../shared/puzzle";
 import { createBuilder } from "../client/src/ui/builder";
+import type { SubmissionVerdict } from "../client/src/ui/builder-submit";
 import {
+  type BuilderSolve,
+  type SubmissionBody,
+  DEFAULT_DIFFICULTY,
   MAX_GOAL_COUNT,
   MAX_QUEUE,
   MAX_ROWS,
@@ -64,15 +68,39 @@ function filled(page: BlueprintPage): Filled[] {
   return [...page.playfield.nonEmptyCells()].map(({ x, y, type }) => ({ x, y, type: type! }));
 }
 
-function mount() {
+/** What the pretend server reads out of a solve. Any number nobody else picks. */
+const VERDICT_ATTACK = 7;
+
+function mount(options: { guest?: boolean } = {}) {
   const tested: PuzzlePrompt[] = [];
-  const builder = createBuilder({
-    onClose: () => {},
-    // The app plays the draft; the test stands in for it, so what the
-    // builder hands over is inspectable on its own.
-    onTest: (puzzle) => tested.push(puzzle),
-    onStopTest: () => builder.endTest(),
-  });
+  const submitted: SubmissionBody[] = [];
+  /**
+   * The app's half of a submission, and what it answers with.
+   *
+   * Swappable per test because the two outcomes are two different features: a
+   * success spends the solve and reports the server's own number, a rejection
+   * has to put the server's own sentence on screen with the draft left intact.
+   */
+  let answer: () => Promise<SubmissionVerdict> = async () => ({ attack: VERDICT_ATTACK });
+  let inFlight: Promise<unknown> = Promise.resolve();
+  const builder = createBuilder(
+    {
+      onClose: () => {},
+      // The app plays the draft; the test stands in for it, so what the
+      // builder hands over is inspectable on its own.
+      onTest: (puzzle) => tested.push(puzzle),
+      onStopTest: () => builder.endTest(),
+      // The same stand-in on the same wall: the builder never sees an Api, so
+      // the body it compiled arrives here whole and is inspectable as itself.
+      onSubmit: (draft) => {
+        submitted.push(draft);
+        const pending = answer();
+        inFlight = pending;
+        return pending;
+      },
+    },
+    options.guest ?? false,
+  );
   // The builder is three siblings now — a rail, the board, a rail — and the app
   // mounts them straight into the deck. One parent here is the deck's stand-in,
   // so a query below reaches the whole screen the way it used to reach the card.
@@ -131,9 +159,34 @@ function mount() {
     builder,
     /** Every draft the builder has handed over to be played. */
     tested,
+    /** Every body it has handed over to be filed, in order. */
+    submitted,
+    /** The Submit button by class, because a success renames it for a moment. */
+    submitButton: () => find<HTMLButtonElement>(".build__submit"),
+    submitNote: find<HTMLElement>(".build__submit-note"),
+    /** Answer the next submission with a refusal, the way the route would. */
+    refuseWith(message: string): void {
+      answer = () => Promise.reject(new Error(message));
+    },
+    /**
+     * Wait for the submission in flight to have been reported on.
+     *
+     * The rejection is swallowed here and only here: the builder is the side
+     * that reports it, and a test awaiting the same promise must not fail for
+     * having been told what it asked to be told.
+     */
+    async settled(): Promise<void> {
+      try {
+        await inFlight;
+      } catch {
+        // Reported on the screen; asserted there.
+      }
+    },
     pieces: find<HTMLInputElement>(".build__pieces"),
     holdField: find<HTMLInputElement>(".build__letter"),
     goalField: find<HTMLInputElement>('input[aria-label="Goal"]'),
+    titleField: find<HTMLInputElement>('input[aria-label="Title"]'),
+    difficultyField: find<HTMLInputElement>('input[aria-label="Difficulty"]'),
     goalRows: find<HTMLElement>(".build__goals"),
     goalNote: find<HTMLElement>(".build__goal-note"),
     attackBox: find<HTMLInputElement>('input[aria-label="Attack"]'),
@@ -1157,6 +1210,209 @@ describe("the solve a test leaves behind", () => {
     ui.builder.endTest();
 
     expect(ui.builder.keptSolve()).toBe(good);
+  });
+});
+
+/**
+ * The last thing the builder does, and every reason it refuses to do it.
+ *
+ * `POST /api/submissions` refuses a body outside its bounds rather than
+ * repairing one, on the stated grounds that the builder has applied its limits
+ * already. These are that claim, held to: a draft the screen would send is a
+ * draft the route would take, and a draft it would not send is one the author
+ * is told about while the board is still in front of them.
+ *
+ * The solve here is handed over rather than played. `describe("the solve a test
+ * leaves behind")` above already proves a real run reaches `keepSolve` intact,
+ * and what these are about is what happens *after* one has — so they take the
+ * shorter road through the same door the app uses.
+ */
+describe("sending a draft for review", () => {
+  const solve = (): BuilderSolve => ({
+    snapshot: {
+      phase: "solved",
+      attack: 4,
+      targetAttack: NO_TARGET,
+      // Above zero, or `keepSolve` drops it: a run that placed nothing is
+      // somebody who pressed Test and changed their mind.
+      piecesPlaced: 1,
+      pieceBudget: 1,
+      clears: ["single"],
+      elapsedMs: 900,
+      resets: 0,
+      hold: null,
+      upcoming: [],
+      holdLocked: false,
+    },
+    events: [{ frame: 0, type: "keydown", data: { key: "hardDrop", subframe: 0 } }],
+    handling: DEFAULT_HANDLING,
+  });
+
+  /** A draft with nothing left wrong with it: board, queue, goal, title, run. */
+  function ready(options: { guest?: boolean } = {}): ReturnType<typeof mount> {
+    const ui = mount(options);
+    ui.type(ui.pieces, "O");
+    ui.paint(ui.bottomRow(), 0);
+    ui.paint(ui.bottomRow() - 1, 3);
+    ui.type(ui.goalField, "Clear 1 Single");
+    ui.type(ui.titleField, "Well Named");
+    // Through Test, because that is what tells the builder which draft the run
+    // it is about to be handed was dealt from.
+    ui.press("Test");
+    ui.builder.keepSolve(solve());
+    ui.builder.endTest();
+    return ui;
+  }
+
+  test("is offered once the draft has a name, a goal and a run behind it", () => {
+    const ui = ready();
+
+    expect(ui.submitButton().disabled).toBe(false);
+    // Nothing to say when nothing is wrong: the line under the button is for
+    // the one refusal that stands, and an empty one is not a refusal.
+    expect(ui.submitNote.textContent).toBe("");
+  });
+
+  test("will not send a puzzle with no name on it", () => {
+    // `readTitle` answers an empty title with a 400 after the whole body has
+    // crossed the wire. The field is one line away from the button, so the
+    // author is told here instead.
+    const ui = ready();
+    ui.type(ui.titleField, "");
+
+    expect(ui.submitButton().disabled).toBe(true);
+    expect(ui.submitNote.textContent).toContain("title");
+  });
+
+  test("will not send a puzzle nobody has played", () => {
+    // The rule the route exists to hold. There is nothing honest to put in
+    // `targetAttack` for a board nobody has solved, and a target nobody earned
+    // is a bar every other player is then scored against.
+    const ui = mount();
+    ui.type(ui.pieces, "O");
+    ui.paint(ui.bottomRow(), 0);
+    ui.type(ui.goalField, "Clear 1 Single");
+    ui.type(ui.titleField, "Well Named");
+
+    expect(ui.submitButton().disabled).toBe(true);
+    expect(ui.submitNote.textContent).toContain("Play it yourself");
+  });
+
+  test("tells a guest before the click rather than after it", () => {
+    // The route answers a guest with a 403: every guest is the same player, so
+    // there is no name to credit and no quota that tells two of them apart.
+    // Finding that out at the end of an evening's work is the wrong place.
+    const ui = ready({ guest: true });
+
+    expect(ui.submitButton().disabled).toBe(true);
+    expect(ui.submitNote.textContent).toContain("Sign in");
+    // And the refusal outranks every other one: no amount of editing lifts it,
+    // so a guest is never sent off to write a title that changes nothing.
+    ui.type(ui.titleField, "");
+    expect(ui.submitNote.textContent).toContain("Sign in");
+    // Nothing leaves, even if a click gets past a disabled button.
+    ui.press("Submit");
+    expect(ui.submitted).toEqual([]);
+  });
+
+  test("sends the board the solve was played on, and nothing the server derives", () => {
+    // The whole contract in one assertion. The server replays the log against
+    // the board sent beside it, so a body carrying anything but the draft that
+    // run was made on is a target and a reference solution that are
+    // self-consistent and wrong — which nothing downstream can catch, because
+    // validating a puzzle checks its shape and never its solution.
+    const ui = ready();
+    const played = solve();
+
+    ui.press("Submit");
+
+    expect(ui.submitted).toHaveLength(1);
+    const body = ui.submitted[0]!;
+    expect(body.board).toEqual(["G.........", "...G......"]);
+    expect(body.queue).toEqual(["O"]);
+    expect(body.hold).toBeNull();
+    expect(body.title).toBe("Well Named");
+    expect(body.goal).toBe("Clear 1 Single");
+    expect(body.claimedDifficulty).toBe(DEFAULT_DIFFICULTY);
+    expect(body.events).toEqual(played.events);
+    // The controls the log was typed under travel with it, or the server
+    // replays a run nobody played.
+    expect(body.handling).toEqual(DEFAULT_HANDLING);
+    // None of these is the author's to name. `toPuzzle` would have supplied a
+    // `targetAttack` of `NO_TARGET` — `MAX_SAFE_INTEGER`, which `assertValid`
+    // waves through as a puzzle nobody can ever solve.
+    expect(body).not.toHaveProperty("targetAttack");
+    expect(body).not.toHaveProperty("id");
+    expect(body).not.toHaveProperty("author");
+    expect(body).not.toHaveProperty("solution");
+  });
+
+  test("carries the author's rating on the scale the archive actually uses", () => {
+    // Twenty, because the archive really contains one — a control that stopped
+    // at ten could not describe a puzzle already on the list.
+    const ui = ready();
+    ui.setNumber(ui.difficultyField, "20");
+    ui.press("Submit");
+    expect(ui.submitted[0]!.claimedDifficulty).toBe(20);
+
+    // And past the end of the scale is a typo, answered by clamping rather
+    // than by a refusal on a field that cannot stay wrong.
+    const over = ready();
+    over.setNumber(over.difficultyField, "40");
+    over.press("Submit");
+    expect(over.submitted[0]!.claimedDifficulty).toBe(20);
+  });
+
+  test("keeps the board after a success and spends the solve", async () => {
+    const ui = ready();
+    const code = ui.code();
+
+    ui.press("Submit");
+    await ui.settled();
+
+    // The board stays: it is the author's work, and the code in the box is
+    // still the artefact they came for.
+    expect(ui.code()).toBe(code);
+    // The solve does not. Left in place, a second press files the same puzzle
+    // again under the same title — and the only thing in the way is the
+    // route's three-pending quota, so one impatient click costs an author two
+    // of their three slots.
+    expect(ui.builder.keptSolve()).toBeNull();
+    expect(ui.submitButton().disabled).toBe(true);
+    // The server's own number, not the run's: it is the target every later
+    // player is set, and the two disagreeing is what an author cannot debug.
+    expect(ui.submitNote.textContent).toContain(`${VERDICT_ATTACK} attack`);
+  });
+
+  test("says what the server said when it refuses, and keeps the draft", async () => {
+    // `ApiError` carries the server's own sentence — the entire reason the API
+    // renders JSON errors rather than Hono's plain text. Swallowing it would
+    // leave an author with a button that did nothing.
+    const ui = ready();
+    ui.refuseWith("Your solve sends no attack — there is nothing to score");
+
+    ui.press("Submit");
+    await ui.settled();
+
+    expect(ui.submitNote.textContent).toContain("sends no attack");
+    // A failure spends nothing: the run is still theirs and the button works,
+    // or a refusal an author could fix would be one they cannot act on.
+    expect(ui.builder.keptSolve()).not.toBeNull();
+    expect(ui.submitButton().disabled).toBe(false);
+  });
+
+  test("stops saying it was sent the moment the draft moves", async () => {
+    // "Sent for review" is true about a puzzle, not about a screen. Once the
+    // board changes it is describing something that was never filed, and the
+    // line goes back to saying what would stop this one going out.
+    const ui = ready();
+    ui.press("Submit");
+    await ui.settled();
+    expect(ui.submitNote.textContent).toContain("Sent for review");
+
+    ui.paint(ui.bottomRow(), 5);
+
+    expect(ui.submitNote.textContent).toContain("Play it yourself");
   });
 });
 

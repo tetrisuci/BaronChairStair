@@ -38,6 +38,8 @@ import {
 } from "./ui/results";
 import { createExplorer } from "./ui/explorer";
 import { createBuilder, type Builder } from "./ui/builder";
+import type { SubmissionVerdict } from "./ui/builder-submit";
+import type { SubmissionBody } from "./ui/builder-state";
 import { createStartedPuzzles, type StartedPuzzles } from "./started";
 import { DuelClient } from "./game/duel";
 import {
@@ -608,11 +610,19 @@ export class App {
    */
   private enterBuilder(): void {
     this.leaveForScreen();
-    this.builder ??= createBuilder({
-      onClose: () => this.showHome(),
-      onTest: (puzzle) => this.startBuilderTest(puzzle),
-      onStopTest: () => this.stopBuilderTest(),
-    });
+    this.builder ??= createBuilder(
+      {
+        onClose: () => this.showHome(),
+        onTest: (puzzle) => this.startBuilderTest(puzzle),
+        onStopTest: () => this.stopBuilderTest(),
+        onSubmit: (draft) => this.submitPuzzle(draft),
+      },
+      // Read once, at the moment the builder is built, which is safe only
+      // because a connection is made before any screen opens and never
+      // changes afterwards — `connect` hands back one `Connection` for the
+      // life of the page. A guest who signs in reloads the activity.
+      this.connection.guest,
+    );
     this.clearCredits();
     this.showColumns(this.builder.left, this.builder.board, this.builder.right);
   }
@@ -704,6 +714,25 @@ export class App {
     handling: Handling,
   ): void {
     this.builder?.keepSolve({ snapshot, events: [...events], handling });
+  }
+
+  /**
+   * Files a draft the builder compiled.
+   *
+   * The same split `onTest` is under, read the other way: the builder owns the
+   * screen and this owns the network, so what crosses back is the server's own
+   * reading of the run and nothing else. No `toast` and no `try` — a failure
+   * belongs beside the button that caused it rather than in a strip that times
+   * out, and `ApiError` already carries the server's sentence for the builder
+   * to print. Letting the rejection through is how it gets there.
+   *
+   * Nothing about the day, the sheet or the leaderboard moves: a submission is
+   * not a run, files no attempt, and the puzzle does not exist until an officer
+   * says so.
+   */
+  private async submitPuzzle(draft: SubmissionBody): Promise<SubmissionVerdict> {
+    const response = await this.connection.api.submitPuzzle(draft);
+    return { attack: response.verified.attack };
   }
 
   // ── 1v1 ────────────────────────────────────────────────────────────────────

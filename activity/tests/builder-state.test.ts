@@ -15,10 +15,13 @@ import { decodeBlueprint } from "../shared/blueprint/decode";
 import { encodeBlueprint } from "../shared/blueprint/encode";
 import {
   MAX_GOAL_COUNT,
+  type BuilderSolve,
   type BuilderState,
   type GoalSpec,
   cellIndex,
+  clampDifficulty,
   CLEAR_NAMES,
+  DEFAULT_DIFFICULTY,
   EMPTY_GOAL,
   EMPTY_STATE,
   formatGoal,
@@ -31,21 +34,27 @@ import {
   MAX_GOAL,
   MAX_QUEUE,
   MAX_ROWS,
+  MAX_TITLE,
   pageOf,
   paintCells,
   parseGoal,
   parsePieces,
   sanitizeGoal,
+  sanitizeTitle,
   NO_TARGET,
+  submitBlocker,
   summaryOf,
   testBlocker,
   toCode,
   toPuzzle,
+  toSubmission,
   unusedClears,
   warningFor,
   withGoalAttack,
   withGoalEntry,
 } from "../client/src/ui/builder-state";
+import { MAX_DIFFICULTY, MIN_DIFFICULTY } from "../shared/archive-filter";
+import { DEFAULT_HANDLING } from "../shared/tetris/handling";
 import { archive, hasSolutions } from "./archive";
 
 const state = (patch: Partial<BuilderState> = {}): BuilderState => ({ ...EMPTY_STATE, ...patch });
@@ -525,5 +534,165 @@ describe("the draft as something to play", () => {
     // A hold with nothing behind it is not a queue: the piece in hold is only
     // reachable by swapping the one that is falling.
     expect(testBlocker(state({ hold: "O" }))).not.toBeNull();
+  });
+});
+
+describe("the title and the rating a code cannot carry", () => {
+  test("keeps the characters the review page and the route both take", () => {
+    // The route refuses a title with control characters or one past 60 rather
+    // than repairing it, on the grounds that the builder has already applied
+    // its limits — so this is that claim. Curly quotes are folded rather than
+    // dropped for the same reason the goal's are: deleting an apostrophe turns
+    // "Don't" into "Dont", which is a worse lie than a straighter quote.
+    expect(sanitizeTitle("Don’t Look Down")).toBe("Don't Look Down");
+    expect(sanitizeTitle("Well Named")).toBe("Well Named");
+    // Written as an escape, because a literal control character is invisible
+    // in the file arguing about it. It cannot be typed into the field, it can
+    // be pasted, and `readText` answers one with a 400 rather than trimming it.
+    expect(sanitizeTitle("A\u0007Name")).toBe("AName");
+    expect(sanitizeTitle("\u{1F680} Rocket")).toBe(" Rocket");
+    expect(sanitizeTitle("x".repeat(MAX_TITLE + 40))).toHaveLength(MAX_TITLE);
+  });
+
+  test("holds the rating to the one scale this repo enforces", () => {
+    // Twenty and not ten: the archive really contains a 20, so a control that
+    // stopped at ten could not describe a puzzle already on the list.
+    expect(clampDifficulty(MAX_DIFFICULTY)).toBe(MAX_DIFFICULTY);
+    expect(clampDifficulty(40)).toBe(MAX_DIFFICULTY);
+    expect(clampDifficulty(0)).toBe(MIN_DIFFICULTY);
+    expect(clampDifficulty(-3)).toBe(MIN_DIFFICULTY);
+    // A whole number, because every rating in the archive is one.
+    expect(clampDifficulty(7.6)).toBe(8);
+    // An empty box reads as NaN through `Number`, and a rating of nothing is
+    // not a rating of one — it is a control nobody moved.
+    expect(clampDifficulty(Number.NaN)).toBe(DEFAULT_DIFFICULTY);
+  });
+
+  test("a loaded code brings neither of them with it", () => {
+    // A blueprint page carries a board, a queue, a hold and one comment.
+    // Carrying the fields on screen across a load would put the last puzzle's
+    // name on a board that has just arrived from somewhere else.
+    const loaded = fromCode(
+      toCode(state({ queue: ["T"], goal: "Clear 1 TSD", title: "Kept", difficulty: 19 })),
+    );
+
+    expect(loaded.goal).toBe("Clear 1 TSD");
+    expect(loaded.title).toBe("");
+    expect(loaded.difficulty).toBe(DEFAULT_DIFFICULTY);
+  });
+});
+
+/**
+ * What stands between a draft and the review queue.
+ *
+ * Four of these are rules `POST /api/submissions` enforces as well, which is
+ * the point rather than an accident: the route refuses a body outside its
+ * bounds instead of repairing one, so a draft that fails only at the far end
+ * costs an author a run they have already made. These pin that the screen says
+ * it first, while the board is still theirs to fix.
+ */
+describe("the draft as something to send", () => {
+  const solve = (): BuilderSolve => ({
+    snapshot: {
+      phase: "solved",
+      attack: 4,
+      targetAttack: NO_TARGET,
+      piecesPlaced: 1,
+      pieceBudget: 1,
+      clears: ["single"],
+      elapsedMs: 900,
+      resets: 0,
+      hold: null,
+      upcoming: [],
+      holdLocked: false,
+    },
+    events: [{ frame: 0, type: "keydown", data: { key: "hardDrop", subframe: 0 } }],
+    handling: DEFAULT_HANDLING,
+  });
+
+  /** A draft with nothing left wrong with it, so a test can take one thing away. */
+  const finished = (patch: Partial<BuilderState> = {}) =>
+    state({
+      cells: cells([[0, 0, "g"]]),
+      queue: ["T"],
+      goal: "Clear 1 TSD",
+      title: "A Name",
+      ...patch,
+    });
+
+  test("is nothing at all once the draft is finished and somebody has played it", () => {
+    expect(submitBlocker(finished(), solve())).toBeNull();
+  });
+
+  test("names one thing at a time, in the order they are worth fixing", () => {
+    // The order is the decision, and it is cheap-fix-first on purpose: an
+    // author told to go and play their puzzle only to be asked for a title
+    // afterwards has been sent round twice. So the last refusal anybody ever
+    // sees is the expensive one, which is also the one this feature exists for.
+    expect(submitBlocker(state({ cells: cells([[0, MAX_ROWS, "g"]]) }), null)).toContain(
+      `above the ${MAX_ROWS} rows`,
+    );
+    expect(submitBlocker(EMPTY_STATE, null)).toContain("queue");
+    expect(submitBlocker(state({ queue: ["T"], cells: fullRow(0) }), null)).toContain("Row 1");
+
+    const unstated = finished({ goal: "", title: "" });
+    expect(submitBlocker(unstated, null)).toContain("goal");
+    expect(submitBlocker({ ...unstated, goal: "Clear 1 TSD" }, null)).toContain("title");
+    expect(submitBlocker(finished(), null)).toContain("Play it yourself");
+  });
+
+  test("refuses the two boards the route would refuse, before the run is spent", () => {
+    // A full row clears on the first lock wherever the piece lands, and that
+    // attack goes into the target every later player is scored against —
+    // `readBoardShape` answers it with a 400. Cells above the twenty on screen
+    // make a board a reviewer cannot see all of, and the same function refuses
+    // anything taller than the field. Both would come back *after* the author
+    // had played the puzzle, which is the whole of what this saves.
+    expect(submitBlocker(finished({ cells: fullRow(0) }), solve())).not.toBeNull();
+    expect(submitBlocker(finished({ cells: cells([[0, MAX_ROWS, "g"]]) }), solve())).not.toBeNull();
+  });
+
+  test("blocks a title of nothing but spaces, which is what the route trims to", () => {
+    // `readText` trims first and then asks whether anything is left, so a
+    // title of three spaces is an empty title with a longer body around it.
+    expect(submitBlocker(finished({ title: "   " }), solve())).toContain("title");
+  });
+
+  test("carries the draft and the run made on it, and nothing the server derives", () => {
+    const draft = finished({
+      cells: cells([
+        [0, 0, "g"],
+        [9, 0, "I"],
+      ]),
+      queue: ["T", "L"],
+      hold: "O",
+      title: "  A Name  ",
+      difficulty: 12,
+    });
+    const played = solve();
+
+    const body = toSubmission(draft, played);
+
+    // The same conversion a test plays, so the log beside it was recorded
+    // against exactly these rows — which is what makes the server's replay
+    // mean anything at all.
+    expect(body.board).toEqual(["G........I"]);
+    expect(body.queue).toEqual(["T", "L"]);
+    expect(body.hold).toBe("O");
+    expect(body.title).toBe("A Name");
+    expect(body.claimedDifficulty).toBe(12);
+    expect(body.events).toBe(played.events);
+    // From the solve and not from the settings: an author who opens the
+    // settings between the last piece and Submit would otherwise have their
+    // run replayed under controls they never played it with.
+    expect(body.handling).toBe(played.handling);
+    // None of these is the author's to name. `toPuzzle` would have supplied a
+    // `targetAttack` of `NO_TARGET` — `MAX_SAFE_INTEGER`, which `assertValid`
+    // checks only for being above zero and waves straight through as a puzzle
+    // nobody can ever solve.
+    expect(body).not.toHaveProperty("targetAttack");
+    expect(body).not.toHaveProperty("id");
+    expect(body).not.toHaveProperty("author");
+    expect(body).not.toHaveProperty("solution");
   });
 });

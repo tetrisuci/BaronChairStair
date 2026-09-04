@@ -66,6 +66,24 @@ export interface SolutionStep {
   readonly attack: number;
 }
 
+/**
+ * The first id a puzzle a player wrote may take.
+ *
+ * The club's sheet runs 1–140 with gaps, and it keeps allocating; a band well
+ * clear of it means the two allocators never have to know about each other.
+ * The band *is* the record that a puzzle came from a player — there is no
+ * column saying so, because the id is already the answer and a second field
+ * would be a second thing to keep in step.
+ *
+ * A collision here would be silent and terrible rather than loud: the archive
+ * keys puzzles by id into a Map, so a duplicate resolves cleanly for a lookup
+ * while both copies stay in the array the rotation and the rush pool are drawn
+ * from — and `runs.puzzle_id` has no foreign key, so two puzzles' play history
+ * would merge with nothing to complain. `PuzzleArchive` checks for it at the
+ * merge, which is the one place both sources are in the same list.
+ */
+export const COMMUNITY_ID_BASE = 100_000;
+
 export interface Puzzle {
   readonly id: number;
   readonly title: string;
@@ -120,6 +138,22 @@ export interface ArchiveListing {
    */
   readonly pieces: number;
   readonly targetAttack: number;
+  /**
+   * Whether a player wrote this one and an officer accepted it.
+   *
+   * Said out loud rather than left to be re-derived from {@link
+   * COMMUNITY_ID_BASE} at each place that cares. It is one boolean against a
+   * band check spreading through the explorer, the filter and whatever comes
+   * next — and it is the whole player-facing surface of the feature, because
+   * `author` already carries the name.
+   *
+   * It also marks a target that means something different. A club puzzle's
+   * `targetAttack` comes from `replayPlacements`, which tries every kick route
+   * and keeps the best line; a community one comes from replaying the author's
+   * own keystrokes, so it is what a person actually did — provably reachable,
+   * and beatable.
+   */
+  readonly community: boolean;
 }
 
 export function toListing(puzzle: Puzzle): ArchiveListing {
@@ -132,6 +166,7 @@ export function toListing(puzzle: Puzzle): ArchiveListing {
     set: puzzle.set,
     pieces: pieceBudget(puzzle),
     targetAttack: puzzle.targetAttack,
+    community: puzzle.id >= COMMUNITY_ID_BASE,
   };
 }
 

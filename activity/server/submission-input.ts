@@ -1,5 +1,5 @@
 /**
- * What a submission body is allowed to say.
+ * What a submission body — and an officer's verdict on one — is allowed to say.
  *
  * Split out of the route so that "everything the server refuses to believe"
  * reads as one short file, rather than as a hundred lines wedged into the
@@ -33,6 +33,15 @@ const MAX_TITLE_LENGTH = 60;
 const MAX_GOAL_LENGTH = 120;
 
 /**
+ * A reviewer's note.
+ *
+ * Longer than a goal because it is prose to a person rather than a label on a
+ * puzzle — room to say which part of a board did not work — and far short of
+ * somewhere to paste a log.
+ */
+const MAX_NOTE_LENGTH = 500;
+
+/**
  * A line of author-written text, checked rather than repaired.
  *
  * Control characters are refused along with over-length: they cannot be typed
@@ -62,17 +71,13 @@ export function readGoal(value: unknown): string {
 }
 
 /**
- * The author's own rating — a hint for whoever reviews this, and nothing else.
+ * A rating on the one difficulty scale this repo actually enforces.
  *
- * Stored under its own name because the rating that ends up on the puzzle is
- * the reviewer's. `dailyTierOf` and `rushBand` both read a puzzle's difficulty,
- * so a self-rated number that went straight onto one would be a routing control
- * handed to the person being routed. Bounded to the one difficulty scale this
- * repo actually enforces, and not rounded to a whole number: the column is
- * REAL, and which numbers on that scale mean anything is the club's convention
- * rather than something a request should be turned away over.
+ * Not rounded to a whole number: the column is REAL, and which numbers on the
+ * scale mean anything is the club's convention rather than something a request
+ * should be turned away over.
  */
-export function readClaimedDifficulty(value: unknown): number {
+function readDifficulty(value: unknown): number {
   const valid =
     typeof value === "number" &&
     Number.isFinite(value) &&
@@ -84,6 +89,63 @@ export function readClaimedDifficulty(value: unknown): number {
     });
   }
   return value as number;
+}
+
+/**
+ * The author's own rating — a hint for whoever reviews this, and nothing else.
+ *
+ * Stored under its own name because the rating that ends up on the puzzle is
+ * the reviewer's. `dailyTierOf` and `rushBand` both read a puzzle's difficulty,
+ * so a self-rated number that went straight onto one would be a routing control
+ * handed to the person being routed.
+ */
+export function readClaimedDifficulty(value: unknown): number {
+  return readDifficulty(value);
+}
+
+/**
+ * The reviewer's rating: the one that goes on the puzzle.
+ *
+ * Same rule, its own name, because these are two different people's numbers and
+ * a call site reading `readClaimedDifficulty` on an accept body would be the
+ * bug rather than a synonym for it. Under the owner's choice of full rotation
+ * this really does route: `dailyTierOf` reads it to pick a tier and `rushBand`
+ * to place the puzzle on the ladder.
+ */
+export function readReviewedDifficulty(value: unknown): number {
+  return readDifficulty(value);
+}
+
+/**
+ * An officer's note, or null when they left the box empty.
+ *
+ * An empty string is "no note" rather than a refusal — it is what an untouched
+ * textarea sends, and turning that into a 400 would be answering a question
+ * nobody asked. That is not the "nothing repairs a body" rule bending: an
+ * absent optional field and an empty one mean the same thing, and neither is
+ * changed on the way past.
+ */
+export function readReviewerNote(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value === "string" && !value.trim()) return null;
+  return readText(value, "A note", MAX_NOTE_LENGTH);
+}
+
+/**
+ * The same note, where there has to be one.
+ *
+ * A rejection is the only thing an author ever hears back about a puzzle they
+ * wrote, and "no" with no reason is the one review outcome nobody can act on.
+ * An acceptance needs none: the puzzle appearing in the archive is the message.
+ */
+export function readRejectionNote(value: unknown): string {
+  const note = readReviewerNote(value);
+  if (!note) {
+    throw new HTTPException(400, {
+      message: "A rejection needs a reason — it is the only thing the author hears back",
+    });
+  }
+  return note;
 }
 
 /**

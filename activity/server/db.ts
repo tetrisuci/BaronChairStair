@@ -5,14 +5,19 @@
 
 import { Database } from "bun:sqlite";
 import { DAILY_TIERS, type DailyTier } from "../shared/daily";
+import type { Puzzle } from "../shared/puzzle";
 import {
+  acceptSubmission,
   countPendingSubmissions,
   insertSubmission,
+  readAcceptedPuzzles,
   readPendingSubmissions,
   readSubmission,
-  writeSubmissionDecision,
+  rejectSubmission,
+  type Acceptance,
+  type Decided,
+  type Rejection,
   type Submission,
-  type SubmissionDecision,
   type SubmissionDraft,
 } from "./submissions";
 
@@ -324,6 +329,11 @@ const RUN_COLUMNS = `
 export class Store {
   private readonly db: Database;
 
+  /**
+   * @param pastDays the rotation to write history down from, for a caller whose
+   *   archive does not come out of this database. `server/index.ts`'s does, so
+   *   it opens the store bare and calls {@link pinPastDays} once it has one.
+   */
   constructor(path: string, pastDays?: PastDays) {
     mkdirSync(dirname(path), { recursive: true });
     this.db = new Database(path, { create: true });
@@ -392,8 +402,21 @@ export class Store {
    * and nothing that would read it. Today's is pinned by `DaySchedule`'s
    * constructor rather than by the first ticket minted — see the comment
    * there, which explains the same-day restart that gap let through.
+   *
+   * **Public, and called after construction by `server/index.ts` on purpose.**
+   * The archive now loads accepted submissions out of this database, so it
+   * needs a store before it exists — and this needs an archive, because the
+   * derivation is the archive's. That cycle is broken by making the backfill a
+   * step rather than part of opening: store, then archive, then this. Deriving
+   * from a club-only archive first and rebuilding afterwards was the
+   * alternative, and it loses because the two derivations would disagree about
+   * every unplayed day the moment one puzzle had ever been accepted — pinning
+   * history from a pool the server is not actually running.
+   *
+   * Idempotent, so calling it late is not calling it twice: the guard above is
+   * on the table having any row at all.
    */
-  private pinPastDays(pastDays: PastDays): void {
+  pinPastDays(pastDays: PastDays): void {
     if (this.db.query<{ one: number }, []>("SELECT 1 AS one FROM day_puzzles LIMIT 1").get()) {
       return;
     }
@@ -1104,15 +1127,32 @@ export class Store {
   }
 
   /**
-   * Records an officer's verdict. Both decided states are terminal.
+   * Takes a puzzle into the archive, allocating its community id as it goes.
    *
-   * @returns the submission as it now stands, and whether this call is what
-   *   decided it — an already-decided row comes back untouched.
+   * Two methods rather than one `decideSubmission(id, decision)`, because the
+   * generic shape would have to take a `puzzleId` from its caller — and an id
+   * chosen outside this transaction is an id a second officer clicking Accept
+   * in the same moment can be handed too. A signature nobody can misuse beats a
+   * comment asking them not to.
    */
-  decideSubmission(
-    id: number,
-    decision: SubmissionDecision,
-  ): { submission: Submission; isFirst: boolean } {
-    return writeSubmissionDecision(this.db, id, decision);
+  acceptSubmission(id: number, accept: Acceptance): Decided {
+    return acceptSubmission(this.db, id, accept);
+  }
+
+  /** Turns one down. Both decided states are terminal. */
+  rejectSubmission(id: number, reject: Rejection): Decided {
+    return rejectSubmission(this.db, id, reject);
+  }
+
+  /**
+   * Every accepted puzzle, as the archive loads them.
+   *
+   * Answerable on a store that has only just been opened, which is what lets
+   * `server/index.ts` build the archive out of this file *and* hand the
+   * archive's derivation back for {@link pinPastDays}. See that method for the
+   * order those three steps have to happen in.
+   */
+  acceptedPuzzles(): Puzzle[] {
+    return readAcceptedPuzzles(this.db);
   }
 }

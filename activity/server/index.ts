@@ -8,8 +8,7 @@
  */
 
 import { Hono } from "hono";
-import type { Context, Next } from "hono";
-import { serveStatic } from "hono/bun";
+import type { Context } from "hono";
 import { HTTPException } from "hono/http-exception";
 import {
   decodeBoard,
@@ -38,7 +37,6 @@ import {
   mintRushTicket,
   mintSession,
   readRushTicket,
-  readSession,
   type RushTicket,
   type Session,
   verifyGuild,
@@ -56,11 +54,14 @@ import {
 import { DAILY_TIERS, type DailyTier } from "../shared/daily";
 import { PuzzleArchive } from "./puzzles";
 import {
-  readBoardShape,
-  readClaimedDifficulty,
-  readGoal,
-  readTitle,
-} from "./submission-input";
+  apiError,
+  GUEST_ID,
+  requireSession,
+  type Variables,
+} from "./http";
+import { registerReviewRoutes } from "./review-routes";
+import { registerStaticRoutes } from "./static-routes";
+import { registerSubmissionRoutes } from "./submission-routes";
 import {
   type SocketData,
   duelSocket,
@@ -83,18 +84,30 @@ const RECAP_SIZE = 100;
 const MINUTE = 60_000;
 /** A day of it: anything longer is a broken clock, not a long think. */
 const MAX_TOTAL_MS = 24 * 60 * MINUTE;
-/**
- * The one identity every guest shares.
- *
- * Named because it is a gate and not a label: anything that credits a person —
- * writing a puzzle under their name, counting what they owe a review queue —
- * has to refuse it, and a bare string repeated at each of those places is one
- * typo away from letting them all through.
- */
-const GUEST_ID = "guest";
 
-const archive = PuzzleArchive.load(config.paths.puzzles, { timeZone: config.timeZone });
-const store = new Store(config.paths.database, pastDaysOf(archive));
+/*
+ * Store, then archive, then the backfill — and that order is load-bearing.
+ *
+ * The archive used to be built first and handed to the store's constructor. It
+ * cannot be any more: accepted player submissions are part of the archive and
+ * they live in this database, so the archive needs the store. The store's
+ * backfill still needs the archive, because the derivation is the archive's.
+ * The cycle is broken by making the backfill a step of its own rather than part
+ * of opening a database — see `Store.pinPastDays`.
+ *
+ * Deriving history from a club-only archive and rebuilding afterwards was the
+ * obvious alternative, and it is wrong: the two archives disagree about every
+ * day nobody has played the moment one puzzle has ever been accepted, so the
+ * pinned history would be a pool this process is not serving from.
+ */
+const store = new Store(config.paths.database);
+const community = store.acceptedPuzzles();
+const archive = PuzzleArchive.load(
+  config.paths.puzzles,
+  { timeZone: config.timeZone },
+  community,
+);
+store.pinPastDays(pastDaysOf(archive));
 /*
  * Every "what did day N hold" below goes through here, never through the
  * archive's own derivation. The archive still derives — that is where an
@@ -106,7 +119,6 @@ const store = new Store(config.paths.database, pastDaysOf(archive));
  */
 const schedule = new DaySchedule(archive, store);
 
-type Variables = { session: Session };
 const app = new Hono<{ Variables: Variables }>();
 
 /**
@@ -137,34 +149,20 @@ app.use("/api/rush/run", rateLimit({ max: 12, windowMs: MINUTE }, callerKey));
 // caller chose rather than one of today's three. Nobody writes five puzzles a
 // minute, so this only ever costs somebody who is not writing puzzles.
 app.use("/api/submissions", rateLimit({ max: 5, windowMs: MINUTE }, callerKey));
+// Ten a minute on the exchange, knowing it may be one global bucket: `callerKey`
+// reads an address, and without a proxy setting one of the headers it looks for
+// every caller in the world shares it. What actually stands between a stranger
+// and the review queue is 256 bits of HMAC, not this line.
+app.use("/api/review/session", rateLimit({ max: 10, windowMs: MINUTE }, callerKey));
+// Accepting replays a stored solve, so it is an engine call like the two above
+// — behind a reviewer token rather than open, but a queue nobody clears at
+// thirty a minute is not a queue anybody is reading.
+app.use("/api/review/submissions/*", rateLimit({ max: 30, windowMs: MINUTE }, callerKey));
 app.use("/api/*", rateLimit({ max: 240, windowMs: MINUTE }, callerKey));
 
-app.onError((error, c) => {
-  if (error instanceof HTTPException) {
-    // An exception carrying its own Response knows best. Otherwise Hono renders
-    // the message as plain text, which every caller here reads as JSON and
-    // reports as a bare "Request failed (409)" — so the one sentence explaining
-    // what went wrong never reaches the player who needed it.
-    return error.res ?? c.json({ error: error.message }, error.status);
-  }
-  if (error instanceof AuthError) {
-    return c.json({ error: error.message }, error.status as 401);
-  }
-  // A malformed run is a bad request, not a server fault; saying so keeps real
-  // faults visible in the log instead of drowning in client bugs.
-  if (error instanceof InvalidRunError) return c.json({ error: error.message }, 400);
-  console.error("[puzzle]", error);
-  return c.json({ error: "Something went wrong on the server" }, 500);
-});
+app.onError(apiError);
 
 // ── Auth ─────────────────────────────────────────────────────────────────────
-
-async function requireSession(c: Context<{ Variables: Variables }>, next: Next) {
-  const header = c.req.header("Authorization") ?? "";
-  const token = header.startsWith("Bearer ") ? header.slice("Bearer ".length) : undefined;
-  c.set("session", await readSession(token));
-  await next();
-}
 
 app.get("/api/config", (c) =>
   c.json({
@@ -859,150 +857,21 @@ app.get("/api/rush/leaderboard", requireSession, (c) => {
   });
 });
 
-// ── Player submissions ───────────────────────────────────────────────────────
+// ── Player submissions and review ────────────────────────────────────────────
 
-/**
- * How many puzzles one player may have waiting at once.
+/*
+ * Both registered here rather than declared here, and both above the `/api/*`
+ * catch-all below: a route added after it is dead code that answers 404, and
+ * one added after the static handler answers 200 with the game.
  *
- * Three: about what somebody writes in a sitting, and comfortably more than a
- * reviewer clears in one. The cap is there to stop a queue nobody can get
- * through, not to ration authors — a decision frees the slot again, so a
- * rejection is never a door closing.
- *
- * It is also the only bound that can tell two players apart. `callerKey`
- * deliberately never reads the Authorization header (see `limits.ts`), so the
- * rate limiter registered at the top of this file counts addresses — and inside
- * Discord a whole server can arrive through one proxy address, which makes it
- * both too generous for one player and too harsh for everybody else.
+ * They moved into files of their own because this one had passed a thousand
+ * lines with a review GUI still to come. `server/http.ts` holds the two things
+ * a route module cannot invent for itself — the `Variables` shape and the error
+ * mapping — so a route reads there exactly as it read here, and the rate limits
+ * stay above with the rest of the stack rather than scattering with them.
  */
-const MAX_PENDING_SUBMISSIONS = 3;
-
-/**
- * Files a puzzle a player wrote.
- *
- * Every other route in this file rests on the invariant stated above
- * `readTier`: a client names a tier, never a puzzle, so a log filed against the
- * wrong board simply fails to solve it. This route inverts that — the board,
- * the queue and the hold all come from the body — so replaying proves only
- * "this log solves the board the same person sent". That is still exactly the
- * right property, because the two things the server must never take on trust
- * are derived from the replay and from the session:
- *
- * - `targetAttack` is the bar every other player is then scored against
- *   (`meetsTarget`). A number the body carried is a number nobody had to earn,
- *   and the specific number the builder would send is poison: a draft whose
- *   goal names no attack figure carries `NO_TARGET`, which is
- *   `MAX_SAFE_INTEGER`, and `assertValid` checks only `targetAttack > 0` — a
- *   permanently unsolvable puzzle that every gate in this codebase waves
- *   through.
- * - `solution` is the answer key `/api/archive/:id` hands out. It has to be a
- *   list of placements the engine produced, not a list somebody typed.
- * - the author is `session.player`, never the body.
- *
- * What that target *means* is not what an archive target means, and the two
- * must not be quietly mixed. `tools/build-puzzles.ts` derives its target with
- * `replayPlacements`, which tries every kick route per placement and keeps the
- * best line; this one comes from `verifyRun`, which replays the keystrokes
- * somebody actually made. So a community puzzle's target is what its author
- * *did* — provably human-achievable, and beatable — where an archive target
- * usually is not. There is no column recording that: every row in `submissions`
- * is a played target by construction, and a column holding one constant value
- * is not a record, it is a field waiting to disagree with the code. The review
- * screen is where it has to be said out loud, in words, to the officer.
- *
- * The trust inversion has a second cost: this is the only route where the
- * caller picks the board the engine replays. The tighter rate limit at the top
- * of this file and the two bounds in `readBoardShape` are what pay for it.
- */
-app.post("/api/submissions", requireSession, async (c) => {
-  const session = c.get("session");
-  // Every guest is the same player, so a guest submission has no author to
-  // credit, and a quota keyed on `player_id` that all of them share. Guest play
-  // is off in production by construction, but local and end-to-end play is
-  // exactly where this route gets exercised.
-  if (session.player.id === GUEST_ID) {
-    throw new HTTPException(403, {
-      message: "A guest has no name to put on a puzzle — sign in through Discord to submit one",
-    });
-  }
-
-  const body = await readJsonBody(c);
-
-  // Everything cheap first, and the quota before the engine: replaying is what
-  // this route costs, and a player who is already over their limit must not be
-  // able to spend the server's time finding that out.
-  const title = readTitle(body.title);
-  const goal = readGoal(body.goal);
-  const claimedDifficulty = readClaimedDifficulty(body.claimedDifficulty);
-  const shape = readBoardShape(body);
-
-  const waiting = store.pendingSubmissionCount(session.player.id);
-  if (waiting >= MAX_PENDING_SUBMISSIONS) {
-    // 409 and not 429: waiting a minute does not help, and a limiter's
-    // Retry-After would promise that it does. What clears this is an officer.
-    throw new HTTPException(409, {
-      message: `You have ${waiting} puzzles waiting for review — an officer has to look at those first`,
-    });
-  }
-
-  const handling = sanitizeHandling(body.handling);
-  const events = parseInputLog(body.events);
-  if (events.length === 0) {
-    throw new HTTPException(400, {
-      message: "Play your own puzzle first — a submission ships with the solve you made",
-    });
-  }
-
-  const verified = verifyRun(
-    { board: decodeBoard(shape.board, ENGINE_ROWS), queue: shape.queue, hold: shape.hold },
-    handling,
-    events,
-  );
-  // Most specific refusal first. A board with no room in it also sends no
-  // attack, and a player told only the second would go looking for a bigger
-  // clear on a puzzle that has nowhere to put a piece.
-  if (verified.toppedOut) {
-    throw new HTTPException(400, {
-      message: "Your solve topped out — a puzzle has to be survivable",
-    });
-  }
-  if (verified.attack === 0) {
-    throw new HTTPException(400, {
-      message: "Your solve sends no attack — there is nothing to score",
-    });
-  }
-
-  const submission = store.recordSubmission({
-    player: session.player,
-    guildId: session.guildId,
-    title,
-    goal,
-    claimedDifficulty,
-    ...shape,
-    targetAttack: verified.attack,
-    // `VerifiedPlacement` is a `SolutionStep` plus the frame it locked on, and
-    // the frame is the author's timing rather than part of the answer. Dropped
-    // here rather than at the reveal, so there is only one place it can leak.
-    solution: verified.placements.map(({ frame: _frame, ...step }) => step),
-    events,
-    handling,
-    piecesPlaced: verified.placements.length,
-    clears: verified.clears,
-  });
-
-  return c.json({
-    ok: true,
-    submissionId: submission.submissionId,
-    // What the server saw, so the builder can report that rather than its own
-    // reading of the same run. The two disagreeing is the one thing a player
-    // has no way to debug from the outside.
-    verified: {
-      attack: verified.attack,
-      clears: verified.clears,
-      piecesPlaced: verified.placements.length,
-    },
-  });
-});
+registerSubmissionRoutes(app, store);
+registerReviewRoutes(app, { secret: config.reviewSecret, store });
 
 // ── Static client ────────────────────────────────────────────────────────────
 
@@ -1010,32 +879,47 @@ app.post("/api/submissions", requireSession, async (c) => {
 // be turned away here or a typo'd endpoint answers 200 with a web page.
 app.all("/api/*", (c) => c.json({ error: `No such endpoint: ${c.req.path}` }, 404));
 
-// Any real file in the build — bundles, fonts, icons — is served as itself;
-// `serveStatic` falls through when the path does not exist, so unknown routes
-// still reach the single-page fallback below.
-const buildRoot = relativeTo(config.paths.clientBuild);
-app.use("*", serveStatic({ root: buildRoot }));
-app.get("*", serveStatic({ path: `${buildRoot}/index.html` }));
+// Both pages in the build, and the headers the review one needs. Registered
+// from a module of its own so a test can point a build root at a fixture: the
+// activity and the review tool come out of the same `dist`, and "/review served
+// the game" is a silent success rather than an error.
+registerStaticRoutes(app, relativeTo(config.paths.clientBuild));
 
 /**
- * `serveStatic` resolves against the process working directory, so the build
- * has to be expressed relative to it. A deployment started from somewhere else
- * entirely would serve nothing silently, so say so at startup instead.
+ * `serveStatic` resolves against the process working directory, so a build
+ * inside it is expressed relative to it.
+ *
+ * An absolute root works too — `registerStaticRoutes` passes `root` and `path`
+ * separately for exactly that reason — so this is a note, not a failure. What
+ * it costs is that the process is then pinned to one checkout rather than to
+ * wherever it was started, which is worth saying once at boot and is the only
+ * thing left to say: `warnAboutMissingPages` covers the case where the files
+ * genuinely are not there, and that is the warning an operator can act on.
+ *
+ * It used to end "or the page will not load", which stopped being true when the
+ * single-page fallback started passing `path` rather than a joined string. A
+ * warning nobody can act on is worse than none: it teaches the operator to
+ * ignore the log the real warning is printed to.
  */
 function relativeTo(absolute: string): string {
   const cwd = `${process.cwd()}/`;
   if (absolute.startsWith(cwd)) return absolute.slice(cwd.length);
   console.warn(
-    `[puzzle] the client build at ${absolute} is outside the working directory ` +
-      `${process.cwd()} — start the server from the activity directory, or the ` +
-      "page will not load.",
+    `[puzzle] serving the client build from ${absolute}, which is outside the ` +
+      `working directory ${process.cwd()} — it will load, but this process is ` +
+      "pinned to that checkout.",
   );
   return absolute;
 }
 
 console.log(
   `puzzle — day ${archive.currentDay()}, ` +
-    `${archive.puzzles.length} puzzles, resetting at midnight ${config.timeZone}, ` +
+    `${archive.puzzles.length} puzzles` +
+    // Said at startup because this is the only moment it is ever answered. An
+    // accepted puzzle joins the archive here and nowhere else, so a restart
+    // that did not pick one up looks exactly like a restart that did.
+    (community.length > 0 ? ` (${community.length} from players)` : "") +
+    `, resetting at midnight ${config.timeZone}, ` +
     `listening on :${config.port}` +
     (config.allowGuestPlay ? " (guest play enabled)" : ""),
 );

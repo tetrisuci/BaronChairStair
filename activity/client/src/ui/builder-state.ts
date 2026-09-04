@@ -1,8 +1,9 @@
 /**
- * The puzzle builder's model: a board, a queue, a hold and a goal, and the two
- * conversions to and from a `b1@…` blueprint code.
+ * The puzzle builder's model: a board, a queue, a hold, a goal, a title and a
+ * rating, and the conversions out of it — to a `b1@…` blueprint code and back,
+ * to a puzzle the engine plays, and to the body a submission is filed as.
  *
- * Two facts a reader will otherwise hunt for:
+ * Three facts a reader will otherwise hunt for:
  *
  * 1. **Coordinates are blueprint's, not the renderer's.** `y` grows upward and
  *    row 0 is the floor. Cells are keyed by the row-major index `y * COLUMNS +
@@ -13,12 +14,17 @@
  *    writes no SetPiece opcode, so every builder code decodes with `piece:
  *    null`, and `tools/build-puzzles.ts` requires an active piece. The output is
  *    a code to paste into blueprint or the club's sheet, not a pipeline input.
+ * 3. **The title and the rating are not in the code.** A blueprint page carries
+ *    a board, a queue, a hold and one free-text comment, and that comment *is*
+ *    the goal — so those two fields exist for a submission and nothing else,
+ *    and `fromPage` has nowhere to read them back from.
  */
 
 import type { BlueprintPage } from "@shared/blueprint/decode";
 import { BlueprintDecodeError, decodeBlueprint } from "@shared/blueprint/decode";
 import { type BlueprintCell, encodeBlueprint } from "@shared/blueprint/encode";
 import { COLUMNS, ROWS, type PieceType } from "@shared/blueprint/playfield";
+import { MAX_DIFFICULTY, MIN_DIFFICULTY } from "@shared/archive-filter";
 import {
   BOARD_HEIGHT,
   type BoardCell,
@@ -27,6 +33,9 @@ import {
   type PuzzlePrompt,
   type RowCode,
 } from "@shared/puzzle";
+import type { Handling } from "@shared/tetris/handling";
+import type { InputEvent } from "@shared/tetris/verify";
+import type { RunSnapshot } from "../game/runner";
 
 /** What a cell can hold. `u` is the wall outside the field and is never painted. */
 export type PaintedCell = PieceType | "g";
@@ -38,6 +47,17 @@ export interface BuilderState {
   readonly queue: readonly PieceType[];
   readonly hold: PieceType | null;
   readonly goal: string;
+  /** What the puzzle is called. Required by a submission, absent from the code. */
+  readonly title: string;
+  /**
+   * The author's own 1–20 estimate of how hard this is.
+   *
+   * A hint for whoever reviews it and nothing more: `dailyTierOf` and `rushBand`
+   * both route a puzzle by its difficulty, so the rating that ends up on the
+   * archived puzzle is the reviewer's. The server files this one under
+   * `claimed_difficulty` for exactly that reason.
+   */
+  readonly difficulty: number;
 }
 
 /** Twenty. The app cannot draw a taller board than it plays on. */
@@ -46,6 +66,25 @@ export const MAX_ROWS = BOARD_HEIGHT;
 export const MAX_QUEUE = 80;
 /** The archive's longest goal is 115 characters. */
 export const MAX_GOAL = 120;
+/**
+ * Sixty, which is the cap `server/submission-input.ts` refuses a title past.
+ *
+ * Written out here rather than imported from the server, the same trade that
+ * file makes in the other direction over `MAX_GOAL`: one number in two places
+ * costs less than a browser module in the request path or a server module in
+ * the bundle. The two are pinned together by the route's own tests.
+ */
+export const MAX_TITLE = 60;
+/**
+ * Where the difficulty control starts.
+ *
+ * Six, the median rating across the archive's 131 rated puzzles — so a control
+ * nobody moves lands where most puzzles actually sit. The alternatives were both
+ * worse: starting at 1 files every unconsidered draft as the easiest thing in
+ * the list, and starting blank makes a required field out of a number the
+ * reviewer is going to overrule anyway.
+ */
+export const DEFAULT_DIFFICULTY = 6;
 export const HISTORY_LIMIT = 40;
 
 /**
@@ -54,7 +93,14 @@ export const HISTORY_LIMIT = 40;
  */
 export const PALETTE: readonly Paint[] = ["g", "I", "J", "L", "O", "S", "T", "Z", "erase"];
 
-export const EMPTY_STATE: BuilderState = { cells: new Map(), queue: [], hold: null, goal: "" };
+export const EMPTY_STATE: BuilderState = {
+  cells: new Map(),
+  queue: [],
+  hold: null,
+  goal: "",
+  title: "",
+  difficulty: DEFAULT_DIFFICULTY,
+};
 
 const PIECE_LETTERS: ReadonlySet<string> = new Set(["I", "J", "L", "O", "S", "T", "Z"]);
 
@@ -162,6 +208,47 @@ function foldGoalText(text: string): string {
  */
 export function sanitizeGoal(text: string): string {
   return foldGoalText(text).slice(0, MAX_GOAL);
+}
+
+/** C0 and DEL: typeable by nobody, pasteable by anybody. */
+const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/g;
+
+/**
+ * What the title field is allowed to hold.
+ *
+ * The same code-page fold the goal gets, for a different reason. A title never
+ * enters a blueprint code, so nothing here is about the format — it is about
+ * `POST /api/submissions`, which *refuses* a title that is too long or holds
+ * control characters rather than repairing one, on the stated grounds that the
+ * builder has already applied its limits. Folding at the field is what makes
+ * that true: the author sees what will be filed, instead of being turned away
+ * at the end over a character they cannot see.
+ *
+ * Control characters are dropped here and not in `foldGoalText`, which keeps
+ * everything under 128 — widening that fold would quietly change what a goal
+ * encodes into a blueprint comment, and the two fields have different readers.
+ */
+export function sanitizeTitle(text: string): string {
+  return foldGoalText(text).replace(CONTROL_CHARACTERS, "").slice(0, MAX_TITLE);
+}
+
+/**
+ * The author's estimate, held to the one difficulty scale this repo enforces.
+ *
+ * Clamped rather than refused, the way `withGoalAttack` clamps: the control is a
+ * number box carrying its own min and max, so a value outside the scale is a
+ * paste or a typo, and answering a typo by disabling Submit would put a refusal
+ * on the one field that cannot stay wrong. Rounded because every rating in the
+ * archive is a whole number, though the column is REAL and the route does not
+ * insist.
+ *
+ * The scale is `archive-filter`'s 1–20 and not the 1–10 the sheets talk in:
+ * the archive really does contain a 20, and a control that stopped at 10 could
+ * not describe a puzzle already on the list.
+ */
+export function clampDifficulty(value: number): number {
+  if (!Number.isFinite(value)) return DEFAULT_DIFFICULTY;
+  return clamp(MIN_DIFFICULTY, Math.round(value), MAX_DIFFICULTY);
 }
 
 // ── The goal, as counts rather than a sentence ───────────────────────────────
@@ -409,6 +496,13 @@ export function fromPage(page: BlueprintPage): BuilderState {
     queue: previewsOf(page).slice(0, MAX_QUEUE),
     hold: page.queue.hold,
     goal: sanitizeGoal(page.comment.trim()),
+    // A page has no title and no rating to give back, and carrying over the
+    // ones on screen would put the last puzzle's name on a board that has just
+    // arrived from somewhere else. A load is a different puzzle, so it starts
+    // unnamed and unrated — and `commit(…, "everything")` means undoing the
+    // load brings the author's own two fields back with it.
+    title: "",
+    difficulty: DEFAULT_DIFFICULTY,
   };
 }
 
@@ -552,10 +646,12 @@ export function testBlocker(state: BuilderState): string | null {
  * The board, the queue and the hold are the whole of what `toPuzzle` gives the
  * engine, so a run recorded against one of two states this calls the same is a
  * run of the other as well. Everything else a draft carries is deliberately not
- * read: the goal says what the puzzle *asks* for, not what was played, and
- * rewording a sentence must not throw away the run made under it — the builder
- * offers to write a run's own attack into that sentence the moment the test
- * ends, which would otherwise destroy the run it is describing.
+ * read: the goal, the title and the rating say what the puzzle asks for and
+ * what it is called, never what was played, and rewording a sentence must not
+ * throw away the run made under it — the builder offers to write a run's own
+ * attack into that sentence the moment the test ends, which would otherwise
+ * destroy the run it is describing. Naming a puzzle after solving it is the
+ * same move and has to survive the same way.
  *
  * Written out rather than left to a comparison of two `toPuzzle` outputs:
  * `toPuzzle` reads the goal for its target, so two drafts that play identically
@@ -637,5 +733,157 @@ export function toPuzzle(state: BuilderState): PuzzlePrompt {
     queue: [...state.queue],
     hold: state.hold,
     targetAttack: attack > 0 ? attack : NO_TARGET,
+  };
+}
+
+// ── The draft as something to send ──────────────────────────────────────────
+
+/**
+ * A run of the draft, kept for as long as it is still a run of *this* draft.
+ *
+ * A puzzle written here has no reference solution and no honest target until
+ * somebody plays it, so the run the author made is the whole of what a
+ * submission is built from: the server replays this log and derives both from
+ * what it sees, rather than believing anything the browser says about them.
+ * Nothing in here is trusted at the far end — but without it there is nothing
+ * to send, which is why the end of a test run is no longer just its last frame.
+ *
+ * It lives in the model rather than in `builder.ts` because `submitBlocker` and
+ * `toSubmission` both read it, and a type that a pure function takes has no
+ * business being defined in the file that draws the screen.
+ */
+export interface BuilderSolve {
+  /** What the author was shown for the run: attack, clears, pieces placed. */
+  readonly snapshot: RunSnapshot;
+  readonly events: readonly InputEvent[];
+  /**
+   * The controls the log was typed under, frozen with it.
+   *
+   * One log read under two handlings is two different games, so the pair
+   * travels together or the server replays a run nobody played.
+   */
+  readonly handling: Handling;
+}
+
+/**
+ * The one thing standing between this draft and the review queue, or nothing.
+ *
+ * One at a time and in this order, the same convention `warningFor` states: a
+ * list of everything wrong with a half-finished puzzle is read once and ignored
+ * after that, and the order is what makes the single line the next thing to do.
+ * Cheap fixes come before the expensive one, so the last refusal an author ever
+ * sees is "play it yourself" — which is the bar this whole feature exists to
+ * set, and not something to be told while three text fields are still empty.
+ *
+ * Every one of these mirrors a rule `POST /api/submissions` enforces too — a
+ * tall board and a full row in `readBoardShape`, an empty queue in
+ * `boardProblem` beneath it, the goal and the title in `readText`, an empty log
+ * in the route itself — and that is deliberate rather than duplicated by
+ * accident. The route refuses a body outside its bounds instead of repairing
+ * it, on the stated grounds that the builder has applied its limits already; so
+ * saying it here first is what keeps a refusal in front of the author while the
+ * draft is still on the screen and still theirs to fix, rather than at the end
+ * of a round trip that has already spent their run. `pipeline.test.ts` holds
+ * the two halves against each other so neither can drift alone.
+ *
+ * What is *not* in here: whether the puzzle is any good, and whether the author
+ * is signed in. The first is the reviewer's job and nothing static can guess at
+ * it. The second is a fact about the session rather than about the draft, so it
+ * belongs to the screen — see `builder.ts`.
+ */
+export function submitBlocker(state: BuilderState, solve: BuilderSolve | null): string | null {
+  const hidden = hiddenCellCount(state);
+  if (hidden > 0) {
+    // First, as in `warningFor`, and a block rather than a warning here: a
+    // reviewer judges the twenty rows this app draws, so cells above them make
+    // the puzzle on the review page a different puzzle from the one that ships.
+    // `readBoardShape` refuses a board taller than twenty for the same reason.
+    const cells = hidden === 1 ? "1 cell" : `${hidden} cells`;
+    return (
+      `${cells} above the ${MAX_ROWS} rows on screen would not be part of what a ` +
+      "reviewer judges. Clear board is what removes them."
+    );
+  }
+
+  // Delegated rather than restated: a draft the engine cannot deal is a draft
+  // nobody can have solved, and "there is nothing to place" is still the next
+  // thing to do about it. Two copies of one rule is two chances to drift.
+  const unplayable = testBlocker(state);
+  if (unplayable) return unplayable;
+
+  const fullRow = lowestFullRow(state);
+  if (fullRow !== null) {
+    // `readBoardShape` refuses this outright, so saying it here is a kindness
+    // rather than a second rule: the same draft would come back a 400 with the
+    // author's run already spent on it. `warningFor` only mentions it, which is
+    // right for a code somebody is going to paste elsewhere and wrong for one
+    // about to be scored — the row clears on the first lock wherever the piece
+    // lands, and that attack lands in the target nobody designed.
+    return (
+      `Row ${fullRow + 1} is already full. It clears on the first lock, and that ` +
+      "attack would go into the target every other player is set."
+    );
+  }
+
+  if (state.goal.trim() === "") {
+    return "Say what the goal is — it is all a player is told about your puzzle.";
+  }
+  if (state.title.trim() === "") {
+    return "Give it a title, so it can be told from every other puzzle in the archive.";
+  }
+  if (!solve) {
+    // Last, and the only one that costs more than a sentence to fix. The words
+    // are the route's own, because this is the rule the route exists to hold:
+    // there is nothing honest to put in `targetAttack` for a board nobody has
+    // played, and a target nobody earned is a bar everyone else is scored on.
+    return "Play it yourself first — a submission ships with the solve you made.";
+  }
+  return null;
+}
+
+/**
+ * What the browser sends to `POST /api/submissions`.
+ *
+ * A sibling of `toPuzzle` and not a widening of it, for two separate reasons.
+ * `toPuzzle`'s output is pinned by `pipeline.test.ts` and read by `app.ts` for
+ * its `NO_TARGET`, so it is not free to change shape; and what a submission
+ * must *not* carry is the whole point of the route. There is no `targetAttack`
+ * here, no `id`, no `author` and no `solution` — every one of those is the
+ * server's to derive from the log, and the specific number `toPuzzle` would
+ * have handed over is poison: `NO_TARGET` is `MAX_SAFE_INTEGER`, which
+ * `assertValid` waves through as a puzzle nobody can ever solve.
+ */
+export interface SubmissionBody {
+  readonly title: string;
+  readonly goal: string;
+  /** The author's estimate. `claimed_difficulty` at the far end, and advisory. */
+  readonly claimedDifficulty: number;
+  readonly board: readonly RowCode[];
+  readonly queue: readonly PieceType[];
+  readonly hold: PieceType | null;
+  readonly handling: Handling;
+  readonly events: readonly InputEvent[];
+}
+
+/**
+ * The draft and the run made on it, as one body.
+ *
+ * The board comes through `draftBoard`, the same conversion a test plays, so
+ * the log being sent alongside it was recorded against exactly these rows —
+ * which is what makes the server's replay mean anything. The handling travels
+ * from the solve rather than from the current settings for the same reason: an
+ * author who opens the settings between the last piece and Submit would
+ * otherwise have their run replayed under controls they never played it with.
+ */
+export function toSubmission(state: BuilderState, solve: BuilderSolve): SubmissionBody {
+  return {
+    title: state.title.trim(),
+    goal: state.goal.trim(),
+    claimedDifficulty: clampDifficulty(state.difficulty),
+    board: draftBoard(state),
+    queue: [...state.queue],
+    hold: state.hold,
+    handling: solve.handling,
+    events: solve.events,
   };
 }

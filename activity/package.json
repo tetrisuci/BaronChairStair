@@ -6,6 +6,7 @@
   "description": "Daily modern-Tetris puzzle, playable as a Discord Activity.",
   "scripts": {
     "puzzles": "bun run tools/build-puzzles.ts",
+    "review-link": "bun run tools/review-link.ts",
     "dev": "bun run --hot server/index.ts",
     "dev:client": "vite",
     "build": "vite build",

@@ -411,6 +411,168 @@ being quietly dropped — Copy would otherwise hand back a smaller puzzle than
 the one that was pasted in — and the warning line says how many there are and
 that Clear board is what removes them.
 
+## Letting an officer at the review queue
+
+A puzzle a player submits from the builder lands in `submissions` with
+`status = 'pending'`, and an officer decides it at `/review`.
+
+**Set `REVIEW_SECRET` or the door is not there.** Unset, `/api/review/*` answers
+`404 Review access is not enabled` — switched off rather than left open, the
+same stance `BOT_API_KEY` takes for the bot routes. It is deliberately not a
+required secret, so pulling this change does not stop an existing deployment
+from booting.
+
+**It is its own secret and must stay that way.** Nothing in this repo can revoke
+one issued link: there is no denylist, no `jti` and no used-token table, so the
+only revocation is rotating the key and restarting. Signed with
+`SESSION_SECRET`, that single act would also sign out every player and
+invalidate every open rush ticket — and a rush ticket is the only record that a
+rush is in progress, so rotating would destroy runs mid-flight. With its own
+secret, "kill every review link" costs one `unset` and a restart and no player
+notices.
+
+**Minting a link.** On the VPS, from `activity/`:
+
+```sh
+bun run review-link -- hannah              # 15 minutes
+bun run review-link -- hannah --minutes 5
+```
+
+It signs a string, prints it and exits — it never opens the database, because
+constructing a `Store` runs the schema and a table rebuild on every
+construction and nothing in this repo sets `busy_timeout`, so a second writer
+against the live WAL file fails instantly rather than waiting. It reads
+`REVIEW_SECRET` straight out of the environment for the same kind of reason:
+`server/config.ts` throws at import under `NODE_ENV=production` unless the whole
+production environment is present, which is not a thing a one-off command should
+depend on.
+
+**What the link is worth.** Whoever holds it is the reviewer — it is a bearer
+capability with nothing written down behind it. The link itself lasts fifteen
+minutes, and the page trades it once, in a POST body, for a two-hour token that
+never appears in a URL. Those two windows add up rather than overlap: a link
+spent in its last second still buys a full sitting, so the worst case is fifteen
+minutes plus two hours. Send it in a DM, not a channel. That token is what every
+review call carries, and when it runs out the officer asks for another link.
+
+**The trust root is SSH, and the audit column says so.** `<who>` is typed by
+whoever ran the command and lands in `submissions.reviewed_by`. Nothing
+validates it. The person who can run this is the person with a shell on the box,
+and that — not the string — is the authentication. Discord OAuth plus a role
+check is the real answer, and it becomes worth its cost when more than about
+three people review, or when reviewers change over time.
+
+## The review page
+
+`/review` is a second page out of the same build — `client/review/`, its own
+Vite entry — and not a mode of the activity. It is opened in an ordinary
+browser tab, outside Discord, by whoever the link was sent to.
+
+**The reviewer sees what they are judging.** The board is drawn by the same
+`BoardRenderer` the game uses and the solve is stepped by `SolutionPlayer`,
+which locks each stored placement into a board copy and clears full rows
+itself — no engine, no second board renderer. Beside the goal sentence is the
+list of clears the author's solve actually made, because that pairing is the
+only goal check that ever happens: there is no goal checker on the server, and
+most goals are prose. The attack is labelled as the author's own solve rather
+than as a target, since a community target is what a person really did —
+reachable and beatable — where an archive target is the best line a pathfinder
+could find.
+
+**The token is held in a variable and nowhere else** — never `localStorage`,
+never `sessionStorage`, never a cookie. A cookie would manufacture CSRF in a
+codebase that has no answer to one: there are no cookies anywhere here, no
+`SameSite` configuration, no CORS middleware and no Origin check, which is
+exactly why nothing needs a CSRF token today. Authentication is a header a
+browser never attaches by itself, so a cross-site POST arrives unauthenticated
+and Accept and Reject cannot be reached from another origin. The link is taken
+out of the address bar with `replaceState` before the first request goes out,
+and the page renders no outbound links at all, so the token never rides out in
+a `Referer`. A refresh signs you out, which is the intended lifetime.
+
+**Two things to check after a deploy**, because the ways this page goes wrong
+are all silent successes — a 200 with the game on it:
+
+```sh
+curl -sI "$HOST/review/" | grep -i -e content-type -e x-frame-options
+curl -s  "$HOST/review/" | grep -o '<title>[^<]*'   # Review queue — Daily Tetris
+```
+
+`dist` is gitignored, so the ordinary cause is a deploy that skipped `bun run
+build`; the server says so at start-up when a page the build should have
+produced is missing. The other cause is structural and is why the entry lives
+at `client/review/index.html`: Hono's static middleware appends `index.html`
+only for a directory and never tries `<path>.html`, so a flat `dist/review.html`
+would fall through to the single-page fallback and answer `/review` with the
+Tetris game. `tests/review-page.test.ts` builds both arrangements and drives
+them.
+
+## Deciding a submission
+
+The page does this with two buttons. The same two routes, behind the review
+token, for an officer with `curl`:
+
+```sh
+curl -sX POST "$HOST/api/review/submissions/7/accept" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"difficulty": 6, "note": "Lovely little opener."}'
+
+curl -sX POST "$HOST/api/review/submissions/7/reject" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"note": "The solve does not fit this board — resubmit from the one you played."}'
+```
+
+**Both are terminal, and the second officer is told so.** `WHERE status =
+'pending'` on the write is what makes that true rather than polite: two links can
+be out at once and nothing coordinates them, so without it the second click
+would overwrite the first one's note, rating and allocated id and still look
+like a clean decision. A second attempt answers `409` naming who got there
+first.
+
+**Accept's note is optional; reject's is not.** A rejection is the only thing
+the author ever hears back about a puzzle they wrote. An acceptance needs no
+note because the puzzle turning up in the archive is the message.
+
+**The reviewer's difficulty is the one that counts**, and under full rotation it
+routes: `dailyTierOf` reads it to pick which of the day's three a puzzle can be,
+and `rushBand` to place it on the ladder. The author's own rating is kept beside
+it as `claimed_difficulty` and is a hint, never a control — a self-rated field
+that routed would hand the person being routed the switch.
+
+**Accepting replays the stored solve first.** The row keeps the author's input
+log next to the solution derived from it, and accepting re-runs that log against
+the stored board and refuses unless the attack *and* the piece count still match
+what is written down. That is the only thing standing between a stale log — play
+the puzzle, paint one more cell, submit — and an archive entry whose target
+nobody can reach and whose reveal plays a line that does not work. Nothing else
+would catch it: the shape check does not look at solutions and says so.
+
+**Accepted puzzles are ids 100000 and up, allocated at accept.** The club sheet
+runs 1–140 with gaps and keeps allocating, so the band keeps the two allocators
+from ever having to know about each other; the number comes from the current
+maximum inside the same transaction as the write, so an id is never issued twice
+and never reused. Do not renumber the sheet into the band — the archive refuses
+to load at all if two puzzles claim one id, which is the loud version of a
+failure that is otherwise silent and unrecoverable (the archive keys by id, so
+one copy wins every lookup while both stay in the rotation, and `runs.puzzle_id`
+has no foreign key to notice two puzzles' history merging).
+
+**A puzzle becomes playable at the next restart, not at accept.** The archive is
+loaded once at module scope and never reloaded, deliberately: an archive that
+grew mid-day would re-deal a day underneath the players holding its prompt. The
+startup banner says how many of the puzzles came from players, so a restart that
+did not pick one up does not look like a restart that did.
+
+**Growing the archive does not move a day anybody has played.** It moves almost
+every one of them in the raw derivation — one extra easy-band puzzle re-deals
+the easy puzzle for most days ever played, and one extra rush-eligible puzzle
+moves 38 of the 40 slots in every stack. `day_puzzles` and `day_rush` are what
+hold history still: a day is derived once, the first time anybody asks, and
+written down. Days that have not arrived yet are deliberately not written down,
+and that floating edge is what "joins the rotation" means.
+Pinned by `tests/review-decide.test.ts`, which accepts a submission, restarts,
+and checks every finished day and every pinned rush pool against what they were.
+
 ## Placing a piece
 
 **Only a hard drop places a piece.** There is no lock delay and no limit on

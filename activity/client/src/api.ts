@@ -7,7 +7,7 @@
  */
 
 import type { DailyTier } from "@shared/daily";
-import type { ClearName, PuzzlePrompt, SolutionStep } from "@shared/puzzle";
+import type { ClearName, Mino, PuzzlePrompt, RowCode, SolutionStep } from "@shared/puzzle";
 
 export interface PlayerProfile {
   readonly id: string;
@@ -137,6 +137,27 @@ export interface ArchiveEntry {
   readonly set: string | null;
   readonly pieces: number;
   readonly targetAttack: number;
+  /** Whether a player wrote it and an officer accepted it. */
+  readonly community: boolean;
+}
+
+/**
+ * The receipt for a filed puzzle.
+ *
+ * `verified` is the server's own reading of the log that was sent, and the only
+ * one that counts: `attack` becomes the target every later player is scored
+ * against. It comes back rather than being assumed because the builder's number
+ * and the server's disagreeing is the one failure an author cannot investigate
+ * from their side of the wire.
+ */
+export interface PuzzleSubmitResponse {
+  readonly ok: true;
+  readonly submissionId: number;
+  readonly verified: {
+    readonly attack: number;
+    readonly clears: readonly ClearName[];
+    readonly piecesPlaced: number;
+  };
 }
 
 export class ApiError extends Error {
@@ -254,6 +275,29 @@ export class Api {
     skipsUsed: number;
   }): Promise<RushSubmitResponse> {
     return this.request("/api/rush/run", { method: "POST", body: JSON.stringify(body) });
+  }
+
+  /**
+   * Files a puzzle the player wrote, with the run they made on it.
+   *
+   * What is absent is the point. No `targetAttack`, no `id`, no `author` and no
+   * `solution`: the server derives all four — the first two from replaying
+   * `events` against the board beside them, the rest from the session — because
+   * a target nobody earned is a bar every other player is then scored on. The
+   * builder compiles this body in `toSubmission` and never fills those in.
+   */
+  submitPuzzle(body: {
+    title: string;
+    goal: string;
+    /** The author's own 1–20 estimate. Advisory; the reviewer sets the real one. */
+    claimedDifficulty: number;
+    board: readonly RowCode[];
+    queue: readonly Mino[];
+    hold: Mino | null;
+    handling: unknown;
+    events: unknown;
+  }): Promise<PuzzleSubmitResponse> {
+    return this.request("/api/submissions", { method: "POST", body: JSON.stringify(body) });
   }
 
   rushLeaderboard(): Promise<{ day: number; entries: readonly RushRun[] }> {

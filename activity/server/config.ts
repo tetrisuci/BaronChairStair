@@ -93,6 +93,25 @@ export const config = {
    * Unset means the bot endpoints are switched off rather than left open.
    */
   botApiKey: process.env.BOT_API_KEY ?? "",
+  /**
+   * Signs the links that let an officer into the review queue.
+   *
+   * Its own secret, and emphatically not `SESSION_SECRET`. There is no
+   * denylist, no `jti` and no used-token table anywhere in this repo, so the
+   * only way to kill a leaked review link is to rotate the key that signed it
+   * and restart. Signed with the session key, that one act would sign out every
+   * player *and* invalidate every open rush ticket — and a rush ticket is the
+   * only record that a rush is in progress, so rotating would destroy runs
+   * mid-flight. With this, killing every review link is `unset REVIEW_SECRET`
+   * and a restart, and no player notices.
+   *
+   * Unset switches the review routes off entirely — 404, the stance
+   * `botApiKey` takes above — rather than leaving them open. Deliberately not
+   * `required()` even in production: that throws at module import, so adding a
+   * new required secret would stop an existing deployment booting the moment it
+   * pulled this change.
+   */
+  reviewSecret: process.env.REVIEW_SECRET ?? "",
   paths: {
     puzzles: resolve(import.meta.dir, "../data/puzzles.json"),
     database: process.env.DATABASE_PATH

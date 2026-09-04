@@ -454,12 +454,9 @@ describe("what one player may leave waiting", () => {
     const store = openStore();
     try {
       expect(store.pendingSubmissionCount("author-decided")).toBe(1);
-      const { submission, isFirst } = store.decideSubmission(filed.submissionId, {
-        status: "rejected",
+      const { submission, isFirst } = store.rejectSubmission(filed.submissionId, {
         reviewedBy: "an officer",
         note: "Nice, but we have three of these.",
-        puzzleId: null,
-        difficulty: null,
       });
       expect(isFirst).toBe(true);
       expect(submission.status).toBe("rejected");
@@ -469,11 +466,9 @@ describe("what one player may leave waiting", () => {
       // Terminal means terminal: a second officer reaching the same row must
       // not overwrite the first one's verdict, and has to be able to tell that
       // they did not decide it.
-      const again = store.decideSubmission(filed.submissionId, {
-        status: "accepted",
+      const again = store.acceptSubmission(filed.submissionId, {
         reviewedBy: "somebody else",
         note: null,
-        puzzleId: 100_001,
         difficulty: 5,
       });
       expect(again.isFirst).toBe(false);

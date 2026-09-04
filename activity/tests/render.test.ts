@@ -380,11 +380,17 @@ describe("rush attached to the day's board", () => {
 
 describe("the builder", () => {
   const mountedBuilder = () => {
-    const builder = createBuilder({
-      onClose: () => {},
-      onTest: () => {},
-      onStopTest: () => {},
-    });
+    const builder = createBuilder(
+      {
+        onClose: () => {},
+        onTest: () => {},
+        onStopTest: () => {},
+        onSubmit: async () => ({ attack: 0 }),
+      },
+      // Signed in, because these are about where the three parts land on the
+      // page and a guest changes only what one button in a rail says.
+      false,
+    );
     // Mounted the way the app mounts it: three siblings, straight into the deck.
     window.document.body.append(
       builder.left as never,

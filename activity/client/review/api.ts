@@ -1,0 +1,147 @@
+/**
+ * The review tool's own client for `/api/review/*`.
+ *
+ * Deliberately not a mode of `client/src/api.ts`. That one is the activity's:
+ * it carries the `/.proxy` prefix Discord's iframe needs and it holds a player
+ * session. This page is opened in an ordinary browser tab, from a link, by
+ * somebody who has no player identity here at all. The two share `ApiError`,
+ * because a failed request should read the same wherever it happened, and
+ * nothing else.
+ */
+
+import type { ClearName, Mino, RowCode, SolutionStep } from "@shared/puzzle";
+import { ApiError } from "../src/api";
+
+/** One row of the queue: enough to choose from, never enough to judge. */
+export interface QueueRow {
+  readonly submissionId: number;
+  readonly title: string;
+  readonly author: string;
+  readonly goal: string;
+  readonly claimedDifficulty: number;
+  readonly piecesPlaced: number;
+  /**
+   * The attack the author's own solve sent — named for what it is at every
+   * point it is shown, because it is a different kind of number from an
+   * archived puzzle's target and reading it as one is the mistake this whole
+   * feature can make silently.
+   */
+  readonly playedAttack: number;
+  readonly clears: readonly ClearName[];
+  readonly createdAt: number;
+}
+
+/** One submission opened: the row, plus the board and the solve. */
+export interface SubmissionDetail extends QueueRow {
+  readonly board: readonly RowCode[];
+  readonly queue: readonly Mino[];
+  readonly hold: Mino | null;
+  readonly solution: readonly SolutionStep[];
+}
+
+/** What a decision answers with. No puzzle comes back, only the verdict. */
+export interface Verdict {
+  readonly submissionId: number;
+  readonly title: string;
+  readonly author: string;
+  readonly status: "accepted" | "rejected";
+  readonly reviewedBy: string | null;
+  readonly reviewedAt: number | null;
+  readonly note: string | null;
+  readonly puzzleId: number | null;
+  readonly difficulty: number | null;
+}
+
+export class ReviewApi {
+  /**
+   * The review token, held in a variable and nowhere else.
+   *
+   * **Never `localStorage`, never `sessionStorage`, never a cookie.** This is
+   * not a preference about tidiness and it must not be "fixed" later:
+   *
+   * - A **cookie** would manufacture CSRF in a codebase that has no answer to
+   *   it. There is not one cookie anywhere in this repo, no `SameSite`
+   *   configuration, no CORS middleware and no Origin check — which is exactly
+   *   why nothing needs a CSRF token today: authentication is a header a
+   *   browser never attaches by itself, so a cross-site POST arrives
+   *   unauthenticated and Accept and Reject are unreachable from another
+   *   origin. Put the token in a cookie and every one of those becomes a form
+   *   somebody else's page can submit.
+   * - **Storage** outlives the tab and the sitting. The token is good for two
+   *   hours with no revocation of any kind — the only kill switch is rotating
+   *   `REVIEW_SECRET` — so a shared or borrowed laptop keeps a working
+   *   reviewer credential in a place anything running on the origin can read.
+   *   A variable dies with the tab, which is the intended lifetime of a
+   *   sitting at the queue.
+   *
+   * The cost is that a refresh signs you out, and that is correct: the link is
+   * still in the shell of whoever minted it, not in this page's history.
+   */
+  private token: string | null = null;
+
+  /**
+   * Trades the link for the token. The grant goes in the **body**.
+   *
+   * Not in the query string, and that is the only part of this exchange that
+   * buys anything: the link has already been in a URL by the time this runs, so
+   * what matters is that what comes back never is.
+   */
+  async signIn(grant: string): Promise<string> {
+    const { token, subject } = await this.request<{ token: string; subject: string }>(
+      "/api/review/session",
+      { method: "POST", body: JSON.stringify({ grant }) },
+    );
+    this.token = token;
+    return subject;
+  }
+
+  queue(): Promise<{ reviewer: string; queue: readonly QueueRow[] }> {
+    return this.request("/api/review/queue");
+  }
+
+  async submission(id: number): Promise<SubmissionDetail> {
+    const { submission } = await this.request<{ submission: SubmissionDetail }>(
+      `/api/review/submissions/${id}`,
+    );
+    return submission;
+  }
+
+  accept(id: number, body: { difficulty: number; note: string | null }): Promise<Verdict> {
+    return this.decide(id, "accept", body);
+  }
+
+  reject(id: number, body: { note: string }): Promise<Verdict> {
+    return this.decide(id, "reject", body);
+  }
+
+  private async decide(id: number, verb: string, body: unknown): Promise<Verdict> {
+    const { decided } = await this.request<{ decided: Verdict }>(
+      `/api/review/submissions/${id}/${verb}`,
+      { method: "POST", body: JSON.stringify(body) },
+    );
+    return decided;
+  }
+
+  private async request<T>(path: string, init?: RequestInit): Promise<T> {
+    const headers = new Headers(init?.headers);
+    if (this.token) headers.set("Authorization", `Bearer ${this.token}`);
+    if (init?.body) headers.set("Content-Type", "application/json");
+
+    let response: Response;
+    try {
+      response = await fetch(path, { ...init, headers });
+    } catch (cause) {
+      console.error(`[review] request to ${path} failed`, cause);
+      throw new ApiError("Could not reach the server. Check your connection.", 0);
+    }
+
+    if (!response.ok) {
+      const detail = await response
+        .json()
+        .then((body: { error?: string }) => body.error)
+        .catch(() => null);
+      throw new ApiError(detail ?? `Request failed (${response.status})`, response.status);
+    }
+    return (await response.json()) as T;
+  }
+}

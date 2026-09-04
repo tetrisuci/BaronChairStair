@@ -1,12 +1,16 @@
 /**
  * The puzzle builder: lay out a board, say which pieces the solver gets, and
- * take a `b1@…` code away with you.
+ * either take a `b1@…` code away with you or send the puzzle to the club.
  *
- * The club authors every puzzle on bp.tali.software, so the only output that is
- * worth anything is a code that site and our own decoder both read. That is why
- * this screen ends at a text field with Copy and Load beside it rather than at a
- * save button: the code *is* the artefact, and it is one ⌘C from wherever it is
- * going next.
+ * Two ways out, because they answer to two different audiences. The club
+ * authors every puzzle on bp.tali.software, so a code that site and our own
+ * decoder both read is the artefact for anybody working outside this app — one
+ * ⌘C from wherever it is going next, and there is no save button behind it.
+ * Submit is the other door: it files the draft *and the run the author made on
+ * it* for an officer to review, because a puzzle nobody has played has no
+ * honest target and nothing to be scored against. A code carries neither the
+ * title nor the rating a submission needs, which is why those two fields live
+ * in the Submit panel rather than beside the code.
  *
  * Known limits, so they are not discovered later:
  *
@@ -36,18 +40,18 @@
 import { COLUMNS } from "@shared/blueprint/playfield";
 import { BlueprintDecodeError } from "@shared/blueprint/decode";
 import type { PuzzlePrompt } from "@shared/puzzle";
-import type { Handling } from "@shared/tetris/handling";
-import type { InputEvent } from "@shared/tetris/verify";
-import type { RunSnapshot } from "../game/runner";
 import type { BoardView } from "../render/board";
+import type { RunSnapshot } from "../game/runner";
 import { MINO_INK } from "../render/skin";
 import { pieceGlyph } from "../render/piece-glyph";
 import { el, panel, replaceChildren, writeBackOnBlur } from "./dom";
 import { copyText } from "./share";
 import {
+  type BuilderSolve,
   type BuilderState,
   type Paint,
   type PaintedCell,
+  type SubmissionBody,
   cellIndex,
   EMPTY_STATE,
   formatPieces,
@@ -72,6 +76,7 @@ import {
   warningFor,
 } from "./builder-state";
 import { createGoalControls } from "./builder-goal";
+import { createSubmitPanel, type SubmissionVerdict } from "./builder-submit";
 import { createTestPanel, paintFrame } from "./builder-test";
 
 /** How long a copy button wears its own result before going back to its label. */
@@ -93,29 +98,17 @@ export interface BuilderCallbacks {
   readonly onTest: (puzzle: PuzzlePrompt) => void;
   /** Put the run away. The app answers by calling `endTest`. */
   readonly onStopTest: () => void;
-}
-
-/**
- * A run of the draft, kept for as long as it is still a run of *this* draft.
- *
- * A puzzle written here has no reference solution and no honest target until
- * somebody plays it, so the run the author made is the whole of what a
- * submission is built from: the server replays this log and derives both from
- * what it sees, rather than believing anything the browser says about them.
- * Nothing in here is trusted at the far end — but without it there is nothing
- * to send, which is why the end of a test run is no longer just its last frame.
- */
-export interface BuilderSolve {
-  /** What the author was shown for the run: attack, clears, pieces placed. */
-  readonly snapshot: RunSnapshot;
-  readonly events: readonly InputEvent[];
   /**
-   * The controls the log was typed under, frozen with it.
+   * File this draft for review.
    *
-   * One log read under two handlings is two different games, so the pair
-   * travels together or the server replays a run nobody played.
+   * The same wall `onTest` stands on, in the same place: the app owns the
+   * network the way it owns the run, and the builder never sees an `Api`. What
+   * crosses back is a promise, because a submission is the one thing here whose
+   * answer arrives later and has to be said on the screen — an `ApiError`
+   * carries the server's own sentence, and this is the side with somewhere to
+   * put it. Rejecting is how a failure is reported; nothing swallows it.
    */
-  readonly handling: Handling;
+  readonly onSubmit: (draft: SubmissionBody) => Promise<SubmissionVerdict>;
 }
 
 /**
@@ -178,7 +171,15 @@ interface Step {
 /** Unique per builder, so two of them could share a document without colliding. */
 let builderSerial = 0;
 
-export function createBuilder(callbacks: BuilderCallbacks): Builder {
+/**
+ * @param guest Whether this session has no Discord identity behind it.
+ *   `POST /api/submissions` answers a guest with a 403 — every guest is the
+ *   same player, so there is no name to credit and no quota that tells two of
+ *   them apart. Passed in rather than discovered here because the builder holds
+ *   no connection, and known *before* the click rather than after it because a
+ *   refusal that arrives once the work is done is a refusal in the wrong place.
+ */
+export function createBuilder(callbacks: BuilderCallbacks, guest: boolean): Builder {
   const idPrefix = `build${(builderSerial += 1)}`;
   let bench: BuilderState = EMPTY_STATE;
   let paint: Paint = "g";
@@ -375,6 +376,45 @@ export function createBuilder(callbacks: BuilderCallbacks): Builder {
     el("p", { class: "note", text: "Copy it out when the board looks right." }),
   );
 
+  /*
+   * The one control the builder does not draw itself. It owns a round trip
+   * rather than a field — see `builder-submit.ts` — so what crosses this seam
+   * is the draft on one side and the two edits it can make on the other. The
+   * run it files is read at the click and never held over there, because
+   * whether a log still belongs to the board on screen is this file's question.
+   */
+  const submitCard = createSubmitPanel(
+    {
+      read: () => ({ state: bench, solve: kept }),
+      writeTitle: (title) => edit({ ...bench, title }),
+      writeDifficulty: (difficulty) => edit({ ...bench, difficulty }),
+      send: async (draft) => {
+        const verdict = await callbacks.onSubmit(draft);
+        /*
+         * What a success clears, and what it leaves.
+         *
+         * The board stays. It is the author's work, the code in the box is
+         * still the artefact they came for, and nothing else on this screen
+         * throws away what somebody drew.
+         *
+         * The solve does not. It is the one thing that makes Submit pressable,
+         * and this submission has spent it — left in place, a second press
+         * files the same puzzle again under the same title, with nothing but
+         * the route's three-pending quota in the way, so one impatient click
+         * costs an author two of their three slots. Playing the draft again is
+         * a deliberate act, which is exactly the bar a second filing of the
+         * same board should have to clear.
+         *
+         * Here rather than in the panel because `kept` lives here, and a
+         * failure must spend nothing: only the resolved path reaches this line.
+         */
+        kept = null;
+        return verdict;
+      },
+    },
+    guest,
+  );
+
   const right = el(
     "div",
     { class: "rail" },
@@ -396,6 +436,7 @@ export function createBuilder(callbacks: BuilderCallbacks): Builder {
       warning,
     ),
     codePanel,
+    submitCard.element,
   );
 
   // ── The one funnel ─────────────────────────────────────────────────────────
@@ -416,6 +457,10 @@ export function createBuilder(callbacks: BuilderCallbacks): Builder {
      * rather than a rule each caller has to remember.
      */
     if (kept && !samePlay(bench, next)) kept = null;
+    // Not the panel's business to notice: what it says about the last
+    // submission stops being true about the draft on screen the moment that
+    // draft moves, and this is the funnel every move goes through.
+    submitCard.forget();
     bench = next;
     render();
   }
@@ -614,6 +659,8 @@ export function createBuilder(callbacks: BuilderCallbacks): Builder {
     // The button lighting up *is* the "you pasted something" signal.
     const typed = codeField.value.trim();
     load.disabled = typed === "" || typed === code;
+
+    submitCard.render();
     applyMode();
   }
 
@@ -627,7 +674,16 @@ export function createBuilder(callbacks: BuilderCallbacks): Builder {
    * `hidden` set before they run is handed straight back by the next redraw.
    */
   function applyMode(): void {
-    const editing = [paintPanel, editPanel, codePanel, holdField, pieces, goalField, count];
+    const editing = [
+      paintPanel,
+      editPanel,
+      codePanel,
+      submitCard.element,
+      holdField,
+      pieces,
+      goalField,
+      count,
+    ];
     for (const node of editing) node.hidden = testing;
     // Not assigned outright: `render` has just set it from the board, and a
     // board with nothing to say about it leaves it hidden either way.
@@ -725,6 +781,11 @@ export function createBuilder(callbacks: BuilderCallbacks): Builder {
     // would refuse for sending no attack.
     if (solve.snapshot.piecesPlaced === 0) return;
     kept = solve;
+    // The kept solve is the last thing standing between a finished draft and a
+    // pressable Submit, and nothing else here changes when it arrives. Without
+    // this the button waits for whatever redraw happens to come next — which is
+    // `endTest`'s today, and a coincidence rather than a rule.
+    render();
   }
 
   // ── Painting ───────────────────────────────────────────────────────────────

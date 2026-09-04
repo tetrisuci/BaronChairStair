@@ -9,18 +9,21 @@
 
 import { config } from "./config";
 import type { PlayerProfile } from "./db";
+import { AuthError, base64url, equalStrings, signWith } from "./tokens";
+
+/**
+ * Re-exported so nothing outside had to learn that the crypto moved. The token
+ * *kinds* are still here — this file is what knows that a session is signed
+ * with `config.sessionSecret` — and `server/tokens.ts` is only the part a
+ * command line can reach without dragging the whole production environment in
+ * with it.
+ */
+export { AuthError, equalStrings };
 
 const DISCORD_API = "https://discord.com/api";
 const TOKEN_ENDPOINT = `${DISCORD_API}/oauth2/token`;
 const CURRENT_USER_ENDPOINT = `${DISCORD_API}/users/@me`;
 const CURRENT_USER_GUILDS_ENDPOINT = `${DISCORD_API}/users/@me/guilds`;
-
-export class AuthError extends Error {
-  constructor(message: string, readonly status: number = 401) {
-    super(message);
-    this.name = "AuthError";
-  }
-}
 
 export interface Session {
   readonly player: PlayerProfile;
@@ -58,56 +61,20 @@ function toProfile(user: DiscordUser): PlayerProfile {
 
 // ── Token signing ────────────────────────────────────────────────────────────
 
-function base64url(bytes: Uint8Array | ArrayBuffer): string {
-  return Buffer.from(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes))
-    .toString("base64")
-    .replaceAll("+", "-")
-    .replaceAll("/", "_")
-    .replaceAll("=", "");
-}
-
-/** Imported once: every session sign and verify would otherwise redo it. */
-let cachedKey: Promise<CryptoKey> | null = null;
-
-function signingKey(): Promise<CryptoKey> {
-  cachedKey ??= crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(config.sessionSecret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  return cachedKey;
-}
-
 /**
- * Signs a payload within a named context.
+ * Signs a payload with the session secret, within a named context.
  *
- * The context is mixed into what gets signed so a token minted for one purpose
- * can never validate as another. Sessions and rush tickets are signed with the
- * same key and both are `payload.signature`, so without this a rush ticket
- * presented as a session token would pass the signature check and arrive at a
- * route as a session with no player on it. Sessions keep the empty context they
- * have always used, so tokens already in the wild stay valid.
+ * See {@link signWith} for what the context buys. Sessions keep the empty
+ * context they have always used, so tokens already in the wild stay valid —
+ * which is also the trap: a new kind whose mint forgets its second argument
+ * mints full player sessions, and nothing in the types would notice. Every kind
+ * added since names its context on the line that signs it.
  */
-async function sign(payload: string, context = ""): Promise<string> {
-  const signature = await crypto.subtle.sign(
-    "HMAC",
-    await signingKey(),
-    new TextEncoder().encode(context ? `${context}.${payload}` : payload),
-  );
-  return base64url(signature);
+function sign(payload: string, context = ""): Promise<string> {
+  return signWith(config.sessionSecret, payload, context);
 }
 
 const RUSH_CONTEXT = "rush.v1";
-
-/** Constant-time compare, so a bad secret leaks nothing about the good one. */
-export function equalStrings(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  return diff === 0;
-}
 
 export async function mintSession(
   player: PlayerProfile,
@@ -135,6 +102,38 @@ export async function readSession(token: string | undefined): Promise<Session> {
     session = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
   } catch {
     throw new AuthError("Unreadable session token");
+  }
+  /*
+   * The shape, before the clock — and in that order, which was the bug.
+   *
+   * `session.expiresAt < Date.now()` on a payload carrying no `expiresAt`
+   * compares `undefined < number`, which is `false`: the token was not expired
+   * and never would be. The other two fields fail as quietly. A missing
+   * `player` makes `session.player.id` read `undefined` at every route that
+   * files a run, and `runs.player_id` has no foreign key to refuse it; a
+   * missing `guildId` is bound straight into SQLite, which refuses `undefined`
+   * and turns the first run of the day into a 500.
+   *
+   * All of it was unreachable while this server was the only thing holding the
+   * secret and `mintSession` was the only way to spend it. `tools/review-link.ts`
+   * is a second minter — of a different kind, with a different secret, but the
+   * shape of the mistake is now one forgotten context argument away, and a
+   * never-expiring session is not a failure anybody would watch happen.
+   */
+  // `null` parses without throwing and every field read off it is a TypeError,
+  // which `apiError` cannot tell from a server fault — so the token shaped
+  // least like a session would be the one answered 500 instead of 401.
+  if (typeof session !== "object" || session === null) {
+    throw new AuthError("Incomplete session token");
+  }
+  const guildIsNamed = session.guildId === null || typeof session.guildId === "string";
+  if (
+    typeof session.player?.id !== "string" ||
+    !session.player.id ||
+    !guildIsNamed ||
+    !Number.isFinite(session.expiresAt)
+  ) {
+    throw new AuthError("Incomplete session token");
   }
   if (session.expiresAt < Date.now()) throw new AuthError("Session expired");
   return session;
