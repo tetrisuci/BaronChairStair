@@ -547,6 +547,33 @@ export function testBlocker(state: BuilderState): string | null {
 }
 
 /**
+ * Whether two drafts hand a solver the same thing.
+ *
+ * The board, the queue and the hold are the whole of what `toPuzzle` gives the
+ * engine, so a run recorded against one of two states this calls the same is a
+ * run of the other as well. Everything else a draft carries is deliberately not
+ * read: the goal says what the puzzle *asks* for, not what was played, and
+ * rewording a sentence must not throw away the run made under it — the builder
+ * offers to write a run's own attack into that sentence the moment the test
+ * ends, which would otherwise destroy the run it is describing.
+ *
+ * Written out rather than left to a comparison of two `toPuzzle` outputs:
+ * `toPuzzle` reads the goal for its target, so two drafts that play identically
+ * can compile to prompts that differ.
+ */
+export function samePlay(a: BuilderState, b: BuilderState): boolean {
+  if (a === b) return true;
+  if (a.hold !== b.hold) return false;
+  if (a.queue.length !== b.queue.length) return false;
+  if (a.queue.some((piece, index) => piece !== b.queue[index])) return false;
+  if (a.cells.size !== b.cells.size) return false;
+  for (const [index, cell] of a.cells) {
+    if (b.cells.get(index) !== cell) return false;
+  }
+  return true;
+}
+
+/**
  * The id every draft plays under.
  *
  * Zero, because no archived puzzle has it: a test never touches a leaderboard,

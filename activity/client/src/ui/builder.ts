@@ -36,6 +36,8 @@
 import { COLUMNS } from "@shared/blueprint/playfield";
 import { BlueprintDecodeError } from "@shared/blueprint/decode";
 import type { PuzzlePrompt } from "@shared/puzzle";
+import type { Handling } from "@shared/tetris/handling";
+import type { InputEvent } from "@shared/tetris/verify";
 import type { RunSnapshot } from "../game/runner";
 import type { BoardView } from "../render/board";
 import { MINO_INK } from "../render/skin";
@@ -61,6 +63,7 @@ import {
   parseGoal,
   parseHold,
   parsePieces,
+  samePlay,
   sanitizeGoal,
   summaryOf,
   testBlocker,
@@ -93,6 +96,29 @@ export interface BuilderCallbacks {
 }
 
 /**
+ * A run of the draft, kept for as long as it is still a run of *this* draft.
+ *
+ * A puzzle written here has no reference solution and no honest target until
+ * somebody plays it, so the run the author made is the whole of what a
+ * submission is built from: the server replays this log and derives both from
+ * what it sees, rather than believing anything the browser says about them.
+ * Nothing in here is trusted at the far end — but without it there is nothing
+ * to send, which is why the end of a test run is no longer just its last frame.
+ */
+export interface BuilderSolve {
+  /** What the author was shown for the run: attack, clears, pieces placed. */
+  readonly snapshot: RunSnapshot;
+  readonly events: readonly InputEvent[];
+  /**
+   * The controls the log was typed under, frozen with it.
+   *
+   * One log read under two handlings is two different games, so the pair
+   * travels together or the server replays a run nobody played.
+   */
+  readonly handling: Handling;
+}
+
+/**
  * The three parts of the deck, not one card.
  *
  * The board is the thing being made here, so it is mounted where the game's
@@ -109,6 +135,25 @@ export interface Builder {
   readonly showTest: (view: BoardView, snapshot: RunSnapshot) => void;
   /** Give the board back to the palette. A no-op when nothing is playing. */
   readonly endTest: () => void;
+  /**
+   * Keep the log of a run the app has just put away.
+   *
+   * Handed over the same wall `showTest` crosses, and for the same reason: the
+   * app owns the run, the builder owns the draft, and a log is only worth
+   * anything for as long as the draft it was played on is still on the screen —
+   * which is a question only this side can answer.
+   *
+   * A log with nothing in it is dropped rather than kept. The app puts *every*
+   * run away through here, including one started and stopped without a key
+   * being pressed, and an attempt nobody made must not displace one they did.
+   */
+  readonly keepSolve: (solve: BuilderSolve) => void;
+  /**
+   * The run this draft still stands on, or null.
+   *
+   * Null the moment the board, the queue or the hold moves — see `setBench`.
+   */
+  readonly keptSolve: () => BuilderSolve | null;
 }
 
 function swatchLabel(paint: Paint): string {
@@ -148,6 +193,27 @@ export function createBuilder(callbacks: BuilderCallbacks): Builder {
    * game rather than to the palette.
    */
   let testing = false;
+  /**
+   * The last run of this exact draft, or null.
+   *
+   * Null is the honest answer to "has anybody solved this board" for a board
+   * that has been touched since, and it is the only place that answer can be
+   * worked out — see `setBench`.
+   */
+  let kept: BuilderSolve | null = null;
+  /**
+   * The draft the run now playing was dealt from, or null when none is.
+   *
+   * `setBench` keeps "the kept solve matches the bench" true going forward, but
+   * only from a base case, and `keepSolve` had none: it pinned whatever log
+   * arrived to whatever was on the bench at that instant. A stroke opened
+   * before Test and released during the run commits under the live run — the
+   * document-level `pointerup` has no `testing` guard, deliberately, so a
+   * stroke is never silently eaten — and the log would then attach to a board
+   * it was not played on. Recording what was dealt makes the base case a fact
+   * instead of an assumption.
+   */
+  let testedDraft: BuilderState | null = null;
   /** The hold and next the bays were last drawn for, so a frame is not a rebuild. */
   let baysShowing = "";
   /** A cell index, for the keyboard. Not a selection — nothing else reads it. */
@@ -336,6 +402,20 @@ export function createBuilder(callbacks: BuilderCallbacks): Builder {
 
   /** Nothing else assigns `bench`, so nothing else can skip the redraw. */
   function setBench(next: BuilderState): void {
+    /*
+     * A solve belongs to the board it was played on, and only to that board.
+     * Repaint one cell, add a piece to the queue or fill the hold and the log
+     * being held is a recording of a puzzle that no longer exists — a solution
+     * that does not solve, and a target nobody reached.
+     *
+     * Nothing downstream can catch that. `server/puzzles.ts` says outright that
+     * validating a puzzle checks its shape and never its solution, so a stale
+     * log would be replayed against the new board and ship whatever came out.
+     * Here is the only place that knows both halves, and it is the one funnel
+     * every edit goes through — which is why the check is a state comparison
+     * rather than a rule each caller has to remember.
+     */
+    if (kept && !samePlay(bench, next)) kept = null;
     bench = next;
     render();
   }
@@ -584,6 +664,7 @@ export function createBuilder(callbacks: BuilderCallbacks): Builder {
       say(blocked);
       return;
     }
+    testedDraft = bench;
     callbacks.onTest(toPuzzle(bench));
   }
 
@@ -626,6 +707,24 @@ export function createBuilder(callbacks: BuilderCallbacks): Builder {
 
   function endTest(): void {
     setTesting(false);
+  }
+
+  function keepSolve(solve: BuilderSolve): void {
+    // The board it was played on has to still be the board on screen. Without
+    // this the run only had to *end* on this draft, not start on it, and a log
+    // played on a different board replays against this one into a target and a
+    // solution that are self-consistent and wrong — which nothing downstream
+    // can catch, because validating a puzzle checks its shape and never its
+    // solution.
+    if (!testedDraft || !samePlay(testedDraft, bench)) return;
+    // A run that placed nothing says nothing about the board: it is a player
+    // who pressed Test and changed their mind. Counted in locks rather than in
+    // keystrokes because the app hands over every run, finished or abandoned —
+    // and a single arrow key is not an attempt, but it is an event, so the
+    // keystroke rule threw away a real solve to keep a run that the server
+    // would refuse for sending no attack.
+    if (solve.snapshot.piecesPlaced === 0) return;
+    kept = solve;
   }
 
   // ── Painting ───────────────────────────────────────────────────────────────
@@ -869,5 +968,5 @@ export function createBuilder(callbacks: BuilderCallbacks): Builder {
   close.addEventListener("click", () => callbacks.onClose());
 
   render();
-  return { board, left, right, showTest, endTest };
+  return { board, left, right, showTest, endTest, keepSolve, keptSolve: () => kept };
 }

@@ -5,6 +5,16 @@
 
 import { Database } from "bun:sqlite";
 import { DAILY_TIERS, type DailyTier } from "../shared/daily";
+import {
+  countPendingSubmissions,
+  insertSubmission,
+  readPendingSubmissions,
+  readSubmission,
+  writeSubmissionDecision,
+  type Submission,
+  type SubmissionDecision,
+  type SubmissionDraft,
+} from "./submissions";
 
 /** Marks a run filed when a day held one puzzle and there was nothing to name. */
 const LEGACY_SLOT = "legacy";
@@ -178,7 +188,96 @@ CREATE TABLE IF NOT EXISTS preferences (
   payload    TEXT NOT NULL,
   updated_at INTEGER NOT NULL
 );
+
+-- Which three puzzles a day dealt, written down the first time the day is
+-- asked for. The rotation is derived from the pool's size, so a pool that
+-- grows deals a different puzzle for almost every day that has already been
+-- played; this is what stops the archive growing from rewriting history.
+--
+-- No foreign key on puzzle_id. Puzzles live in a JSON file the build rewrites
+-- wholesale, not in a table, so there is no parent row to reference.
+CREATE TABLE IF NOT EXISTS day_puzzles (
+  day       INTEGER NOT NULL,
+  tier      TEXT NOT NULL,
+  puzzle_id INTEGER NOT NULL,
+  PRIMARY KEY (day, tier)
+);
+
+-- The pool a day's rushes are drawn from, as a JSON list of ids in the order
+-- the sequence reads them. The pool rather than the forty a rush deals: only
+-- the ranked run uses the day's shared seed and every replay draws its own, so
+-- freezing the forty would hand every practice run the same stack. Freezing
+-- what they are all drawn from leaves the seed to do its job.
+CREATE TABLE IF NOT EXISTS day_rush (
+  day        INTEGER PRIMARY KEY,
+  puzzle_ids TEXT NOT NULL
+);
+
+-- Puzzles players wrote, waiting for an officer. The queries are in
+-- server/submissions.ts; the table is here so the shape of the database can
+-- still be read in one place.
+--
+-- A surrogate key rather than anything meaningful, because the resubmission
+-- rule belongs in the app and not in the schema: SQLite cannot alter a primary
+-- key, and the rule wanted here — a player may write several puzzles, and may
+-- write a new one after a rejection — is exactly the rule a key cannot express.
+--
+-- target_attack and solution are DERIVED. They are the server's reading of
+-- the author's own input log, never a number the body carried; see
+-- POST /api/submissions for what goes wrong when they are not. The events
+-- column is kept beside them, so accepting can re-run the log rather than
+-- trust the placements written down next to it.
+CREATE TABLE IF NOT EXISTS submissions (
+  submission_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  player_id          TEXT NOT NULL REFERENCES players(id),
+  author_name        TEXT NOT NULL,
+  guild_id           TEXT,
+  title              TEXT NOT NULL,
+  goal               TEXT NOT NULL,
+  claimed_difficulty REAL NOT NULL,
+  board              TEXT NOT NULL,   -- JSON RowCode[]
+  queue              TEXT NOT NULL,   -- JSON Mino[]
+  hold               TEXT,
+  target_attack      INTEGER NOT NULL,
+  solution           TEXT NOT NULL,   -- JSON SolutionStep[]
+  events             TEXT NOT NULL,   -- JSON InputEvent[]
+  handling           TEXT NOT NULL,
+  pieces_placed      INTEGER NOT NULL,
+  clears             TEXT NOT NULL,
+  status             TEXT NOT NULL DEFAULT 'pending',
+  reviewer_note      TEXT,
+  reviewed_at        INTEGER,
+  reviewed_by        TEXT,
+  puzzle_id          INTEGER,
+  difficulty         REAL,
+  created_at         INTEGER NOT NULL
+);
+
+-- The review queue's only question: what is still pending, oldest first.
+CREATE INDEX IF NOT EXISTS submissions_queue ON submissions (status, created_at);
+-- Two accepted puzzles sharing an id is not a conflict SQLite would otherwise
+-- notice, and PuzzleArchive would not either: it builds a Map by id, so the
+-- second copy wins the lookup while both stay in the array and in the rush
+-- pool. Partial, because every pending and rejected row has no id at all.
+CREATE UNIQUE INDEX IF NOT EXISTS submissions_puzzle
+  ON submissions (puzzle_id) WHERE puzzle_id IS NOT NULL;
 `;
+
+/**
+ * How the days that have already happened were dealt.
+ *
+ * Handed to the {@link Store} so the backfill can write down what the rotation
+ * was already producing, and shaped as a callback because the derivation needs
+ * the puzzle archive and persistence must not: `day_puzzles` is a table of
+ * numbers, and a store that had to load and validate a JSON archive to open
+ * itself would be untestable without one.
+ */
+export interface PastDays {
+  /** The last day that has been dealt. Everything up to it is history. */
+  readonly throughDay: number;
+  /** The three ids a day held, derived the way the code has always derived them. */
+  puzzleIdsFor(day: number): Readonly<Record<DailyTier, number>>;
+}
 
 function toStoredRun(row: RunRow): StoredRun {
   return {
@@ -225,7 +324,7 @@ const RUN_COLUMNS = `
 export class Store {
   private readonly db: Database;
 
-  constructor(path: string) {
+  constructor(path: string, pastDays?: PastDays) {
     mkdirSync(dirname(path), { recursive: true });
     this.db = new Database(path, { create: true });
     this.db.exec("PRAGMA journal_mode = WAL");
@@ -255,6 +354,92 @@ export class Store {
       // ahead of everybody at a displayed time of zero.
       "UPDATE runs SET total_ms = duration_ms WHERE total_ms = 0",
     );
+    // Last, because it writes rows rather than shapes, and it must find every
+    // table it touches already built.
+    if (pastDays) this.pinPastDays(pastDays);
+  }
+
+  /**
+   * Writes down what the rotation was already dealing, for every day up to
+   * today.
+   *
+   * Two sources, in this order, and the order is the whole of it.
+   *
+   * **What was played comes first.** `runs.puzzle_id` is the recorded fact of
+   * which puzzle a (day, tier) actually dealt, sitting in this same database,
+   * and it is right whatever has happened to the pool since. Deriving over the
+   * top of it is how a deploy that ships this table *and* a rebuilt
+   * `data/puzzles.json` together — an entirely ordinary pairing, and one nobody
+   * would think to sequence — writes history that contradicts the runs beside
+   * it, silently: the recap then names a puzzle nobody played, and a player who
+   * solved the day is handed no solution because the ids disagree.
+   *
+   * **The derivation fills the rest**, which is only the days nobody played. It
+   * is correct *only* because the pool has not grown yet — re-deriving a
+   * finished day is the exact rewrite `day_puzzles` exists to prevent — but on
+   * a day with no runs on it there is nothing to be wrong about, which is what
+   * makes the remaining window harmless rather than merely narrow. The guard on
+   * the table being empty is still there: a later start deriving a day it
+   * happened to be missing would be reading the wrong pool and would not know.
+   *
+   * `INSERT OR IGNORE` on top of the guard, so a start that dies partway
+   * through resumes without disturbing what it already pinned. One transaction:
+   * a half-backfilled table is one where some days are history and some are
+   * whatever today's pool says, which is worse than none.
+   *
+   * Nothing backfills `day_rush`. A past day's rush stack was never recorded
+   * anywhere and no route ever re-derives one, so there is nothing to recover
+   * and nothing that would read it. Today's is pinned by `DaySchedule`'s
+   * constructor rather than by the first ticket minted — see the comment
+   * there, which explains the same-day restart that gap let through.
+   */
+  private pinPastDays(pastDays: PastDays): void {
+    if (this.db.query<{ one: number }, []>("SELECT 1 AS one FROM day_puzzles LIMIT 1").get()) {
+      return;
+    }
+    this.db.transaction(() => {
+      this.pinDaysAlreadyPlayed();
+      for (let day = 1; day <= pastDays.throughDay; day++) {
+        this.insertDay(day, pastDays.puzzleIdsFor(day));
+      }
+    })();
+  }
+
+  /**
+   * The days somebody has already played, taken from the runs they played.
+   *
+   * Runs from before the archive held three a day carry the legacy slot, which
+   * names no tier — they are skipped rather than guessed at. Everything else is
+   * a `(day, tier, puzzle_id)` triple that is true by construction: it is what
+   * the server dealt that player, recorded at the time.
+   */
+  private pinDaysAlreadyPlayed(): void {
+    const insert = this.db.query<unknown, [number, string, number]>(
+      "INSERT OR IGNORE INTO day_puzzles (day, tier, puzzle_id) VALUES (?1, ?2, ?3)",
+    );
+    const played = this.db
+      .query<{ day: number; slot: string; puzzle_id: number }, [string]>(
+        "SELECT DISTINCT day, slot, puzzle_id FROM runs WHERE slot <> ?1",
+      )
+      .all(LEGACY_SLOT);
+    for (const row of played) {
+      if (DAILY_TIERS.includes(row.slot as DailyTier)) insert.run(row.day, row.slot, row.puzzle_id);
+    }
+  }
+
+  /**
+   * One day's three rows, whichever of them are still missing.
+   *
+   * `INSERT OR IGNORE`, and the caller owns the transaction. Both writers — the
+   * one-time backfill and the first request to reach an unpinned day — must
+   * leave an existing row alone, because an existing row is the older fact and
+   * the older fact is the one somebody played.
+   */
+  private insertDay(day: number, ids: Readonly<Record<DailyTier, number>>): void {
+    const insert = this.db.query<unknown, [number, string, number]>(
+      "INSERT OR IGNORE INTO day_puzzles (day, tier, puzzle_id) VALUES (?1, ?2, ?3)",
+    );
+    for (const tier of DAILY_TIERS) insert.run(day, tier, ids[tier]);
   }
 
   /**
@@ -800,5 +985,134 @@ export class Store {
            payload = excluded.payload, updated_at = excluded.updated_at`,
       )
       .run(player.id, JSON.stringify(payload), Date.now());
+  }
+
+  // ── What a day dealt ───────────────────────────────────────────────────────
+
+  /**
+   * The three puzzle ids a day is pinned to, or null when nobody has asked for
+   * that day yet.
+   *
+   * A day is all three tiers or it is nothing. A partial day would deal one
+   * tier out of history and two out of whatever the pool holds now, which is
+   * precisely the half-rewritten day this table exists to make impossible — so
+   * a partial day reads as unpinned and {@link pinDay} fills the gaps, leaving
+   * the tier already on file exactly where it was.
+   */
+  pinnedDay(day: number): Record<DailyTier, number> | null {
+    const rows = this.db
+      .query<{ tier: string; puzzle_id: number }, [number]>(
+        "SELECT tier, puzzle_id FROM day_puzzles WHERE day = ?1",
+      )
+      .all(day);
+    const ids: Partial<Record<DailyTier, number>> = {};
+    for (const row of rows) {
+      if (DAILY_TIERS.includes(row.tier as DailyTier)) ids[row.tier as DailyTier] = row.puzzle_id;
+    }
+    if (!DAILY_TIERS.every((tier) => ids[tier] !== undefined)) return null;
+    return ids as Record<DailyTier, number>;
+  }
+
+  /**
+   * Pins a day's three, and answers with what is on file afterwards.
+   *
+   * `INSERT OR IGNORE` and a read-back, rather than writing and returning the
+   * argument: two requests can reach an unpinned day in the same millisecond,
+   * and the first writer has to win for both of them. Handing back what the
+   * caller offered would let two players be told different puzzles for the same
+   * day — the one failure this whole table exists to rule out.
+   */
+  pinDay(day: number, ids: Readonly<Record<DailyTier, number>>): Record<DailyTier, number> {
+    this.db.transaction(() => this.insertDay(day, ids))();
+    const pinned = this.pinnedDay(day);
+    if (!pinned) throw new Error(`Day ${day} was not on file immediately after being pinned`);
+    return pinned;
+  }
+
+  /**
+   * The pool a day's rushes are drawn from, or null when no ticket has been
+   * minted for that day yet.
+   *
+   * Parsed defensively even though this process wrote it. A JSON column is a
+   * blob to SQLite, so nothing but this checks it, and a pool that came back
+   * holding a string or a null would not fail — it would reach `rushSequence`,
+   * deal an undefined puzzle, and score a run against it.
+   */
+  pinnedRushPool(day: number): number[] | null {
+    const row = this.db
+      .query<{ puzzle_ids: string }, [number]>("SELECT puzzle_ids FROM day_rush WHERE day = ?1")
+      .get(day);
+    if (!row) return null;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(row.puzzle_ids);
+    } catch (error) {
+      throw new Error(`Day ${day}'s pinned rush pool is not valid JSON`, { cause: error });
+    }
+    if (!Array.isArray(parsed) || !parsed.every((id) => Number.isInteger(id))) {
+      throw new Error(`Day ${day}'s pinned rush pool is not a list of puzzle ids`);
+    }
+    return parsed as number[];
+  }
+
+  /** Pins a day's rush pool, and answers with what is on file afterwards. */
+  pinRushPool(day: number, puzzleIds: readonly number[]): number[] {
+    if (puzzleIds.length === 0) throw new Error(`Refusing to pin day ${day} to an empty rush pool`);
+    // Same race, same answer as {@link pinDay}: the first ticket of the day
+    // decides the pool, and everybody else reads that decision back.
+    this.db
+      .query<unknown, [number, string]>(
+        "INSERT OR IGNORE INTO day_rush (day, puzzle_ids) VALUES (?1, ?2)",
+      )
+      .run(day, JSON.stringify(puzzleIds));
+    const pinned = this.pinnedRushPool(day);
+    if (!pinned) throw new Error(`Day ${day}'s rush pool was not on file immediately after pinning`);
+    return pinned;
+  }
+
+  // ── Player submissions ─────────────────────────────────────────────────────
+  //
+  // Thin on purpose: the SQL and the row mapping are in server/submissions.ts,
+  // because this file is already long enough that one more table's worth of
+  // queries would stop being findable in it. What stays here is the surface —
+  // a caller asks a `Store` for a submission the same way it asks for a run.
+
+  /**
+   * Files a puzzle a player wrote, with the server's own reading of their solve.
+   *
+   * `upsertPlayer` first, the way {@link recordRun} and {@link savePreferences}
+   * do it: `submissions.player_id` references `players(id)` and foreign keys
+   * are on, so a first-time author has no row for this one to point at yet.
+   */
+  recordSubmission(draft: SubmissionDraft): Submission {
+    this.upsertPlayer(draft.player);
+    return insertSubmission(this.db, draft);
+  }
+
+  /** Everything still waiting for an officer, oldest first. */
+  pendingSubmissions(limit?: number): Submission[] {
+    return readPendingSubmissions(this.db, limit);
+  }
+
+  submission(id: number): Submission | null {
+    return readSubmission(this.db, id);
+  }
+
+  /** How many puzzles one player has waiting. The submit route's quota. */
+  pendingSubmissionCount(playerId: string): number {
+    return countPendingSubmissions(this.db, playerId);
+  }
+
+  /**
+   * Records an officer's verdict. Both decided states are terminal.
+   *
+   * @returns the submission as it now stands, and whether this call is what
+   *   decided it — an already-decided row comes back untouched.
+   */
+  decideSubmission(
+    id: number,
+    decision: SubmissionDecision,
+  ): { submission: Submission; isFirst: boolean } {
+    return writeSubmissionDecision(this.db, id, decision);
   }
 }

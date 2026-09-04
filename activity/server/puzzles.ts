@@ -50,28 +50,51 @@ export interface DailyPuzzles {
 const BOARD_ROW = new RegExp(`^[IJLOSTZG.]{${BOARD_WIDTH}}$`);
 const PIECE_LETTERS = new Set(["I", "J", "L", "O", "S", "T", "Z"]);
 
+/** Everything about a puzzle the engine has to be able to read. */
+export type BoardShape = Pick<Puzzle, "board" | "queue" | "hold">;
+
+/**
+ * What is wrong with a board, queue and hold — or null when nothing is.
+ *
+ * Split out of {@link assertValid} so that the file the build writes and the
+ * puzzles players submit are held to one rule rather than two that drift.
+ * Everything else `assertValid` checks belongs to the archive alone: a
+ * submission has no id and no target yet, because both are the server's to
+ * assign and neither is the author's to claim.
+ *
+ * It reports the fault instead of throwing it so each caller can say it in its
+ * own voice — "puzzles.json entry 12" to an operator watching a startup fail,
+ * a plain sentence to a player about to lose the puzzle they just wrote.
+ */
+export function boardProblem(candidate: BoardShape): string | null {
+  if (!Array.isArray(candidate.queue) || candidate.queue.length === 0) return "empty queue";
+  if (!Array.isArray(candidate.board)) return "missing board";
+  for (const row of candidate.board) {
+    // The alphabet matters as much as the width: `decodeRow` casts whatever it
+    // finds, so a stray character would reach the engine as an undefined mino.
+    if (typeof row !== "string" || !BOARD_ROW.test(row)) {
+      return `board row must be ${BOARD_WIDTH} of [IJLOSTZG.], got ${JSON.stringify(row)}`;
+    }
+  }
+  for (const piece of candidate.queue) {
+    if (!PIECE_LETTERS.has(piece)) return `queue holds ${JSON.stringify(piece)}`;
+  }
+  // A missing hold is a fault, not an empty one. `null` is how "nothing in
+  // hold" is spelt everywhere else, and a body that simply left the field out
+  // would otherwise reach the engine as undefined.
+  if (candidate.hold !== null && !PIECE_LETTERS.has(candidate.hold)) {
+    return `hold is ${JSON.stringify(candidate.hold)}`;
+  }
+  return null;
+}
+
 function assertValid(puzzle: unknown, index: number): Puzzle {
   const candidate = puzzle as Puzzle;
   const problem = (detail: string) => new Error(`puzzles.json entry ${index}: ${detail}`);
 
   if (!Number.isInteger(candidate?.id)) throw problem("missing numeric id");
-  if (!Array.isArray(candidate.queue) || candidate.queue.length === 0) {
-    throw problem("empty queue");
-  }
-  if (!Array.isArray(candidate.board)) throw problem("missing board");
-  for (const row of candidate.board) {
-    // The alphabet matters as much as the width: `decodeRow` casts whatever it
-    // finds, so a stray character would reach the engine as an undefined mino.
-    if (typeof row !== "string" || !BOARD_ROW.test(row)) {
-      throw problem(`board row must be ${BOARD_WIDTH} of [IJLOSTZG.], got ${JSON.stringify(row)}`);
-    }
-  }
-  for (const piece of candidate.queue) {
-    if (!PIECE_LETTERS.has(piece)) throw problem(`queue holds ${JSON.stringify(piece)}`);
-  }
-  if (candidate.hold !== null && !PIECE_LETTERS.has(candidate.hold)) {
-    throw problem(`hold is ${JSON.stringify(candidate.hold)}`);
-  }
+  const fault = boardProblem(candidate);
+  if (fault) throw problem(fault);
   if (!(candidate.targetAttack > 0)) throw problem("target attack must be positive");
   // No solution check. They live in data/solutions.json, which is untracked, so
   // a checkout without it is the ordinary case rather than a broken build.
@@ -167,6 +190,16 @@ export class PuzzleArchive {
 
   currentDay(): number {
     return dayNumber(Date.now(), this.dayOptions);
+  }
+
+  /**
+   * When the puzzle turns over. Here beside {@link currentDay} for the same
+   * reason: the club's zone was configured once, into this object, and a caller
+   * that had to be handed it again to answer the other half of "what day is it"
+   * is a second place for the zone to be wrong.
+   */
+  resetsAt(): number {
+    return nextResetAt(Date.now(), this.dayOptions);
   }
 
   prompt(puzzle: Puzzle): PuzzlePrompt {

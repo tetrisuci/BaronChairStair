@@ -104,3 +104,30 @@ export function callerKey(c: Context): string {
   const nearest = forwarded?.[forwarded.length - 1]?.trim();
   return `ip:${nearest || "unknown"}`;
 }
+
+/**
+ * A request body as an object, or a 400.
+ *
+ * `c.req.json()` rejects on malformed JSON, which every caller already
+ * handles — but `null`, `42`, `"hello"` and `true` are all *valid* JSON that
+ * parse to something with no properties, so the rejection never fires and the
+ * first field read throws a TypeError. That becomes a 500 with a stack in the
+ * log, which is the opposite of what `onError` is trying to do a few lines
+ * away when it maps a bad run to a 400 so "real faults stay visible in the log
+ * instead of drowning in client bugs".
+ *
+ * Six routes read a body and every one of them was one `null` away from that,
+ * so the check lives here rather than six times over.
+ */
+export async function readJsonBody(c: Context): Promise<Record<string, unknown>> {
+  const body = await c.req.json<unknown>().catch(() => {
+    throw new HTTPException(400, { message: "Request body is not valid JSON" });
+  });
+  // Arrays are objects, and a body of `[]` reads every field as undefined —
+  // which is indistinguishable from `{}` to the validators downstream, so it
+  // is refused here where the shape is still known.
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    throw new HTTPException(400, { message: "Request body must be a JSON object" });
+  }
+  return body as Record<string, unknown>;
+}

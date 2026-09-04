@@ -31,7 +31,8 @@ import {
 } from "../client/src/ui/builder-state";
 import { extraClears, goalReport } from "../client/src/ui/builder-test";
 import type { BoardView } from "../client/src/render/board";
-import type { RunSnapshot } from "../client/src/game/runner";
+import { PuzzleRun, type RunSnapshot } from "../client/src/game/runner";
+import { DEFAULT_HANDLING } from "../shared/tetris/handling";
 import { archive, hasSolutions } from "./archive";
 
 let window: Window;
@@ -892,6 +893,270 @@ describe("testing the draft", () => {
       node.textContent?.startsWith("Set the goal"),
     );
     expect(offers).toEqual([]);
+  });
+});
+
+/**
+ * A draft has no reference solution and no honest target until its author plays
+ * it, so the run they make is the only thing a submission can be built from.
+ * These pin the half of that the builder owns: what it is given, how long it
+ * keeps it, and the one edit that must throw it away.
+ */
+describe("the solve a test leaves behind", () => {
+  const FRAME_MS = 1000 / 60;
+  /** Frames to wait for a hard-dropped piece to lock. Anything grounded locks well inside it. */
+  const PATIENCE = 300;
+
+  /**
+   * A hand-turned clock and frame loop, so a draft can actually be played here.
+   *
+   * `runner-undo.test.ts` builds the same rig for the same reason, and this is
+   * a copy of it: sharing it means editing that suite, which this change has no
+   * business touching. The run below is the real one — the real engine, the
+   * real log — because the whole point of the first assertion is that what the
+   * builder ends up holding came out of a run rather than out of the test.
+   */
+  let clock = 0;
+  let scheduled: FrameRequestCallback | null = null;
+  const savedTiming = {
+    performance: globalThis.performance,
+    request: globalThis.requestAnimationFrame,
+    cancel: globalThis.cancelAnimationFrame,
+  };
+
+  beforeAll(() => {
+    globalThis.performance = { now: () => clock } as unknown as Performance;
+    globalThis.requestAnimationFrame = (callback: FrameRequestCallback) => {
+      scheduled = callback;
+      return 1;
+    };
+    globalThis.cancelAnimationFrame = () => {
+      scheduled = null;
+    };
+  });
+
+  // Restored for the rest of the file, which wants Bun's own clock back.
+  afterAll(() => {
+    globalThis.performance = savedTiming.performance;
+    globalThis.requestAnimationFrame = savedTiming.request;
+    globalThis.cancelAnimationFrame = savedTiming.cancel;
+  });
+
+  /**
+   * The app's half of a test run, written out here.
+   *
+   * `App` owns the run and needs a Discord connection and a canvas to exist at
+   * all, so what stands in for it is the three callbacks `startBuilderTest`
+   * hands a `PuzzleRun`: the frames back to `showTest`, the log to `keepSolve`.
+   * That means these prove the builder's side of the contract and not app.ts's
+   * own wiring, which nothing in this suite reaches.
+   */
+  function playDraft(ui: ReturnType<typeof mount>): PuzzleRun {
+    const puzzle = ui.tested[ui.tested.length - 1];
+    if (!puzzle) throw new Error("the builder handed over nothing to play");
+    clock = 0;
+    scheduled = null;
+    const run = new PuzzleRun(puzzle, DEFAULT_HANDLING, {
+      onFrame: (view, snapshot) => ui.builder.showTest(view, snapshot),
+      onFinish: (snapshot, events) =>
+        ui.builder.keepSolve({ snapshot, events: [...events], handling: DEFAULT_HANDLING }),
+      onLock: () => {},
+    });
+    run.renderOnce();
+    return run;
+  }
+
+  /**
+   * A builder holding one O over an empty board, tested and played to the end.
+   *
+   * One piece and nothing under it, so the run ends on the first lock: the goal
+   * is empty, which means the draft carries `NO_TARGET` and plays its queue out
+   * rather than stopping at a figure.
+   */
+  function solved(): ReturnType<typeof mount> {
+    const ui = mount();
+    ui.type(ui.pieces, "O");
+    ui.press("Test");
+
+    const run = playDraft(ui);
+    run.input("hardDrop", true);
+    for (let frame = 0; frame < PATIENCE && run.snapshot().piecesPlaced === 0; frame++) {
+      const step = scheduled;
+      if (!step) break;
+      clock += FRAME_MS;
+      step(clock);
+    }
+    run.dispose();
+    ui.builder.endTest();
+    return ui;
+  }
+
+  test("a run played to the end leaves a log to submit", () => {
+    // The bug: the app answered `onFinish` with `() => undefined` on the
+    // grounds that a test files nothing. Nothing is filed — but the server
+    // derives a submission's target and its reference solution by replaying
+    // this log, so throwing it away left an author who had just solved their
+    // own puzzle with nothing whatsoever to send.
+    const ui = solved();
+
+    const solve = ui.builder.keptSolve();
+    expect(solve).not.toBeNull();
+    expect(solve!.events.length).toBeGreaterThan(0);
+    expect(solve!.snapshot.piecesPlaced).toBe(1);
+    // The controls it was typed under travel with it, because one log read
+    // under two handlings is two different games.
+    expect(solve!.handling).toEqual(DEFAULT_HANDLING);
+  });
+
+  test("painting one cell afterwards throws it away", () => {
+    // The one nothing else in the stack can catch. A log only means anything
+    // against the board it was played on, and `server/puzzles.ts` says outright
+    // that validating a puzzle checks its shape and never its solution — so a
+    // solve kept across a repaint ships as a reference solution that does not
+    // solve, behind a target nobody can reach.
+    const ui = solved();
+    expect(ui.builder.keptSolve()).not.toBeNull();
+
+    ui.paint(ui.bottomRow(), 0);
+
+    expect(ui.builder.keptSolve()).toBeNull();
+  });
+
+  test("rewording the goal afterwards keeps it", () => {
+    // The goal says what the puzzle asks for; the log says what was played, and
+    // the board, the queue and the hold are the whole of what the solver was
+    // handed. Clearing here would also break the builder's own headline move:
+    // "Set the goal to N attack" ends the test and then writes the run's attack
+    // into the sentence, destroying the run it was offering to describe.
+    const ui = solved();
+
+    ui.type(ui.goalField, "Clear the board");
+
+    expect(ui.builder.keptSolve()).not.toBeNull();
+  });
+
+  test("a change to the queue or the hold throws it away too", () => {
+    // Both are dealt to the solver, so both change what a log means: a piece
+    // added to the queue makes the recorded run one that stopped early, and a
+    // hold added is a piece that run was never offered.
+    const queued = solved();
+    queued.type(queued.pieces, "OT");
+    expect(queued.builder.keptSolve()).toBeNull();
+
+    const held = solved();
+    held.type(held.holdField, "T");
+    expect(held.builder.keptSolve()).toBeNull();
+  });
+
+  test("a test nobody played does not displace the one they did", () => {
+    // Every way out of a test hands the log over, Stop on a run with no
+    // keystrokes in it included — the app cannot tell that from a real attempt
+    // without reading the log, so the builder does. Without it, pressing Test
+    // and changing your mind wipes the solve you already had.
+    const ui = solved();
+    const kept = ui.builder.keptSolve();
+
+    ui.press("Test");
+    const run = playDraft(ui);
+    ui.builder.keepSolve({
+      snapshot: run.snapshot(),
+      events: [...run.log()],
+      handling: DEFAULT_HANDLING,
+    });
+    run.dispose();
+    ui.builder.endTest();
+
+    expect(ui.builder.keptSolve()).toBe(kept);
+  });
+
+  /*
+   * REVIEW — ADDED BY A REVIEWER, AND BOTH OF THESE FAIL ON PURPOSE.
+   * They are not fixed here; each one names its own smallest fix.
+   */
+
+  test("a draft edited while the run is on it does not keep that run", () => {
+    // The stash's whole guarantee is maintained in one place — `setBench` drops
+    // a solve the moment the draft stops matching it — and that only holds
+    // *forward* from a base case nothing establishes. `keepSolve` records no
+    // draft and checks none, so it will pin a log to whatever is on the bench
+    // when it arrives, and a draft that moved while the run was playing is
+    // never noticed.
+    //
+    // One live way in: a stroke opened before the test and released during it.
+    // `endStroke` sits on the document and has no `testing` guard, so the
+    // commit lands mid-run — a second finger on a touch screen, or Tab and
+    // Enter onto Test with the mouse button still down. What ships is a
+    // reference solution and a target computed on a board nobody submitted:
+    // the same log replayed against the draft on screen puts the O one row
+    // higher, and `POST /api/submissions` derives from the board it is sent,
+    // so nothing downstream can see the difference.
+    //
+    // The fix is to make the base case a recorded fact rather than an
+    // assumption: have `startTest` stash `bench` alongside the puzzle it hands
+    // over, and have `keepSolve` refuse a solve whose draft is not `samePlay`
+    // with the bench it is landing on.
+    const ui = mount();
+    ui.type(ui.pieces, "O");
+
+    // The finger goes down and stays down. Nothing is committed: `endStroke` is
+    // what commits, and it has not run yet.
+    ui.grid.dispatchEvent(
+      new window.PointerEvent("pointerdown", {
+        bubbles: true,
+        clientX: 0.5 * CELL,
+        clientY: (ui.bottomRow() + 0.5) * CELL,
+      }) as never,
+    );
+    const playedOn = ui.code();
+
+    ui.press("Test");
+    const run = playDraft(ui);
+
+    // The finger lifts. The cell that was drawn is committed under the run.
+    window.document.dispatchEvent(new window.Event("pointerup", { bubbles: true }) as never);
+    expect(ui.code()).not.toBe(playedOn);
+
+    run.input("hardDrop", true);
+    for (let frame = 0; frame < PATIENCE && run.snapshot().piecesPlaced === 0; frame++) {
+      const step = scheduled;
+      if (!step) break;
+      clock += FRAME_MS;
+      step(clock);
+    }
+    run.dispose();
+    ui.builder.endTest();
+
+    // A log played on the empty board, held against a board with a cell in it.
+    expect(ui.builder.keptSolve()).toBeNull();
+  });
+
+  test("a retest abandoned after one keystroke keeps the solve it displaced", () => {
+    // "An attempt with no inputs in it is not a solve" is the right idea drawn
+    // one keystroke short. A run that placed nothing sends nothing, and
+    // `POST /api/submissions` refuses a zero-attack solve outright — so the log
+    // this keeps can never become a submission, while the one it just threw
+    // away could have. Press Play again, tap a key, change your mind, and the
+    // solve you already had is gone with the board never having moved.
+    //
+    // The fix is one word in `keepSolve`: refuse on `snapshot.piecesPlaced ===
+    // 0` rather than on `events.length === 0`.
+    const ui = solved();
+    const good = ui.builder.keptSolve();
+    expect(good?.snapshot.piecesPlaced).toBe(1);
+
+    ui.press("Play again");
+    const run = playDraft(ui);
+    run.input("moveLeft", true);
+    // The app's `endBuilderRun`: every abandoned run is handed over too.
+    ui.builder.keepSolve({
+      snapshot: run.snapshot(),
+      events: [...run.log()],
+      handling: run.handling,
+    });
+    run.dispose();
+    ui.builder.endTest();
+
+    expect(ui.builder.keptSolve()).toBe(good);
   });
 });
 

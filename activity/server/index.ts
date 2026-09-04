@@ -11,7 +11,14 @@ import { Hono } from "hono";
 import type { Context, Next } from "hono";
 import { serveStatic } from "hono/bun";
 import { HTTPException } from "hono/http-exception";
-import { decodeBoard, ENGINE_ROWS, meetsTarget, pieceBudget, toListing } from "../shared/puzzle";
+import {
+  decodeBoard,
+  ENGINE_ROWS,
+  meetsTarget,
+  pieceBudget,
+  type Puzzle,
+  toListing,
+} from "../shared/puzzle";
 import { sanitizeArchiveFilter } from "../shared/archive-filter";
 
 import { sanitizeHandling } from "../shared/tetris/handling";
@@ -37,10 +44,23 @@ import {
   verifyGuild,
 } from "./auth";
 import { config } from "./config";
-import { Store } from "./db";
-import { callerKey, limitBodySize, MAX_BODY_BYTES, rateLimit } from "./limits";
+import { Store, type StoredRun } from "./db";
+import { DaySchedule, pastDaysOf } from "./schedule";
+import {
+  callerKey,
+  limitBodySize,
+  MAX_BODY_BYTES,
+  rateLimit,
+  readJsonBody,
+} from "./limits";
 import { DAILY_TIERS, type DailyTier } from "../shared/daily";
 import { PuzzleArchive } from "./puzzles";
+import {
+  readBoardShape,
+  readClaimedDifficulty,
+  readGoal,
+  readTitle,
+} from "./submission-input";
 import {
   type SocketData,
   duelSocket,
@@ -63,9 +83,28 @@ const RECAP_SIZE = 100;
 const MINUTE = 60_000;
 /** A day of it: anything longer is a broken clock, not a long think. */
 const MAX_TOTAL_MS = 24 * 60 * MINUTE;
+/**
+ * The one identity every guest shares.
+ *
+ * Named because it is a gate and not a label: anything that credits a person —
+ * writing a puzzle under their name, counting what they owe a review queue —
+ * has to refuse it, and a bare string repeated at each of those places is one
+ * typo away from letting them all through.
+ */
+const GUEST_ID = "guest";
 
 const archive = PuzzleArchive.load(config.paths.puzzles, { timeZone: config.timeZone });
-const store = new Store(config.paths.database);
+const store = new Store(config.paths.database, pastDaysOf(archive));
+/*
+ * Every "what did day N hold" below goes through here, never through the
+ * archive's own derivation. The archive still derives — that is where an
+ * unpinned day's answer comes from — but a route that asked it directly would
+ * be re-deriving a day somebody has already played, and once the pool grows
+ * with accepted submissions the two answers stop agreeing. `archive` keeps only
+ * what does not depend on the pool's size: the clock, the id lookup, the whole
+ * listing, and the prompt shape.
+ */
+const schedule = new DaySchedule(archive, store);
 
 type Variables = { session: Session };
 const app = new Hono<{ Variables: Variables }>();
@@ -94,6 +133,10 @@ app.use("/api/daily/run", rateLimit({ max: 20, windowMs: MINUTE }, callerKey));
 // A rush is five minutes long, so nobody honest opens many of them a minute.
 app.use("/api/rush/start", rateLimit({ max: 6, windowMs: MINUTE }, callerKey));
 app.use("/api/rush/run", rateLimit({ max: 12, windowMs: MINUTE }, callerKey));
+// Tighter than the daily's twenty, because a submission replays a board the
+// caller chose rather than one of today's three. Nobody writes five puzzles a
+// minute, so this only ever costs somebody who is not writing puzzles.
+app.use("/api/submissions", rateLimit({ max: 5, windowMs: MINUTE }, callerKey));
 app.use("/api/*", rateLimit({ max: 240, windowMs: MINUTE }, callerKey));
 
 app.onError((error, c) => {
@@ -137,21 +180,20 @@ app.get("/api/config", (c) =>
  * activity can be played outside Discord.
  */
 app.post("/api/session", async (c) => {
-  type SessionBody = { code?: string; guildId?: string | null };
-  const body: SessionBody = await c.req.json<SessionBody>().catch(() => ({}) as SessionBody);
+  const body = await readJsonBody(c);
   const guildId = typeof body.guildId === "string" && body.guildId ? body.guildId : null;
 
-  if (!body.code) {
+  if (typeof body.code !== "string" || body.code === "") {
     if (!config.allowGuestPlay) throw new AuthError("An authorization code is required");
     // Every guest is the same player, so a guild claim from one would let
     // anyone write to any leaderboard under a shared identity. Guests are
     // global-only.
-    const player = { id: "guest", username: "guest", avatarUrl: null };
+    const player = { id: GUEST_ID, username: GUEST_ID, avatarUrl: null };
     const { token } = await mintSession(player, null);
     return c.json({ token, player, guest: true });
   }
 
-  const { accessToken, player } = await exchangeCode(body.code);
+  const { accessToken, player } = await exchangeCode(String(body.code));
   store.upsertPlayer(player);
   const { token } = await mintSession(player, await verifyGuild(accessToken, guildId));
   return c.json({ token, player, accessToken, guest: false });
@@ -166,7 +208,8 @@ app.post("/api/session", async (c) => {
  * chooses the board a log is replayed against, so a log played on the hard one
  * and filed as "easy" simply fails to solve the easy one. It cannot be used to
  * file somebody else's result, and it cannot be used to fetch an answer —
- * every solution below is gated on the run stored for that same tier.
+ * every solution below is gated on the run stored for that same tier, against
+ * that same puzzle.
  */
 function readTier(value: unknown): DailyTier {
   const tier = DAILY_TIERS.find((candidate) => candidate === value);
@@ -174,9 +217,28 @@ function readTier(value: unknown): DailyTier {
   return tier;
 }
 
+/**
+ * The reference solution, if this player has earned it on this exact puzzle.
+ *
+ * Keyed on the puzzle the run was filed against — `runs.puzzle_id` — and not on
+ * (day, tier). A stored run names the board it was played on; matching it to a
+ * freshly chosen puzzle by tier alone handed out the answer to a board the
+ * player had never seen, every time the two disagreed. They disagreed whenever
+ * the pool changed underneath a day, which is exactly what accepting community
+ * puzzles does.
+ *
+ * Pinned days mean the two can no longer drift apart. This is what turns that
+ * into something the route checks rather than something it assumes, and it
+ * costs one comparison.
+ */
+function earnedSolution(run: StoredRun | undefined, puzzle: Puzzle) {
+  if (!run?.solved || run.puzzleId !== puzzle.id) return null;
+  return puzzle.solution;
+}
+
 app.get("/api/daily", requireSession, (c) => {
   const session = c.get("session");
-  const { day, puzzles, resetsAt } = archive.today();
+  const { day, puzzles, resetsAt } = schedule.today();
   const runs = store.runsFor(day, session.player.id);
   return c.json({
     day,
@@ -185,10 +247,11 @@ app.get("/api/daily", requireSession, (c) => {
       tier,
       puzzle: archive.prompt(puzzles[tier]),
       run: runs[tier] ?? null,
-      // Gated per tier, not per day. Solving the easy one must not hand over
-      // the hard one's answer — with one run a day that distinction did not
-      // exist, and reading it as "solved today" is a solution leak.
-      solution: runs[tier]?.solved ? puzzles[tier].solution : null,
+      // Gated per tier, not per day, and then per puzzle. Solving the easy one
+      // must not hand over the hard one's answer — with one run a day that
+      // distinction did not exist, and reading it as "solved today" is a
+      // solution leak.
+      solution: earnedSolution(runs[tier], puzzles[tier]),
     })),
     streak: store.streak(session.player.id, day),
     totalSolved: store.totalSolved(session.player.id),
@@ -197,19 +260,9 @@ app.get("/api/daily", requireSession, (c) => {
 
 app.post("/api/daily/run", requireSession, async (c) => {
   const session = c.get("session");
-  const { day, puzzles } = archive.today();
+  const { day, puzzles } = schedule.today();
 
-  const body = await c.req
-    .json<{
-      tier?: unknown;
-      handling?: unknown;
-      events?: unknown;
-      resets?: unknown;
-      totalMs?: unknown;
-    }>()
-    .catch(() => {
-      throw new HTTPException(400, { message: "Request body is not valid JSON" });
-    });
+  const body = await readJsonBody(c);
   const tier = readTier(body.tier);
   const puzzle = puzzles[tier];
   const handling = sanitizeHandling(body.handling);
@@ -242,8 +295,11 @@ app.post("/api/daily/run", requireSession, async (c) => {
     streak: store.streak(session.player.id, day),
     totalSolved: store.totalSolved(session.player.id),
     // Same rule as every other route: the answer is only ever sent to somebody
-    // who has solved it. Filing a deliberately empty run must not buy it.
-    solution: run.solved ? puzzle.solution : null,
+    // who has solved it, on the puzzle they solved. Filing a deliberately empty
+    // run must not buy it — and neither must an earlier row for this same tier,
+    // which is what `recordRun` hands back when today's attempt did not improve
+    // on it.
+    solution: earnedSolution(run, puzzle),
     leaderboard: store.leaderboard(day, session.guildId, tier, LEADERBOARD_SIZE),
   });
 });
@@ -283,7 +339,7 @@ app.get("/api/daily/leaderboard", requireSession, (c) => {
  * channel. Public: everything here is on the puzzle's own front page.
  */
 app.get("/api/today", (c) => {
-  const { day, puzzles, resetsAt } = archive.today();
+  const { day, puzzles, resetsAt } = schedule.today();
   const describe = (puzzle: (typeof puzzles)[DailyTier]) => ({
     id: puzzle.id,
     title: puzzle.title,
@@ -374,7 +430,7 @@ app.get("/api/recap", (c) => {
   // parameter would put strangers into one server's recap.
   if (!guildId) throw new HTTPException(400, { message: "guild is required" });
 
-  const { puzzles } = archive.forDay(day);
+  const { puzzles } = schedule.forDay(day);
   return c.json({
     day,
     puzzles: DAILY_TIERS.map((tier) => ({
@@ -430,10 +486,19 @@ function maySeeSolution(session: Session, puzzleId: number): boolean {
   // today's puzzle" no longer has a single answer, and the tier matters: the
   // gate has to be the run for *this* puzzle's tier. Read as "solved today" it
   // would hand the hard answer to somebody who solved the easy one.
+  //
+  // Sound only because the day is pinned: while the three were re-derived, a
+  // puzzle that had been today's easy an hour ago was suddenly none of today's,
+  // and this answered `true` for it while players were still holding its
+  // prompt.
   const day = archive.currentDay();
-  const tier = archive.tierOfDay(day, puzzleId);
+  const tier = schedule.tierOfDay(day, puzzleId);
   if (!tier) return true;
-  return store.runFor(day, session.player.id, tier)?.solved === true;
+  const run = store.runFor(day, session.player.id, tier);
+  // And the run has to be the run on *this* puzzle, for the same reason
+  // `earnedSolution` checks it: a row filed under this tier against some other
+  // board proves nothing about this one.
+  return run?.solved === true && run.puzzleId === puzzleId;
 }
 
 app.get("/api/archive", requireSession, (c) => {
@@ -458,24 +523,19 @@ app.get("/api/prefs", requireSession, (c) =>
 
 app.put("/api/prefs", requireSession, async (c) => {
   const session = c.get("session");
-  const body = await c.req
-    .json<{
-      preferences?: { version?: unknown; handling?: unknown; keybinds?: unknown; filter?: unknown };
-    }>()
-    .catch(() => {
-      throw new HTTPException(400, { message: "Request body is not valid JSON" });
-    });
+  const body = await readJsonBody(c);
   // Stored preferences are player-controlled, so only the known shapes are kept
   // — never the raw body, which would let anyone use the row as free unbounded
   // storage. The version travels through so the client can spot its own stale
   // copies; the server never interprets it.
-  const claimed = body.preferences?.version;
+  const preferences = (body.preferences ?? {}) as Record<string, unknown>;
+  const claimed = preferences.version;
   const version = Number.isInteger(claimed) ? (claimed as number) : 0;
   store.savePreferences(session.player, {
     version,
-    handling: sanitizeHandling(body.preferences?.handling),
-    keybinds: sanitizeKeybinds(body.preferences?.keybinds),
-    filter: sanitizeArchiveFilter(body.preferences?.filter),
+    handling: sanitizeHandling(preferences.handling),
+    keybinds: sanitizeKeybinds(preferences.keybinds),
+    filter: sanitizeArchiveFilter(preferences.filter),
   });
   return c.json({ ok: true });
 });
@@ -554,14 +614,22 @@ function parseRushSegments(input: unknown, limit: number): RushSegment[] {
   return segments;
 }
 
-/** The puzzles a ticket's rush was built from, re-derived rather than trusted. */
+/**
+ * The puzzles a ticket's rush was built from, re-derived rather than trusted.
+ *
+ * From the day's *pinned* pool, so re-deriving really does reproduce what was
+ * handed out. Drawn straight from `archive.puzzles`, it did not: the ticket
+ * carries a seed and no pool identity, so a deploy inside the five-minute
+ * window scored an in-flight run against a different set of forty puzzles and
+ * reported the result as if nothing had happened.
+ */
 function sequenceFor(ticket: RushTicket) {
-  return rushSequence(archive.puzzles, ticket.seed);
+  return rushSequence(schedule.rushPoolFor(ticket.day), ticket.seed);
 }
 
 app.get("/api/rush", requireSession, (c) => {
   const session = c.get("session");
-  const { day, resetsAt } = archive.today();
+  const { day, resetsAt } = schedule.today();
   return c.json({
     day,
     resetsAt,
@@ -582,8 +650,8 @@ app.get("/api/rush", requireSession, (c) => {
  */
 app.post("/api/rush/start", requireSession, async (c) => {
   const session = c.get("session");
-  const { day } = archive.today();
-  const body = await c.req.json<{ practice?: unknown }>().catch(() => ({}) as { practice?: unknown });
+  const { day } = schedule.today();
+  const body = await readJsonBody(c);
   const practice = body.practice === true;
 
   // The daily rush can be played as often as you like. Only the first one of
@@ -628,17 +696,7 @@ app.post("/api/rush/start", requireSession, async (c) => {
 
 app.post("/api/rush/run", requireSession, async (c) => {
   const session = c.get("session");
-  const body = await c.req
-    .json<{
-      ticket?: unknown;
-      handling?: unknown;
-      segments?: unknown;
-      timeToLastSolveMs?: unknown;
-      skipsUsed?: unknown;
-    }>()
-    .catch(() => {
-      throw new HTTPException(400, { message: "Request body is not valid JSON" });
-    });
+  const body = await readJsonBody(c);
 
   const ticket = await readRushTicket(body.ticket);
   // A ticket is bound to whoever it was minted for; presenting somebody else's
@@ -798,6 +856,151 @@ app.get("/api/rush/leaderboard", requireSession, (c) => {
   return c.json({
     day,
     entries: store.rushLeaderboard(day, session.guildId, LEADERBOARD_SIZE),
+  });
+});
+
+// ── Player submissions ───────────────────────────────────────────────────────
+
+/**
+ * How many puzzles one player may have waiting at once.
+ *
+ * Three: about what somebody writes in a sitting, and comfortably more than a
+ * reviewer clears in one. The cap is there to stop a queue nobody can get
+ * through, not to ration authors — a decision frees the slot again, so a
+ * rejection is never a door closing.
+ *
+ * It is also the only bound that can tell two players apart. `callerKey`
+ * deliberately never reads the Authorization header (see `limits.ts`), so the
+ * rate limiter registered at the top of this file counts addresses — and inside
+ * Discord a whole server can arrive through one proxy address, which makes it
+ * both too generous for one player and too harsh for everybody else.
+ */
+const MAX_PENDING_SUBMISSIONS = 3;
+
+/**
+ * Files a puzzle a player wrote.
+ *
+ * Every other route in this file rests on the invariant stated above
+ * `readTier`: a client names a tier, never a puzzle, so a log filed against the
+ * wrong board simply fails to solve it. This route inverts that — the board,
+ * the queue and the hold all come from the body — so replaying proves only
+ * "this log solves the board the same person sent". That is still exactly the
+ * right property, because the two things the server must never take on trust
+ * are derived from the replay and from the session:
+ *
+ * - `targetAttack` is the bar every other player is then scored against
+ *   (`meetsTarget`). A number the body carried is a number nobody had to earn,
+ *   and the specific number the builder would send is poison: a draft whose
+ *   goal names no attack figure carries `NO_TARGET`, which is
+ *   `MAX_SAFE_INTEGER`, and `assertValid` checks only `targetAttack > 0` — a
+ *   permanently unsolvable puzzle that every gate in this codebase waves
+ *   through.
+ * - `solution` is the answer key `/api/archive/:id` hands out. It has to be a
+ *   list of placements the engine produced, not a list somebody typed.
+ * - the author is `session.player`, never the body.
+ *
+ * What that target *means* is not what an archive target means, and the two
+ * must not be quietly mixed. `tools/build-puzzles.ts` derives its target with
+ * `replayPlacements`, which tries every kick route per placement and keeps the
+ * best line; this one comes from `verifyRun`, which replays the keystrokes
+ * somebody actually made. So a community puzzle's target is what its author
+ * *did* — provably human-achievable, and beatable — where an archive target
+ * usually is not. There is no column recording that: every row in `submissions`
+ * is a played target by construction, and a column holding one constant value
+ * is not a record, it is a field waiting to disagree with the code. The review
+ * screen is where it has to be said out loud, in words, to the officer.
+ *
+ * The trust inversion has a second cost: this is the only route where the
+ * caller picks the board the engine replays. The tighter rate limit at the top
+ * of this file and the two bounds in `readBoardShape` are what pay for it.
+ */
+app.post("/api/submissions", requireSession, async (c) => {
+  const session = c.get("session");
+  // Every guest is the same player, so a guest submission has no author to
+  // credit, and a quota keyed on `player_id` that all of them share. Guest play
+  // is off in production by construction, but local and end-to-end play is
+  // exactly where this route gets exercised.
+  if (session.player.id === GUEST_ID) {
+    throw new HTTPException(403, {
+      message: "A guest has no name to put on a puzzle — sign in through Discord to submit one",
+    });
+  }
+
+  const body = await readJsonBody(c);
+
+  // Everything cheap first, and the quota before the engine: replaying is what
+  // this route costs, and a player who is already over their limit must not be
+  // able to spend the server's time finding that out.
+  const title = readTitle(body.title);
+  const goal = readGoal(body.goal);
+  const claimedDifficulty = readClaimedDifficulty(body.claimedDifficulty);
+  const shape = readBoardShape(body);
+
+  const waiting = store.pendingSubmissionCount(session.player.id);
+  if (waiting >= MAX_PENDING_SUBMISSIONS) {
+    // 409 and not 429: waiting a minute does not help, and a limiter's
+    // Retry-After would promise that it does. What clears this is an officer.
+    throw new HTTPException(409, {
+      message: `You have ${waiting} puzzles waiting for review — an officer has to look at those first`,
+    });
+  }
+
+  const handling = sanitizeHandling(body.handling);
+  const events = parseInputLog(body.events);
+  if (events.length === 0) {
+    throw new HTTPException(400, {
+      message: "Play your own puzzle first — a submission ships with the solve you made",
+    });
+  }
+
+  const verified = verifyRun(
+    { board: decodeBoard(shape.board, ENGINE_ROWS), queue: shape.queue, hold: shape.hold },
+    handling,
+    events,
+  );
+  // Most specific refusal first. A board with no room in it also sends no
+  // attack, and a player told only the second would go looking for a bigger
+  // clear on a puzzle that has nowhere to put a piece.
+  if (verified.toppedOut) {
+    throw new HTTPException(400, {
+      message: "Your solve topped out — a puzzle has to be survivable",
+    });
+  }
+  if (verified.attack === 0) {
+    throw new HTTPException(400, {
+      message: "Your solve sends no attack — there is nothing to score",
+    });
+  }
+
+  const submission = store.recordSubmission({
+    player: session.player,
+    guildId: session.guildId,
+    title,
+    goal,
+    claimedDifficulty,
+    ...shape,
+    targetAttack: verified.attack,
+    // `VerifiedPlacement` is a `SolutionStep` plus the frame it locked on, and
+    // the frame is the author's timing rather than part of the answer. Dropped
+    // here rather than at the reveal, so there is only one place it can leak.
+    solution: verified.placements.map(({ frame: _frame, ...step }) => step),
+    events,
+    handling,
+    piecesPlaced: verified.placements.length,
+    clears: verified.clears,
+  });
+
+  return c.json({
+    ok: true,
+    submissionId: submission.submissionId,
+    // What the server saw, so the builder can report that rather than its own
+    // reading of the same run. The two disagreeing is the one thing a player
+    // has no way to debug from the outside.
+    verified: {
+      attack: verified.attack,
+      clears: verified.clears,
+      piecesPlaced: verified.placements.length,
+    },
   });
 });
 

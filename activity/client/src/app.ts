@@ -8,6 +8,7 @@
  */
 
 import { BOARD_HEIGHT, type PuzzlePrompt, type SolutionStep } from "@shared/puzzle";
+import type { Handling } from "@shared/tetris/handling";
 import type { InputEvent } from "@shared/tetris/verify";
 import type { Connection } from "./discord";
 import type { DailyEntry, DailyResponse, RushState, StoredRun } from "./api";
@@ -500,9 +501,7 @@ export class App {
     this.duel = null;
     this.duelState = null;
 
-    this.builderRun?.dispose();
-    this.builderRun = null;
-    this.builderPuzzle = null;
+    this.endBuilderRun();
     // Whichever way the screen was left, the builder's board goes back to
     // being something to paint on rather than a frozen last frame with the
     // palette still hidden behind it.
@@ -628,14 +627,24 @@ export class App {
    * game's canvas, which is not mounted.
    */
   private startBuilderTest(puzzle: PuzzlePrompt): void {
-    this.builderRun?.dispose();
+    // Through the same door as every other way out of a test: the run being
+    // replaced here is the one a handling change or the R key just restarted,
+    // and its log is as much a record of what the author did as the last one's.
+    this.endBuilderRun();
     this.builderPuzzle = puzzle;
     this.mode = "build";
-    this.builderRun = new PuzzleRun(puzzle, this.settings.value.handling, {
+    // Read once and carried alongside the log rather than looked up again when
+    // the run ends. `PuzzleRun` freezes handling for the life of an attempt,
+    // and the server replays a whole log under one handling — so an author who
+    // opens the settings between the last piece and Submit would otherwise have
+    // their run replayed under controls they never played it with.
+    const handling = this.settings.value.handling;
+    this.builderRun = new PuzzleRun(puzzle, handling, {
       onFrame: (view, snapshot) => this.builder?.showTest(view, snapshot),
-      // Nothing is filed, so the end of a run is just the last frame of it —
-      // which `onFrame` has already delivered, phase and all.
-      onFinish: () => undefined,
+      // The end of a run is the only artefact a submission can be built from.
+      // Nothing is filed here — the builder holds it, and holds it only while
+      // the draft it was played on is still the draft on the screen.
+      onFinish: (snapshot, events) => this.keepBuilderSolve(snapshot, events, handling),
       onLock: () => undefined,
     });
     this.input.setGameInputEnabled(true);
@@ -643,12 +652,58 @@ export class App {
   }
 
   private stopBuilderTest(): void {
-    this.builderRun?.dispose();
-    this.builderRun = null;
-    this.builderPuzzle = null;
+    this.endBuilderRun();
     this.mode = "daily";
     this.input.setGameInputEnabled(false);
     this.builder?.endTest();
+  }
+
+  /**
+   * Puts the builder's run away, keeping its log on the way past.
+   *
+   * `dispose` never fires `onFinish`, and every way out of a test but playing
+   * the queue to its end goes through it — Stop, the wordmark, the R key, a
+   * handling change. **An abandoned run counts.** The log is the same artefact
+   * either way: the server derives the target and the reference solution from
+   * what it replays, never from a claim about how the attempt ended, and the
+   * case being protected is the ordinary one — an author whose goal names no
+   * attack figure plays the four pieces that make the shape they wanted out of
+   * a queue of ten and presses Stop, because there is nothing left to show.
+   * Requiring a finished run would lose exactly those, and leave them told to
+   * "play your own puzzle first" having just done it.
+   *
+   * `log()` is the mid-attempt reader a rush already needed for the same
+   * reason, which is why there is nothing new in the runner for this.
+   */
+  private endBuilderRun(): void {
+    const run = this.builderRun;
+    // `run.handling`, not the settings: a handling change is one of the things
+    // that ends a run this way, and by now the settings hold the new one.
+    if (run) this.keepBuilderSolve(run.snapshot(), run.log(), run.handling);
+    run?.dispose();
+    this.builderRun = null;
+    this.builderPuzzle = null;
+  }
+
+  /**
+   * Hands a run's log to the builder, which keeps it for as long as the draft
+   * on the screen is the one it was played on.
+   *
+   * Copied out of the run rather than passed by reference: `log()` hands back
+   * the live array, and a log that changed under the thing holding it would be
+   * a solve for a run nobody watched.
+   *
+   * A run that ends and is then put away arrives here twice carrying the same
+   * events, so this replaces rather than accumulates. Whether a log is worth
+   * keeping at all is the builder's call, not this one's — it is the side that
+   * knows which draft is on the screen.
+   */
+  private keepBuilderSolve(
+    snapshot: RunSnapshot,
+    events: readonly InputEvent[],
+    handling: Handling,
+  ): void {
+    this.builder?.keepSolve({ snapshot, events: [...events], handling });
   }
 
   // ── 1v1 ────────────────────────────────────────────────────────────────────
