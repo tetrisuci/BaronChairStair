@@ -59,6 +59,15 @@ export function withRush(
   );
 }
 
+/**
+ * What the card says before anybody has played.
+ *
+ * One constant because it is now said twice: once at construction, so a
+ * pending or failed fetch reads as an empty morning rather than as a blank
+ * card, and once when the fetch lands on a day nobody has started.
+ */
+const EMPTY_DAY = "Nobody has played yet today. Be first.";
+
 /** Solved, tried and failed, and never opened are three different days. */
 function mark(row: Row, tier: DailyTier): HTMLElement {
   const state = tier in row.marks ? (row.marks[tier] ? "on" : "off") : "none";
@@ -69,7 +78,9 @@ function mark(row: Row, tier: DailyTier): HTMLElement {
 }
 
 export function createDailyBoard(): DailyBoard {
-  const note = el("p", { class: "note", text: "" });
+  // Seeded rather than blank: this card is on the front door from the moment
+  // it mounts, and most mornings the fetch it is waiting on comes back empty.
+  const note = el("p", { class: "note", text: EMPTY_DAY });
   // `board-list` is what caps the height and scrolls; without it every row
   // renders inline and pushes the rest of the card off the bottom.
   const rows = el("div", { class: "board-list" });
@@ -81,7 +92,7 @@ export function createDailyBoard(): DailyBoard {
       const merged = withRush(board, rush);
       note.textContent = merged.length
         ? "Solved, then fastest. Squares are easy, medium, hard; ⚡ is today's rush."
-        : "Nobody has played yet today. Be first.";
+        : EMPTY_DAY;
       replaceChildren(
         rows,
         ...merged.map((row, index) =>

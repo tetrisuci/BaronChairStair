@@ -133,8 +133,12 @@ export interface Credits {
  *
  * Zero is unrated rather than easy, so it fills nothing and says so — the
  * archive has seven of them, and they ask for things like "2 TSS, 3 TSD".
+ *
+ * Exported rather than re-implemented on the front door: `PIP_SCALE` and its
+ * bands are a contract, and a second copy of the arithmetic is a second place
+ * for it to drift from the test that pins it.
  */
-function difficultyPips(difficulty: number): HTMLElement {
+export function difficultyPips(difficulty: number): HTMLElement {
   const filled = Math.min(MAX_PIPS, Math.ceil(difficulty / PIP_SCALE));
   const dots = Array.from({ length: MAX_PIPS }, (_, index) =>
     el("span", { class: `pips__dot${index < filled ? " pips__dot--on" : ""}` }),

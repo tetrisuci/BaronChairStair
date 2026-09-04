@@ -19,7 +19,6 @@ import { InputRouter } from "./game/input";
 import { type LocalAction, keyName } from "@shared/keybinds";
 import { RushSession, type RushSummary } from "./game/rush";
 import { PuzzleRun, type RunSnapshot } from "./game/runner";
-import { createDailyMenu } from "./ui/daily-tiers";
 import { createDailyBoard } from "./ui/daily-board";
 import { createHome } from "./ui/home";
 import type { DailyTier } from "@shared/daily";
@@ -131,9 +130,11 @@ export class App {
   private rushState: RushState | null = null;
   private mode: PlayMode = "daily";
   private solutionPlayer: SolutionPlayer | null = null;
-  private readonly dailyMenu = createDailyMenu((tier) => this.showDailyTier(tier));
   private readonly home = createHome({
-    onDaily: () => this.showDailyMenu(),
+    // Straight onto a board. There was a chooser between the two — the same
+    // three rows, one click deeper — and folding it into the front door is
+    // half of what this screen is for.
+    onPick: (tier) => this.showDailyTier(tier),
     onRush: () => this.enterRush(),
     onDuel: () => this.enterDuel(),
     onExplore: () => this.enterExplorer(),
@@ -305,12 +306,6 @@ export class App {
   }
 
   /**
-   * The front door: what the day looks like, where to go, and a board.
-   *
-   * Every mode leaves through here now, and the activity opens on it. Four
-   * things to do is one too many for a row of small buttons in the furniture.
-   */
-  /**
    * The prologue every screen shares.
    *
    * Each `enter*`/`show*` used to hand-roll these four lines, and two of the
@@ -329,43 +324,46 @@ export class App {
     this.badge.hide();
   }
 
+  /**
+   * The front door: the day's three, where else to go, and a board.
+   *
+   * Every mode leaves through here and the activity opens on it, so it is the
+   * screen most often looked at and the one that had least on it. It is now
+   * also the chooser — pressing one of the three goes straight to a board.
+   */
   private showHome(): void {
     if (!this.daily) return;
     this.leaveForScreen();
-    this.home.update(this.daily.day, this.daily.puzzles, this.daily.streak);
+    this.home.update(
+      this.daily.day,
+      this.daily.puzzles,
+      this.daily.streak,
+      // What the server cannot know: a daily run is filed only when it solves,
+      // so a puzzle somebody opened and walked away from looks untouched from
+      // its side of the wire.
+      this.startedToday(),
+    );
     this.home.mountBoard(this.dailyBoard.element);
-    this.showScreen({ wide: true, fill: true }, this.home.element);
+    // `full` rather than `wide`+`fill`: two columns want the deck's whole width,
+    // and they want a row exactly as tall as the screen so the board beside the
+    // day can scroll inside itself instead of stretching the page.
+    this.showScreen({ full: true }, this.home.element);
     void this.loadLeaderboard();
-  }
-
-  /**
-   * The day's three, to choose between.
-   *
-   * Where the daily now opens, and where it comes back to. Dropping somebody
-   * straight onto one of three puzzles picks for them, and picks the same one
-   * every day — which is the easy one, for a player who might have wanted the
-   * hard one, or the reverse.
-   */
-  private showDailyMenu(): void {
-    if (!this.daily) return;
-    this.leaveForScreen();
-    this.dailyMenu.update(this.daily.day, this.daily.puzzles, this.startedToday());
-    this.showScreen({ wide: true, fill: true }, this.dailyMenu.element);
   }
 
   /**
    * Puts one of the day's three on the board.
    *
-   * The single funnel for it: the sheet, the credits strip, the goal panel, the
-   * picker's own highlight and whether a filed run is shown all have to agree
-   * about which puzzle is in front of the player, and they only do that if one
-   * place sets them.
+   * The single funnel for it: the sheet, the credits strip, the goal panel and
+   * whether a filed run is shown all have to agree about which puzzle is in
+   * front of the player, and they only do that if one place sets them.
    */
   private showDailyTier(tier: DailyTier): void {
     if (!this.daily) return;
-    // Clicking the tier you are already playing is a no-op, not a restart.
-    // Both the home row and the chooser can raise it, and rebuilding here
-    // throws away an attempt in progress.
+    // Clicking the tier you are already playing is a no-op, not a restart:
+    // rebuilding here would throw away an attempt in progress. It cannot fire
+    // from the front door, which arrives through `leaveForScreen` with the run
+    // already disposed, but the masthead and the wordmark are one press away.
     if (tier === this.dailyTier && this.run) return;
     this.dailyTier = tier;
     const entry = this.dailyEntry;
@@ -540,9 +538,9 @@ export class App {
 
   private returnToDaily(): void {
     if (!this.daily) return;
-    // Home, not the last puzzle and not the chooser. Leaving a rush or a duel
-    // means leaving the thing you were doing, and the front door is where the
-    // next choice gets made.
+    // Home, not the last puzzle. Leaving a rush or a duel means leaving the
+    // thing you were doing, and the front door is where the next choice gets
+    // made — and where the day's three now are.
     this.showHome();
   }
 
@@ -582,12 +580,16 @@ export class App {
 
   /** One centred column, for a moment when there is nothing to play. */
   private showScreen(
-    options: { wide?: boolean; fill?: boolean },
+    options: { wide?: boolean; full?: boolean; fill?: boolean },
     ...cards: HTMLElement[]
   ): void {
     this.clearCredits();
     this.deck.classList.add("deck--screen");
-    const modifiers = [options.wide && "screen--wide", options.fill && "screen--fill"]
+    const modifiers = [
+      options.wide && "screen--wide",
+      options.full && "screen--full",
+      options.fill && "screen--fill",
+    ]
       .filter(Boolean)
       .join(" ");
     replaceChildren(this.deck, el("div", { class: `screen ${modifiers}`.trim() }, ...cards));
@@ -1361,6 +1363,10 @@ export class App {
       // One call, two readers: the home screen shows the day whole, and the
       // panel beside a board shows the tier being played.
       this.dailyBoard.update(board, rush, self);
+      // Second reader of the same response: the front door's Rush row says how
+      // busy the mode has been today, which is the one live number any of the
+      // four rows there has and is worth no request of its own.
+      this.home.setRush(rush);
       // The verdict rail's panel wants per-run rows, which the day board no
       // longer carries; it is refreshed from the submit response instead.
     } catch {

@@ -368,6 +368,33 @@
 .screen--wide { --screen-width: 720px; }
 
 /*
+ * Two columns' worth, for the one screen that has two.
+ *
+ * 1080 is the deck's own 1090 cap less its shadow gutter, so the front door is
+ * exactly as wide as the board it leads to. 720 cannot carry a hero sheet and
+ * a leaderboard side by side, and stacking them is what the narrow layout is
+ * for rather than what the desk-sized one should settle for.
+ *
+ * It carries the row as well as the width, and is used *instead of*
+ * `.screen--fill` rather than beside it — `--fill` stretches an auto row, which
+ * is only a floor. With two columns that is not enough: a leaderboard forty
+ * rows deep makes the row forty rows tall, the whole screen scrolls, and the
+ * panel never learns it was supposed to shrink and scroll inside itself,
+ * because nothing above it ever had a height to shrink against. `1fr` of a
+ * screen that does have one is what hands the rail a definite height, and a
+ * definite height is the one thing `.rail`'s `min-height: 0` needs in order to
+ * mean anything.
+ *
+ * A left column taller than the row still overflows it and `.screen` still
+ * scrolls to reach it, because that overflow lands in the scroll region rather
+ * than on top of the credits strip.
+ */
+.screen--full {
+  --screen-width: 1080px;
+  grid-template-rows: minmax(0, 1fr);
+}
+
+/*
  * One card, filling the height it is given, managing its own overflow. The
  * default screen stacks cards at their natural height and scrolls the lot;
  * that is right for the rush cards and wrong for a card whose whole point is a
@@ -571,9 +598,8 @@
 
 .tiers__pick { flex: 1 1 auto; }
 
-
-
-/* The chooser's rows carry a goal and a byline, so they stack. */
+/* A row carrying a goal and a byline under its title — the day's sheets, and
+   the rush and duel lists that borrowed the shape from the chooser. */
 .explore__by { color: var(--ink-soft); font-size: 11px; }
 .explore__goal {
   display: block;
@@ -581,28 +607,6 @@
   font-size: 11px;
   color: var(--ink-soft);
   white-space: normal;
-}
-
-/* Done, and still worth being able to open again. */
-.explore__item--done .explore__id { background: var(--good); }
-
-/*
- * The front door's four ways on.
- *
- * Wrapping, and each one wide enough to be a target rather than a word: this
- * is the first thing a player meets, and Discord gives the activity a window
- * whose shape nobody controls.
- */
-.home__nav {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin: 12px 0;
-}
-
-.home__go {
-  flex: 1 1 120px;
-  padding-block: 12px;
 }
 
 /* ── Builder ──────────────────────────────────────────────────────────────── */

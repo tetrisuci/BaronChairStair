@@ -1,6 +1,7 @@
 import "./styles/tokens.css";
 import "./styles/sheet.css";
 import "./styles/panels.css";
+import "./styles/home.css";
 import "./styles/overlays.css";
 import "./styles/narrow.css";
 
