@@ -1,10 +1,13 @@
 # Puzzle — the daily Tetris puzzle
 
-One modern Tetris puzzle a day, played inside Discord as an
+Three modern Tetris puzzles a day — an easy, a medium and a hard — played
+inside Discord as an
 [Activity](https://discord.com/developers/docs/activities/overview). Everyone
-in the server gets the same puzzle, it changes at midnight, and the result
-pastes into a channel as a spoiler-light grid. Alongside it runs puzzle rush:
-five minutes, one sequence everyone shares, as many puzzles as you can solve.
+in the server gets the same three, they change at midnight, solving any one of
+them keeps a streak, and the result pastes into a channel as a spoiler-light
+grid. Alongside them run puzzle rush (five minutes, one sequence everyone
+shares, as many puzzles as you can solve), 1v1 duels, and a builder for writing
+new puzzles.
 
 The puzzles come from the Tetris at UCI puzzle archive, which stores each one as
 a pair of [Blueprint](https://bp.tali.software) codes — the position and the
@@ -22,7 +25,7 @@ tmp/*.csv ──► tools/build-puzzles.ts ──┬─► data/puzzles.json   �
 
 | Path | What it is |
 | --- | --- |
-| `shared/blueprint/` | Decoder for Blueprint `b1@…` codes: bit reader, opcodes, playfield geometry |
+| `shared/blueprint/` | Blueprint `b1@…` codes both ways: bit reader and writer, opcodes, playfield geometry |
 | `shared/tetris/` | One engine configuration, a placement pathfinder, and the run verifier |
 | `shared/puzzle.ts` | The puzzle data model, shared by the build, the server, and the client |
 | `shared/daily.ts` | Which puzzle belongs to which day |
@@ -103,7 +106,7 @@ bun run tools/e2e-submit.ts http://localhost:3998
    detects it is running inside Discord; the server accepts both forms, so no
    further configuration is needed.
 6. **Launch it** from the activity picker in any voice channel, or post a link
-   with `/puzzle play`.
+   with `/puzzle`.
 
 The activity asks for two OAuth scopes. `identify` names the player on the
 leaderboard. `guilds` lets the server confirm a player is really in the server
@@ -112,10 +115,12 @@ client claims, and anyone could post into any server's standings.
 
 ### The bot commands
 
-`client/puzzle_commands.py` adds `/puzzle play`, `/puzzle standings`,
-`/puzzle rush`, and `/puzzle help` to the existing bot. It owns none of the
-game — it reads three endpoints on the activity server so the two can never
-disagree. Set these in the repo-root `.env`:
+`client/puzzle_commands.py` adds one command, `/puzzle`, which announces the
+day in a channel with a way in. It used to be a group of four; the other three
+rendered in Discord what the activity now shows on its own front screen, each
+in its own embed, each a second place for a board to be wrong. The bot owns
+none of the game — it reads the activity server so the two can never disagree.
+Set these in the repo-root `.env`:
 
 ```
 PUZZLE_APP_ID=<the application id>
@@ -327,6 +332,84 @@ order, inside five minutes the server measured itself. It does not prove a
 human made them, and a scripted client beats it. A fixed sequence per day also
 means whoever plays later knows what is coming — the daily's own trade, forty
 puzzles at a time.
+
+## The puzzle builder
+
+Paint a board, say which pieces the solver gets, write down what they are
+aiming for, and take a `b1@…` code away with you. It is behind **Build** on the
+front screen.
+
+**The code is the artefact, which is why the screen ends at a text field rather
+than a save button.** The club authors every puzzle on
+[bp.tali.software](https://bp.tali.software) and keeps them in a spreadsheet as
+Blueprint codes, so the only output worth anything is one that site and this
+decoder both read. `shared/blueprint/encode.ts` is the inverse of the decoder
+and writes four opcodes — SetCells, PushBack, SwapHold and Comment. What makes
+it trustworthy is not the four opcodes but the check behind them: all 138
+archived codes decode, re-encode, and decode again to the same page.
+
+**Two limits, before they are discovered.** A code written here carries no
+active piece, so a reader opens it with the first preview in hand rather than
+on the board — which is why the first glyph in the queue strip is boxed and
+says so — and for the same reason `bun run puzzles` refuses one, because the
+pipeline requires an active piece. It is a code to paste into blueprint or the
+club's sheet, not a pipeline input. Nothing local can show that tali's own site
+reads what we write; the round trip is proven against *this* decoder.
+
+**The goal is a sentence with a parser behind it, not a set of fields.** A
+blueprint code carries exactly one free-text comment and that comment *is* the
+goal — `tools/build-puzzles.ts` reads it straight into `Puzzle.goal` — so
+counters have nowhere to live but inside the sentence. The wording is therefore
+the club's own rather than ours: `Clear 2 TSDs and 1 TST` is written verbatim
+on archived puzzles, and `Clear 1 TSS, 2 TSDs, and 1 TST` — Oxford comma
+included — on two more. Two rules keep the round
+trip from eating anybody's work. Parsing is all-or-nothing, because `3TSD not
+in one combo` is a real archived goal carrying a condition the counters have no
+room for and rounding it down to "3 TSDs" would be worse than having no
+counters at all. And nothing rewrites the text on its own — the sentence is
+rebuilt only when a control moves, never on load. Of the 138 archived goals, 73
+fill the counters and 64 stay prose; all 138 load unchanged.
+
+**Undo is for the board.** A step is a stroke, a Clear board, or a Load. Typing
+in the fields is not: a text field has the browser's own undo inside it, and a
+forty-character goal used to evict the whole stack one keystroke at a time. A
+Load is the one change that replaces the fields as well, so undoing one puts
+those back and redoing one takes them away again. `Ctrl+Z`, `Ctrl+Shift+Z` and
+`Ctrl+Y` all answer on the board; arrows move a cursor, space fills, backspace
+clears.
+
+**Test plays the draft on the board it was painted on.** The grid is already
+ten cells by twenty with row 0 on the floor, which is the shape and the
+direction a rendered frame arrives in — so a test needs no second playfield.
+The palette steps aside and the run is painted into the cells that were being
+clicked on. It is the real engine under the player's own handling, and nothing
+about it is filed or scored. What it tells the author:
+
+- **A solve exists**, because they just played one. That is the question no
+  static check can answer, and this screen makes no other claim about
+  solvability: a board nobody has solved is unknown, not broken.
+- **Whether the goal was met, clear by clear.** The run names every clear it
+  made, so `Clear 2 TSDs and 1 TST` is checked as two TSDs and one TST rather
+  than as the one number underneath it. A prose goal cannot be checked and says
+  so instead of quietly passing.
+- **What the run sent**, which is the number a draft does not otherwise have. A
+  shipped puzzle's target comes from replaying the author's reference solution,
+  and a draft has no solution until somebody plays one — so a goal naming no
+  attack has no target, the run plays its queue out, and the end of it offers
+  the attack it sent as the figure to adopt. A target of zero would instead be
+  met before the first piece landed, ending the test having proved nothing.
+
+One rough edge, named because it looks like a bug: a quad that empties the
+board is reported by the engine as a perfect clear and by nothing else, so a
+goal asking for a quad reads as unmet. The clears the goal never asked for are
+listed underneath, which is where that shows.
+
+**Cells above the twentieth row are kept but not drawn.** Blueprint's field is
+forty rows and this screen paints twenty, so a code brought in from elsewhere
+can carry cells the grid cannot reach. They survive re-encoding rather than
+being quietly dropped — Copy would otherwise hand back a smaller puzzle than
+the one that was pasted in — and the warning line says how many there are and
+that Clear board is what removes them.
 
 ## Placing a piece
 

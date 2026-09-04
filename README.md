@@ -10,7 +10,7 @@ but it is now one part of four:
 | | |
 |---|---|
 | **The bot** — `client/` | Slash commands: replay highlights, the daily puzzle, server activity graphs, an internship tracker |
-| **The activity** — `activity/` | A Discord Activity: one modern Tetris puzzle a day, plus a five-minute puzzle rush. Has [its own README](activity/README.md) |
+| **The activity** — `activity/` | A Discord Activity: three modern Tetris puzzles a day, a five-minute puzzle rush, 1v1, and a builder for writing new ones. Has [its own README](activity/README.md) |
 | **The engine bridge** — `server/`, `client/teto_client.py` | A Bun process wrapping the TETR.IO engine, spoken to over NDJSON from Python |
 | **The internship tracker** — `internship_poller.py` | Unrelated to Tetris; it lives here because the bot fronts it |
 
@@ -27,7 +27,7 @@ BaronChairStair/
 │   ├── build_snapshots.py    replay JSON → per-round board snapshots
 │   ├── render.py             attack-burst highlight boards
 │   ├── presence_tracker.py   samples who is online, every 10 minutes
-│   ├── puzzle_commands.py    the /puzzle group; talks to the activity server
+│   ├── puzzle_commands.py    the /puzzle command; talks to the activity server
 │   └── puzzle_recap.py       yesterday's results, replied to yesterday's post
 ├── activity/                 the Discord Activity (own README, own tests)
 ├── internship_poller.py      Greenhouse / Lever / Ashby / Workday poller
@@ -69,22 +69,25 @@ line up in Discord's proportional font.
 ### `/puzzle` — the daily puzzle
 
 ```
-/puzzle play          today's sheet, and a link that opens the activity
-/puzzle standings     today's leaderboard for this server
-/puzzle rush          today's five-minute rush board for this server
-/puzzle help          what the daily is and how it is scored
+/puzzle               today's three sheets, and a link that opens the activity
 ```
 
-The bot owns none of the game. It reads four endpoints on the activity server
-and formats what comes back, so the two can never disagree about a score.
-Needs `PUZZLE_APP_ID`, `PUZZLE_API` and `PUZZLE_API_KEY`; without them the
-commands still register and explain what is missing rather than failing shut.
+One command, not a group. It used to be four; the other three rendered in
+Discord what the activity now shows on its own front screen — boards, rush and
+the rules all live one click away — and each was a second place for a board to
+be wrong. The one job left is the one Discord is actually for: announcing the
+day in a channel, with a way in.
+
+The bot owns none of the game. It reads the activity server and formats what
+comes back, so the two can never disagree about a score. Needs
+`PUZZLE_APP_ID`, `PUZZLE_API` and `PUZZLE_API_KEY`; without them the command
+still registers and explains what is missing rather than failing shut.
 
 Once a day, after the puzzle turns over, the bot replies to that server's own
-`/puzzle play` message with how yesterday went — who solved it and how fast,
-who missed, and how long the server's run of solves is. It happens once per
-server per day, and only in servers that announced the puzzle in the first
-place, because the reply needs something to reply to.
+`/puzzle` message with how yesterday went — who solved which of the three and
+how fast, who missed, and how long the server's run of solves is. It happens
+once per server per day, and only in servers that announced the puzzle in the
+first place, because the reply needs something to reply to.
 
 ### `/activity` — who is around
 
@@ -124,9 +127,10 @@ invocations still resolve and the picker looks unchanged.
 ## The daily puzzle activity
 
 `activity/` is a self-contained Bun + TypeScript app served as a Discord
-Activity: one puzzle a day from the club's archive, scored on the server by
-replaying the keys you actually pressed, plus a five-minute puzzle rush and an
-explorer for the whole archive.
+Activity: three puzzles a day from the club's archive — an easy, a medium and a
+hard — scored on the server by replaying the keys you actually pressed, plus a
+five-minute puzzle rush, 1v1 duels, an explorer for the whole archive, and a
+builder that writes Blueprint codes for new puzzles.
 
 It has its own README, its own tests, and its own `.env`. Start there:
 
