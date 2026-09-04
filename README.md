@@ -45,8 +45,14 @@ Run from `client/`, so the sibling modules import cleanly:
 
 ```bash
 pip install discord.py python-dotenv aiohttp matplotlib
+bun install        # once, at the repo root — the replay parser behind
+                   # /highlights and build_snapshots.py needs @haelp/teto
 cd client && python discord_bot.py
 ```
+
+Everything except the replay commands runs on Python alone; without the
+bridge, `/highlights` fails with an unexpected-error message from the
+spawned process.
 
 The token comes from `.env` at the repo root — copy `example.env` and fill it
 in. `.env` values override shell exports, which is usually what you want when a
