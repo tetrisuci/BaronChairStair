@@ -22,6 +22,7 @@ import { withRush } from "../client/src/ui/daily-board";
 import { createRushResultCard } from "../client/src/ui/rush";
 import { createBuilder } from "../client/src/ui/builder";
 import { createStartedPuzzles } from "../client/src/started";
+import { createCredits } from "../client/src/ui/chrome";
 import { MAX_ROWS } from "../client/src/ui/builder-state";
 import type { RushPlayed } from "../client/src/api";
 
@@ -465,5 +466,67 @@ describe("remembering which puzzles were opened", () => {
     const store = createStartedPuzzles("eve");
     store.add(246, 11);
     expect(createStartedPuzzles("eve").has(246, 11)).toBe(true);
+  });
+});
+
+describe("the difficulty pips", () => {
+  const credits = () => createCredits();
+
+  /** What one difficulty renders as: filled of total, with a "+" if there is one. */
+  const shown = (difficulty: number): string => {
+    const strip = credits();
+    strip.update({
+      id: 1,
+      title: "sheet",
+      author: "satilea",
+      difficulty,
+      goal: "Clear 1 TSD",
+      set: null,
+      board: [],
+      queue: ["T"],
+      hold: null,
+      targetAttack: 4,
+    } as never);
+    const pips = strip.element.querySelector(".credits__pips")!;
+    const dots = [...pips.querySelectorAll(".pips__dot")];
+    const on = dots.filter((dot) => dot.className.includes("--on")).length;
+    return `${on}/${dots.length}${pips.querySelector(".pips__plus") ? "+" : ""}`;
+  };
+
+  test("fills one square per two rating points, and caps at five and a plus", () => {
+    // The archive's scale is 1-to-10-and-beyond and the strip has five squares,
+    // so the banding is the whole of what a reader gets. It was arithmetic with
+    // no test under it: `Math.ceil(d / 2)` is one edit away from `Math.round`,
+    // which quietly moves every odd rating down a square.
+    expect([1, 2].map(shown)).toEqual(["1/5", "1/5"]);
+    expect([3, 4].map(shown)).toEqual(["2/5", "2/5"]);
+    expect([5, 6].map(shown)).toEqual(["3/5", "3/5"]);
+    expect([7, 8].map(shown)).toEqual(["4/5", "4/5"]);
+    expect([9, 10].map(shown)).toEqual(["5/5", "5/5"]);
+  });
+
+  test("says 'and then some' above ten, which the archive really reaches", () => {
+    // Seventeen archived puzzles are rated above ten and one is a 20, so the
+    // cap is a real band rather than a defensive one. Ten itself is not in it.
+    expect(shown(10)).toBe("5/5");
+    expect([11, 15, 20].map(shown)).toEqual(["5/5+", "5/5+", "5/5+"]);
+  });
+
+  test("unrated fills nothing, and is not the same as easy", () => {
+    // Seven archived puzzles carry no rating. They ask for things like
+    // "2 TSS, 3 TSD", so reading a zero as the gentlest puzzle on the board
+    // would be the wrong way round — the row says so in words instead.
+    expect(shown(0)).toBe("0/5");
+    const strip = credits();
+    strip.update({ id: 1, title: "s", author: "a", difficulty: 0, goal: "", set: null,
+      board: [], queue: ["T"], hold: null, targetAttack: 1 } as never);
+    expect(strip.element.querySelector(".pips")!.getAttribute("aria-label")).toBe("not yet rated");
+  });
+
+  test("no puzzle at all draws no pips, not five empty ones", () => {
+    const strip = credits();
+    strip.update(null);
+    expect(strip.element.querySelector(".credits__pips")!.childElementCount).toBe(0);
+    expect(strip.element.querySelector(".credits__title")!.textContent).toBe("—");
   });
 });

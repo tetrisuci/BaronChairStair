@@ -15,6 +15,15 @@ import { el, replaceChildren } from "./dom";
 
 /** Difficulty above this is shown as "and then some" rather than more pips. */
 const MAX_PIPS = 5;
+/**
+ * Rating points per square: two, so the archive's 1-to-10 covers the five.
+ *
+ * The bands that falls out to, written down because it is the contract rather
+ * than an accident of the arithmetic — 1–2 fills one square, 3–4 two, 5–6
+ * three, 7–8 four, 9–10 five, and anything above ten is five and a `+`. The
+ * archive runs to 20, so that last band is fourteen real puzzles and not a
+ * theoretical one.
+ */
 const PIP_SCALE = 2;
 
 /** The club's logo motif: four coloured blocks in a square. */
@@ -120,6 +129,10 @@ export interface Credits {
 /**
  * The archive's difficulty is a loose 1-to-10-and-beyond vibe scale, so it is
  * shown as filled blocks rather than a precise number it does not deserve.
+ * `PIP_SCALE` carries the bands; `tests/render.test.ts` pins them.
+ *
+ * Zero is unrated rather than easy, so it fills nothing and says so — the
+ * archive has seven of them, and they ask for things like "2 TSS, 3 TSD".
  */
 function difficultyPips(difficulty: number): HTMLElement {
   const filled = Math.min(MAX_PIPS, Math.ceil(difficulty / PIP_SCALE));
