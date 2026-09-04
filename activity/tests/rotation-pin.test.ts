@@ -95,8 +95,8 @@ interface Opened {
  * immediately rather than wait — which is a property of the store, not
  * something a test should be discovering.
  */
-function open(puzzlesPath: string): Opened {
-  const archive = PuzzleArchive.load(puzzlesPath);
+function open(puzzlesPath: string, overrides: Parameters<typeof PuzzleArchive.load>[3] = []): Opened {
+  const archive = PuzzleArchive.load(puzzlesPath, {}, [], overrides);
   const store = new Store(databasePath, pastDaysOf(archive));
   return { archive, store, schedule: new DaySchedule(archive, store) };
 }
@@ -340,5 +340,55 @@ describe("what the pin still gets wrong about the day it ships on", () => {
     } finally {
       after.store.close();
     }
+  });
+});
+
+describe("a reviewer's correction survives the same way growth does", () => {
+  /*
+   * Difficulty is the field this suite did not know was rotation input. It is
+   * what `byTier` partitions the daily on and what `rushBand` sorts a rush
+   * stack by — and it became editable when the review tool learned to correct
+   * puzzle metadata. A pinned pool froze the rush's membership, so the *ids*
+   * could not move; nothing froze the order they came in.
+   */
+  test("a difficulty correction moves neither a pinned day nor a pinned stack", () => {
+    const before = open(clubPath);
+    const day = before.archive.currentDay() - 1;
+    const days = finishedDays(before.archive);
+    const pinnedDays = days.map((each) => dealtBy(before.schedule, each));
+    const pinnedStack = stackFor(before.schedule.rushPoolFor(day), day);
+
+    // A puzzle genuinely in this day's forty, moved to the other end of the
+    // scale — the correction an officer makes when a rating is plainly wrong.
+    const victim = before.archive.get(pinnedStack[20]!)!;
+    const corrected = victim.difficulty > 5 ? 1 : 20;
+    before.store.setOverride(victim.id, { difficulty: corrected }, "reviewer");
+    const overrides = before.store.overridesFor();
+
+    const after = open(clubPath, overrides);
+    expect(days.map((each) => dealtBy(after.schedule, each))).toEqual(pinnedDays);
+    expect(stackFor(after.schedule.rushPoolFor(day), day)).toEqual(pinnedStack);
+
+    // And the correction is real rather than the test having failed to make
+    // one: the same pool ordered by the *corrected* difficulty does move, which
+    // is precisely what `rushPoolFor` freezing the ordering key prevents.
+    const pool = after.store.pinnedRushPool(day)!.map((id) => after.archive.get(id)!);
+    expect(stackFor(pool, day)).not.toEqual(pinnedStack);
+  });
+
+  test("a correction that would empty a tier is refused whole, not at the boot", () => {
+    // `byTier` throws in the constructor when a band is empty — at module
+    // scope, before any route exists. The server would not start, and the
+    // DELETE that undoes the correction lives on that server, so the way back
+    // was reachable only through sqlite3.
+    const before = open(clubPath);
+    const easy = before.archive.puzzles.filter((puzzle) => puzzle.difficulty > 0 && puzzle.difficulty <= 4);
+    for (const puzzle of easy) before.store.setOverride(puzzle.id, { difficulty: 20 }, "reviewer");
+
+    const after = open(clubPath, before.store.overridesFor());
+    // It boots, serving what the club wrote, so the officer's next DELETE
+    // lands on a server that is running.
+    expect(after.archive.puzzles.length).toBe(before.archive.puzzles.length);
+    expect(after.archive.get(easy[0]!.id)!.difficulty).toBe(easy[0]!.difficulty);
   });
 });

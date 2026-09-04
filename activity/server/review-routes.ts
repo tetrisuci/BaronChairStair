@@ -1,10 +1,16 @@
 /**
- * Letting an officer in, showing them what is waiting, and taking their verdict.
+ * Letting an officer in, showing them what is waiting, taking their verdict —
+ * and taking their corrections to puzzles that are already in.
  *
  * There is no review page yet. What is here is the door and what is behind it: a
  * link minted on the VPS by `tools/review-link.ts` is traded for a bearer token,
  * and that token carries the queue and the two decisions. Enough for an officer
  * with `curl`, and exactly what the page will call when it exists.
+ *
+ * The corrections are the second thing behind that door and they are a
+ * different kind of write: an accept creates a puzzle, a PATCH here changes
+ * five fields of one that exists. Which five, and why not the others, is
+ * `OVERRIDABLE_FIELDS` in `server/puzzle-overrides.ts`.
  *
  * **Accepting is the only route in this server that writes a puzzle.** Two
  * things stand between a submission and the archive, and both are here rather
@@ -35,14 +41,16 @@
 
 import type { Context, MiddlewareHandler } from "hono";
 import { HTTPException } from "hono/http-exception";
-import { decodeBoard, ENGINE_ROWS } from "../shared/puzzle";
+import { decodeBoard, ENGINE_ROWS, type Puzzle, toListing } from "../shared/puzzle";
 import { InvalidRunError, parseInputLog, verifyRun } from "../shared/tetris/verify";
 import type { Store } from "./db";
 import { type AppRouter, bearerToken, type Variables } from "./http";
 import { readJsonBody } from "./limits";
-import { boardProblem } from "./puzzles";
+import type { OverrideLogEntry, PuzzleOverride } from "./puzzle-overrides";
+import { boardProblem, overrideProblem, type PuzzleArchive, withOverride } from "./puzzles";
 import { mintReviewToken, readReviewGrant, readReviewToken } from "./review-token";
 import {
+  readOverrideChanges,
   readRejectionNote,
   readReviewedDifficulty,
   readReviewerNote,
@@ -62,8 +70,26 @@ export interface ReviewDependencies {
   readonly secret: string;
   readonly store: Pick<
     Store,
-    "pendingSubmissions" | "submission" | "acceptSubmission" | "rejectSubmission"
+    | "pendingSubmissions"
+    | "submission"
+    | "acceptSubmission"
+    | "rejectSubmission"
+    | "overridesFor"
+    | "setOverride"
+    | "clearOverride"
+    | "overrideHistory"
+    | "acceptedPuzzles"
   >;
+  /**
+   * The archive, for the puzzles a correction is *about*.
+   *
+   * Only the originals are reached for, and that is deliberate rather than
+   * frugal. `PuzzleArchive.load` runs once at module scope, so this object's
+   * effective values are a snapshot from boot and go stale the moment a PATCH
+   * lands; the corrections themselves are read out of the store on every
+   * request. Source plus the row on file is the only pair that is never behind.
+   */
+  readonly archive: Pick<PuzzleArchive, "originals" | "original">;
 }
 
 function requireReviewEnabled(secret: string): void {
@@ -168,13 +194,29 @@ function toVerdict(submission: Submission) {
 }
 
 /**
- * The submission a decision is about, or the refusal instead.
+ * The `:id` a route was called with, as a number, or the refusal instead.
  *
  * The digits are tested before anything parses them, because every parser here
  * is lenient in a different direction: `Number.parseInt("12abc")` is 12 and
  * `Number(" 3 ")` is 3, so either alone would answer about a row the officer
  * did not name. `isSafeInteger` afterwards is for the string of digits too long
  * to be a number at all.
+ *
+ * `named` rather than "submission" baked in: there are two kinds of id in this
+ * file now, and a refusal that called a puzzle id a submission id would send
+ * whoever read it looking in the wrong table.
+ */
+function idParam(c: Context, named: string): number {
+  const raw = c.req.param("id") ?? "";
+  const id = /^\d+$/.test(raw) ? Number.parseInt(raw, 10) : Number.NaN;
+  if (!Number.isSafeInteger(id)) {
+    throw new HTTPException(400, { message: `A ${named} id is a number` });
+  }
+  return id;
+}
+
+/**
+ * The submission a decision is about, or the refusal instead.
  *
  * The already-decided check lives here rather than in each route because both
  * decisions are terminal and the store answers the same way for both. It is a
@@ -184,11 +226,7 @@ function toVerdict(submission: Submission) {
  * window between this read and that write.
  */
 function pendingSubmission(c: Context, store: ReviewDependencies["store"]): Submission {
-  const raw = c.req.param("id") ?? "";
-  const id = /^\d+$/.test(raw) ? Number.parseInt(raw, 10) : Number.NaN;
-  if (!Number.isSafeInteger(id)) {
-    throw new HTTPException(400, { message: "A submission id is a number" });
-  }
+  const id = idParam(c, "submission");
   const submission = store.submission(id);
   if (!submission) throw new HTTPException(404, { message: `There is no submission ${id}` });
   if (submission.status !== "pending") throw alreadyDecided(submission);
@@ -274,8 +312,103 @@ function reverify(submission: Submission): void {
   });
 }
 
+/**
+ * One puzzle as the correction tool sees it: what players get, what its source
+ * said, and who changed it.
+ *
+ * The **effective** values are computed here rather than read off the archive
+ * this process booted with. That object cannot change — `PuzzleArchive.load`
+ * runs at module scope and `puzzles` is readonly — so a page rendered from it
+ * would show an officer the values from before their own PATCH. Source plus the
+ * row on file is the pair that is never stale, and laying one over the other is
+ * `withOverride`, the same function the archive itself merges with.
+ *
+ * `overrideProblem` is run here for the same reason the archive runs it: a row
+ * somebody edited by hand is served as its source at the next boot, so a page
+ * that showed it applied would be promising something the server will not do.
+ *
+ * The **originals** ride along beside them, every time and not only when there
+ * is a correction. That is what lets the page say what a field was changed
+ * *from* without asking a second question, and it is five short strings on a
+ * response that already carries the whole archive.
+ *
+ * `toListing` supplies `community`, which is where "club or player" is already
+ * said out loud — the id band is the record of a puzzle's source and there has
+ * never been a column for it.
+ */
+/**
+ * Who last moved each field, from the append-only log.
+ *
+ * Per field, because the alternative was the row's single `updated_by` and that
+ * column is a lie the moment two officers touch one puzzle: it names whoever
+ * wrote last, for all five fields, and overwrites the previous name in place.
+ * A page rendering it said "corrected by ivan" over a title ivan never saw.
+ */
+function correctedBy(
+  history: readonly OverrideLogEntry[],
+): Record<string, { by: string; at: number }> {
+  const latest: Record<string, { by: string; at: number }> = {};
+  // Oldest first, so the last write for a field is the one left standing.
+  for (const entry of history) latest[entry.field] = { by: entry.by, at: entry.at };
+  return latest;
+}
+
+function toReviewPuzzle(
+  original: Puzzle,
+  override: PuzzleOverride | undefined,
+  history: readonly OverrideLogEntry[] = [],
+) {
+  const usable = override !== undefined && overrideProblem(override) === null;
+  return {
+    ...toListing(usable ? withOverride(original, override) : original),
+    overridden: override !== undefined,
+    original: {
+      title: original.title,
+      author: original.author,
+      goal: original.goal,
+      difficulty: original.difficulty,
+      set: original.set,
+    },
+    updatedAt: override?.updatedAt ?? null,
+    // Deliberately no row-level `updatedBy`: see `correctedBy`. A single name
+    // over five fields is the defect, not the presentation of it.
+    correctedBy: correctedBy(history),
+    history,
+  };
+}
+
+/**
+ * The puzzle a correction is about, as its source has it, or the refusal.
+ *
+ * A 404 for an id the archive does not hold, which is the one moment somebody
+ * can still be told: `puzzle_overrides` has no foreign key — club puzzles live
+ * in a JSON file and there is no parent row to reference — so a row written
+ * against an id that does not exist would simply never be read again.
+ */
+function correctablePuzzle(
+  c: Context,
+  archive: ReviewDependencies["archive"],
+  store: ReviewDependencies["store"],
+): Puzzle {
+  const id = idParam(c, "puzzle");
+  const puzzle = archive.original(id);
+  if (puzzle) return puzzle;
+  // The archive is a boot snapshot, so a puzzle accepted since this server
+  // started is not in it — and answering that with "there is no puzzle N" is
+  // false at exactly the moment an officer is most likely to want a
+  // correction, having just watched the adjacent route mint the id.
+  if (store.acceptedPuzzles().some((accepted) => accepted.id === id)) {
+    throw new HTTPException(409, {
+      message:
+        `Puzzle ${id} was accepted since this server started; it joins the archive at ` +
+        "the next restart, and can be corrected after that",
+    });
+  }
+  throw new HTTPException(404, { message: `There is no puzzle ${id}` });
+}
+
 export function registerReviewRoutes(app: AppRouter, deps: ReviewDependencies): void {
-  const { secret, store } = deps;
+  const { secret, store, archive } = deps;
 
   /**
    * Trades the link for the token.
@@ -397,5 +530,130 @@ export function registerReviewRoutes(app: AppRouter, deps: ReviewDependencies): 
     });
     if (!decided.isFirst) throw alreadyDecided(decided.submission);
     return c.json({ ok: true, decided: toVerdict(decided.submission) });
+  });
+
+  // ── Correcting a puzzle already in the archive ─────────────────────────────
+
+  /**
+   * The whole archive, with every correction beside the source it corrects.
+   *
+   * The whole of it in one response, the way `/api/archive` hands the explorer
+   * its list: twenty-odd kilobytes, and a page that has it all can search and
+   * sort without asking again. There is no pagination here for the same reason
+   * there is none there.
+   *
+   * Both sources are listed, because a correction is written the same way for
+   * both and the page has no business knowing which table a puzzle came out of.
+   * `community` says which it was.
+   */
+  app.get("/api/review/puzzles", requireReviewer(secret), (c) => {
+    const overrides = new Map(
+      store.overridesFor().map((override) => [override.puzzleId, override]),
+    );
+    // Orphans go in the same list, not beside it. A correction naming an id the
+    // archive no longer holds — `bun run puzzles` rewrites the file from the
+    // club's sheet, so a puzzle can leave it — was filtered out without a word
+    // while still sitting in the table, which made it invisible and, through
+    // the DELETE's own 404, unreachable: sqlite3 was the only way to one. And
+    // it matters more than tidiness, because the merge is by id alone, so
+    // whatever the club numbers next inherits that correction.
+    const listed = new Set(archive.originals.map((puzzle) => puzzle.id));
+    const orphans = [...overrides.values()]
+      .filter((override) => !listed.has(override.puzzleId))
+      .map((override) => ({
+        id: override.puzzleId,
+        title: null,
+        author: null,
+        goal: null,
+        difficulty: null,
+        set: null,
+        orphaned: true as const,
+        overridden: true as const,
+        original: null,
+        updatedAt: override.updatedAt,
+        correctedBy: correctedBy(store.overrideHistory(override.puzzleId)),
+        history: store.overrideHistory(override.puzzleId),
+      }));
+    return c.json({
+      reviewer: c.get("reviewer").subject,
+      puzzles: [
+        ...archive.originals.map((puzzle) =>
+          toReviewPuzzle(puzzle, overrides.get(puzzle.id), store.overrideHistory(puzzle.id)),
+        ),
+        ...orphans,
+      ],
+    });
+  });
+
+  /**
+   * Corrects a puzzle's metadata, one field at a time.
+   *
+   * Cheap refusals first, in the order they are written: the body, then the id.
+   * `readOverrideChanges` holds every field to the rule the submission route
+   * holds its own to, and refuses outright anything that is not one of the five
+   * — a puzzle's board, queue, hold, target and solution are what it *is*, and
+   * a run is filed against a `puzzle_id` with no record of the board it was
+   * played on.
+   *
+   * **The rotation consequence, stated once and tested once.** `difficulty`
+   * feeds `dailyTierOf`, which is what `byTier` partitions the archive with, so
+   * correcting it moves a puzzle between tier pools — and the daily rotation is
+   * an index into those pools, derived from their *size*. A puzzle re-rated out
+   * of the easy band changes which easy puzzle a FUTURE day deals, and would
+   * have changed every past day too if `day_puzzles` did not pin them. It does:
+   * a day is written down the first time anybody asks for it and the pools may
+   * move underneath it afterwards. `tests/puzzle-override.test.ts` proves it,
+   * the same way `tests/rotation-pin.test.ts` proves it for a pool that grows.
+   *
+   * Like accepting, this does not change what the running process serves. The
+   * archive is built once at module scope, so the correction reaches players at
+   * the next restart; what comes back here is computed from the source and the
+   * row, so the officer sees the result immediately and the two agree.
+   *
+   * One bound worth knowing and not worth machinery: a difficulty correction
+   * that emptied a tier would stop the next boot, because a day needs one
+   * puzzle of each. The archive would have to be down to a single puzzle in a
+   * band for that, the boot error names the tier, and the way back is one
+   * DELETE. Checking it at write time was the alternative and it loses — the
+   * store has no archive to check against, and one checked against the stale
+   * in-memory copy would be a check that lied.
+   */
+  app.patch("/api/review/puzzles/:id", requireReviewer(secret), async (c) => {
+    const changes = readOverrideChanges(await readJsonBody(c));
+    const puzzle = correctablePuzzle(c, archive, store);
+    // A correction that repeats what the source already says is still recorded
+    // as a correction. Normalising it away would mean the store comparing
+    // against an archive, and `Store` does not have one and is not getting one.
+    const override = store.setOverride(puzzle.id, changes, c.get("reviewer").subject);
+    return c.json({
+      ok: true,
+      puzzle: toReviewPuzzle(puzzle, override ?? undefined, store.overrideHistory(puzzle.id)),
+    });
+  });
+
+  /**
+   * Reverts a puzzle to its source: one DELETE, and nothing to get wrong.
+   *
+   * Idempotent, and answers 200 either way. A revert of a puzzle that has no
+   * correction has already achieved what it asked for, and a 404 there would
+   * make a page that reverted twice look broken — the 404 in this route is
+   * about a puzzle that does not exist, which is a different thing and the one
+   * an officer can act on. `reverted` says which of the two happened.
+   */
+  app.delete("/api/review/puzzles/:id/override", requireReviewer(secret), (c) => {
+    const id = idParam(c, "puzzle");
+    const puzzle = archive.original(id);
+    // Deliberately not `correctablePuzzle`: this is the route that undoes a
+    // correction, and the correction most in need of undoing is the one whose
+    // puzzle has left the archive. Refusing it because the puzzle is gone made
+    // the row unreachable from the tool that owns it.
+    const standing = store.overridesFor().some((override) => override.puzzleId === id);
+    if (!puzzle && !standing) throw new HTTPException(404, { message: `There is no puzzle ${id}` });
+    const reverted = store.clearOverride(id, c.get("reviewer").subject);
+    return c.json({
+      ok: true,
+      reverted,
+      puzzle: puzzle ? toReviewPuzzle(puzzle, undefined, store.overrideHistory(id)) : null,
+    });
   });
 }

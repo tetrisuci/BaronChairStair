@@ -407,12 +407,23 @@ describe("writing down what a day dealt", () => {
         "day_rush",
         "players",
         "preferences",
+        // Append-only, beside the current-state row above: one `updated_by` for
+        // five fields meant the second officer to correct a puzzle took credit
+        // for the first one's work, and a revert erased that a correction had
+        // ever been made.
+        "puzzle_override_log",
+        // Corrections to a puzzle's metadata. Plain `CREATE TABLE IF NOT
+        // EXISTS` and nothing to migrate — there has never been another shape
+        // of it — so this line is the whole of what an old database needs, and
+        // `tests/puzzle-override.test.ts` is where it is opened and used.
+        "puzzle_overrides",
         "runs",
         "rush_runs",
         "submissions",
       ]);
       // The runs rebuild happens on the same start; its indexes must survive it.
       expect(named("index")).toEqual([
+        "puzzle_override_log_puzzle",
         "runs_board",
         "runs_by_day",
         "runs_by_guild",

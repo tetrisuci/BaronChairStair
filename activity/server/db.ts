@@ -7,6 +7,15 @@ import { Database } from "bun:sqlite";
 import { DAILY_TIERS, type DailyTier } from "../shared/daily";
 import type { Puzzle } from "../shared/puzzle";
 import {
+  deleteOverride,
+  overrideHistory,
+  type OverrideChanges,
+  type OverrideLogEntry,
+  type PuzzleOverride,
+  readOverrides,
+  writeOverride,
+} from "./puzzle-overrides";
+import {
   acceptSubmission,
   countPendingSubmissions,
   insertSubmission,
@@ -266,6 +275,71 @@ CREATE INDEX IF NOT EXISTS submissions_queue ON submissions (status, created_at)
 -- pool. Partial, because every pending and rejected row has no id at all.
 CREATE UNIQUE INDEX IF NOT EXISTS submissions_puzzle
   ON submissions (puzzle_id) WHERE puzzle_id IS NOT NULL;
+
+-- An officer's correction to a puzzle's metadata: the only edit that survives
+-- \`bun run puzzles\`. The queries are in server/puzzle-overrides.ts, which also
+-- says why there is one table for corrections rather than a file edit for club
+-- puzzles and an UPDATE for players'; the table is here so the shape of the
+-- database can still be read in one place.
+--
+-- One nullable column per editable field, and NULL means "no override, use the
+-- source". That is what makes a partial correction expressible and a revert a
+-- single DELETE.
+--
+-- board, queue, hold, target_attack and solution are deliberately absent: they
+-- are what a puzzle IS. Runs are filed against a puzzle_id with no record of
+-- the board they were played on, so editing one would silently invalidate every
+-- leaderboard row standing against it and every past day that dealt it. The
+-- five here cannot change what a solve was worth.
+--
+-- No foreign key on puzzle_id, for the reason day_puzzles gives: club puzzles
+-- live in a JSON file the build rewrites wholesale, not in a table, so there is
+-- no parent row to reference. An override naming an id the archive does not
+-- hold is inert — the merge only looks up ids it already has — and the PATCH
+-- route refuses one at the point somebody can still be told about it.
+CREATE TABLE IF NOT EXISTS puzzle_overrides (
+  puzzle_id  INTEGER PRIMARY KEY,
+  title      TEXT,
+  author     TEXT,
+  goal       TEXT,
+  -- REAL, matching submissions.difficulty: which numbers on the scale mean
+  -- anything is the club's convention, not something the column should round.
+  difficulty REAL,
+  -- set_name, because SET is SQL's own keyword and a column that has to be
+  -- quoted in every statement is one statement away from not being.
+  set_name   TEXT,
+  updated_at INTEGER NOT NULL,
+  -- The review grant's subject: an attribution the operator typed, not an
+  -- identity, exactly as submissions.reviewed_by is.
+  updated_by TEXT NOT NULL
+);
+
+/*
+ * Who changed what, appended and never rewritten.
+ *
+ * puzzle_overrides is one row per puzzle with a single updated_by, which is the
+ * right shape for the merge to read and the wrong one for a record: five fields
+ * share that column, so the second officer to touch a puzzle took credit for
+ * the first one's corrections and overwrote their name in place. And a revert
+ * is a DELETE, so undoing a correction erased every trace that one had been
+ * made. Accept and reject both leave a name behind; this was the one review
+ * action that left none.
+ *
+ * Append-only, one row per field that actually moved, with the value on each
+ * side of the move — so the history survives both a second correction and the
+ * revert that removes the current-state row entirely.
+ */
+CREATE TABLE IF NOT EXISTS puzzle_override_log (
+  entry_id  INTEGER PRIMARY KEY AUTOINCREMENT,
+  puzzle_id INTEGER NOT NULL,
+  field     TEXT NOT NULL,
+  was       TEXT,
+  became    TEXT,
+  at        INTEGER NOT NULL,
+  by        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS puzzle_override_log_puzzle
+  ON puzzle_override_log (puzzle_id, entry_id);
 `;
 
 /**
@@ -1154,5 +1228,50 @@ export class Store {
    */
   acceptedPuzzles(): Puzzle[] {
     return readAcceptedPuzzles(this.db);
+  }
+
+  // ── Corrections to a puzzle's metadata ─────────────────────────────────────
+  //
+  // Thin for the same reason the block above is: the SQL and the row mapping
+  // are in server/puzzle-overrides.ts, and a caller asks a `Store` for a
+  // correction the same way it asks for a run.
+
+  /**
+   * Every correction on file, for `PuzzleArchive.load` to lay over both
+   * sources.
+   *
+   * Answerable on a store that has only just been opened, which is what lets
+   * `server/index.ts` build the archive out of this database.
+   */
+  overridesFor(): PuzzleOverride[] {
+    return readOverrides(this.db);
+  }
+
+  /**
+   * Records a correction, and answers with the row now on file — or null when
+   * the change cleared the last field and the row went with it.
+   *
+   * Nothing here checks the values. The rules are the PATCH route's, where a
+   * bad one is a 400 to the officer rather than a row the archive has to be
+   * defensive about; and nothing here knows what a puzzle is, so a store that
+   * validated would need an archive to validate against. See
+   * `PATCH /api/review/puzzles/:id` and `overrideProblem`.
+   */
+  setOverride(
+    puzzleId: number,
+    fields: OverrideChanges,
+    updatedBy: string,
+  ): PuzzleOverride | null {
+    return writeOverride(this.db, puzzleId, fields, updatedBy);
+  }
+
+  /** Reverts a puzzle to its source. @returns whether there was one to revert. */
+  /** Every correction ever made to one puzzle, oldest first. */
+  overrideHistory(puzzleId: number): OverrideLogEntry[] {
+    return overrideHistory(this.db, puzzleId);
+  }
+
+  clearOverride(puzzleId: number, revertedBy: string): boolean {
+    return deleteOverride(this.db, puzzleId, revertedBy);
   }
 }

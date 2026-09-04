@@ -154,8 +154,15 @@ body {
   min-height: 26px;
 }
 
-/* The same badge the activity puts a clear in, so a TSD reads as a TSD here. */
-.review__clear {
+/*
+ * The same badge the activity puts a clear in, so a TSD reads as a TSD here.
+ *
+ * `.review__flag` is the same badge on an archive row, saying that a puzzle has
+ * been corrected. One rule and two names rather than two rules: they are the
+ * same mark, and the day the mark changes it must change in both places.
+ */
+.review__clear,
+.review__flag {
   padding: 2px 7px;
   border-radius: var(--radius-sm);
   background: var(--ink);
@@ -165,6 +172,12 @@ body {
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
+
+/*
+ * The gap the row has no whitespace for: the title and the badge are two
+ * adjacent spans built by `el`, with no text node between them to collapse.
+ */
+.review__flag { margin-left: 6px; }
 
 /* The list the goal is read against, so it is set in the goal's own weight. */
 .review__clears {
@@ -223,6 +236,120 @@ body {
 
 .review__status--bad { color: var(--warn); }
 .review__status--good { color: var(--good-ink); }
+
+/* ── The two tabs ─────────────────────────────────────────────────────────── */
+
+.review__tabs {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/*
+ * The tab you are on is drawn held down — the `.btn:active` look, kept.
+ *
+ * Colour alone was the alternative and it loses for the reason the explorer's
+ * own toggle gave up on it: a filled button only reads as "current" to somebody
+ * already told what the fill means, and not at all to anyone who cannot
+ * separate the two fills. The shape says it too, and `aria-current` says it to
+ * a screen reader — see `ReviewPage.select`.
+ */
+.review__tab--on {
+  background: var(--sun);
+  transform: translate(2px, 2px);
+  box-shadow: 0 0 0 var(--ink);
+}
+
+/* ── The archive ──────────────────────────────────────────────────────────── */
+
+/*
+ * The list on the left, the puzzle being corrected on the right — the same
+ * split, at the same breakpoint, as one submission and its decision. One column
+ * below it, list first: the list is how you get to a form at all.
+ */
+.review__archive {
+  display: grid;
+  gap: var(--gutter);
+  align-items: start;
+}
+
+@media (min-width: 780px) {
+  .review__archive { grid-template-columns: minmax(0, 1fr) minmax(300px, 1fr); }
+}
+
+/*
+ * The rows scroll here, inside the card, and not by growing the page.
+ *
+ * 139 rows is three screens of document; without a ceiling the card would push
+ * the form off the bottom on a narrow window and push the buttons off it on a
+ * wide one, so the officer would scroll away from the thing they are editing to
+ * pick the thing they are editing. The ceiling is the smaller of a share of the
+ * window and a fixed height, so it is a list on a laptop and still a list on a
+ * tall monitor.
+ *
+ * Deliberately *no* `overscroll-behavior: contain`, which every scroller in the
+ * activity sets. Those sit inside a fixed viewport that never scrolls; this one
+ * sits in a document that does, and `contain` there swallows the wheel whenever
+ * the pointer is over the list — so reaching the last row would stop the page
+ * moving instead of carrying on down to the form. That is the trap
+ * `.explore__list--flow` exists to get out of, met from the other side.
+ */
+.review__list {
+  display: grid;
+  gap: 3px;
+  align-content: start;
+  /* Enough to be a list even on a short window. */
+  min-height: 140px;
+  max-height: min(56vh, 460px);
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--ink-line) transparent;
+}
+
+/* The title itself, so the corrected badge beside it is not part of the name. */
+.review__row-name { overflow-wrap: anywhere; }
+
+/*
+ * The row whose form is open, held in the hover state.
+ *
+ * It stays marked once the pointer has moved over to the form, which is the
+ * whole point: the form says `Puzzle #12` and this is the row that agrees.
+ */
+.review__row--open {
+  background: var(--sun);
+  border-color: var(--ink);
+}
+
+/* ── Correcting one ───────────────────────────────────────────────────────── */
+
+/*
+ * One field: its name, the box, and the way back to the source.
+ *
+ * Three columns, and the two things that explain a field — what its source says
+ * and what changing it costs — run under the box rather than beside it, where
+ * they would squeeze the box to nothing on a narrow window.
+ */
+.review__edit {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 4px 8px;
+}
+
+.review__edit > .review__was,
+.review__edit > .review__note {
+  grid-column: 2 / -1;
+}
+
+/* The box takes the row; the tier readout beside it takes what it needs. */
+.review__edit .build__field { flex: 1 1 150px; }
+
+.review__was {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-soft);
+  overflow-wrap: anywhere;
+}
 
 /* ── The one screen with nothing on it ────────────────────────────────────── */
 

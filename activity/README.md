@@ -468,6 +468,17 @@ three people review, or when reviewers change over time.
 Vite entry — and not a mode of the activity. It is opened in an ordinary
 browser tab, outside Discord, by whoever the link was sent to.
 
+**Two tabs, one sitting: Queue and Archive.** The archive browser is a second
+screen of the same page rather than a page of its own, because a page of its own
+would need its own link minted on the VPS and its own kind of token — two
+credentials for one officer, expiring at different times. They are two ordinary
+buttons over one body, switched the way the queue and a submission already are;
+`aria-current` marks the one you are on rather than `role="tab"`, because a real
+tablist comes with a keyboard contract and half a tablist reads worse to a
+screen reader than two plain buttons. The queue is where the tool lands and
+stays landing: a submission waiting on a decision is time-sensitive in a way a
+typo in a title is not.
+
 **The reviewer sees what they are judging.** The board is drawn by the same
 `BoardRenderer` the game uses and the solve is stepped by `SolutionPlayer`,
 which locks each stored placement into a board copy and clears full rows
@@ -576,6 +587,94 @@ written down. Days that have not arrived yet are deliberately not written down,
 and that floating edge is what "joins the rotation" means.
 Pinned by `tests/review-decide.test.ts`, which accepts a submission, restarts,
 and checks every finished day and every pinned rush pool against what they were.
+
+## Correcting a puzzle
+
+A puzzle already in the archive can have its metadata fixed, and the fix
+survives the next `bun run puzzles`.
+
+**The Archive tab does this.** Every puzzle in one scrolling list — searchable
+by title, author or number, showing where each came from and which have been
+corrected — and beside it a form for the five fields. Each field that a
+correction has changed shows what its source says underneath, with a Revert of
+its own; `Revert all` puts the whole puzzle back. The list scrolls inside its own
+card rather than growing the page, which is not a detail: 139 rows is three
+screens, and a list that pushes the form off the bottom makes the officer scroll
+away from the thing they are editing to pick the thing they are editing.
+`tests/review-archive.test.ts` drives all of it, including that the form posts
+only the fields that actually moved — a body of all five would record a
+correction on four nobody touched, and every one of them would stop tracking the
+club's sheet from then on.
+
+The same three routes, behind the same token, for an officer with `curl`:
+
+```sh
+curl -s "$HOST/api/review/puzzles" -H "Authorization: Bearer $TOKEN"
+
+curl -sX PATCH "$HOST/api/review/puzzles/12" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"title": "Tuck the T", "difficulty": 9}'
+
+# Put one field back to what its source says, leaving the rest of the correction.
+curl -sX PATCH "$HOST/api/review/puzzles/12" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"title": null}'
+
+# Put all of them back.
+curl -sX DELETE "$HOST/api/review/puzzles/12/override" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+**Editing `data/puzzles.json` is the fix that does not work.** That file is
+generated wholesale from the club's CSVs, so an edit to it is gone at the next
+rebuild with nothing anywhere to say it ever happened. Corrections are rows in
+`puzzle_overrides` instead, and `PuzzleArchive.load` lays them over the rebuilt
+file — the file is the *source*, never the last word.
+
+**One mechanism, both sources.** Accepted player puzzles are rows in the same
+database and could have been UPDATEd in place; they are not, because a
+correction written one way for the club's puzzles and another way for players'
+is two things to keep in step. The same PATCH corrects either.
+
+**Five fields: title, author, goal, difficulty, set.** Board, queue, hold,
+target and solution are what a puzzle *is*, and a run is filed against a
+`puzzle_id` with no record of the board it was played on — so editing one would
+silently invalidate every leaderboard row standing against that puzzle and every
+past day that dealt it. A body naming one of them is refused rather than ignored,
+because a `200` to somebody who thinks they have just fixed a board is worse than
+a `400`. The five that are allowed cannot change what a solve was worth.
+
+**A field nobody names is left alone, and `null` reverts that one field.** So a
+title can be fixed without saying anything about the difficulty, and put back
+without disturbing it. `DELETE` reverts the lot; it is one row, and it is
+idempotent — reverting a puzzle that has no correction is a `200`, and only a
+puzzle that does not exist is a `404`.
+
+**Correcting a difficulty moves the rotation, forwards only.** `dailyTierOf`
+reads it, `byTier` partitions the archive with it, and the daily rotation is an
+index into those pools derived from their size — so re-rating one puzzle out of
+the easy band changes which easy puzzle a future day deals. Days already played
+are pinned in `day_puzzles` and do not move, which is the same protection an
+accepted puzzle relies on. `tests/puzzle-override.test.ts` proves it, with a
+control showing the untouched derivation really did shift.
+
+**A correction reaches players at the next restart**, like an accepted puzzle
+and for the same reason. The list and PATCH responses are computed from the
+source plus the row on file rather than read off the running archive, so the
+officer sees the result of their own correction immediately and it is the same
+thing the next boot will serve.
+
+**A correction the server cannot use is ignored, not fatal.** Every rule is
+enforced on the write — the same title, goal and difficulty rules a submission
+is held to — because `PuzzleArchive.load` runs at module scope and throws, and a
+rule enforced only at the merge would take the whole server down for every
+player over one typo. The merge is defensive anyway: a row that could only have
+been hand-edited is dropped whole, logged with the `DELETE` that clears it, and
+the puzzle is served exactly as its source has it.
+
+**`updated_by` is the review grant's subject**, which is an attribution the
+operator typed and not an identity — worth what `submissions.reviewed_by` is
+worth, and for the same reason.
 
 ## Placing a piece
 

@@ -9,7 +9,7 @@
  * nothing else.
  */
 
-import type { ClearName, Mino, RowCode, SolutionStep } from "@shared/puzzle";
+import type { ArchiveListing, ClearName, Mino, RowCode, SolutionStep } from "@shared/puzzle";
 import { ApiError } from "../src/api";
 
 /** One row of the queue: enough to choose from, never enough to judge. */
@@ -50,6 +50,77 @@ export interface Verdict {
   readonly note: string | null;
   readonly puzzleId: number | null;
   readonly difficulty: number | null;
+}
+
+/**
+ * One archived puzzle as an officer sees it: the values in force, and the ones
+ * its source holds underneath them.
+ *
+ * The pair is the whole point of the screen, and it is why this is not
+ * `ArchiveListing`. A correction is a row laid over a source that never
+ * changes — `data/puzzles.json` is rewritten wholesale by `bun run puzzles`,
+ * and an accepted submission keeps the row the author filed — so "what does
+ * this say now" and "what did it say before anybody touched it" are two
+ * different questions and the officer needs both in front of them.
+ *
+ * `overridden` is whether a correction row exists at all, which is not the same
+ * as any field differing: the route records a correction that repeats its
+ * source rather than normalising it away. Which *fields* differ is read off
+ * `original` against the values beside it — see `client/review/correction.ts`.
+ */
+export interface ReviewPuzzle extends ArchiveListing {
+  readonly overridden: boolean;
+  readonly original: {
+    readonly title: string;
+    readonly author: string;
+    readonly goal: string;
+    readonly difficulty: number;
+    readonly set: string | null;
+  };
+  readonly updatedAt: number | null;
+  /**
+   * Who last moved each field, and when.
+   *
+   * Per field, not per row. The table keeps one `updated_by` for five
+   * independently correctable fields and restamps it on every write, so a
+   * row-level name credits whoever wrote last for everything the officer
+   * before them did — and overwrites that officer's name in place. The values
+   * here come from the append-only log, which survives both a second
+   * correction and the revert that removes the row.
+   *
+   * The review grant's subject: an attribution somebody typed, never an
+   * identity.
+   */
+  readonly correctedBy: Readonly<Record<string, { readonly by: string; readonly at: number }>>;
+  /** Every move ever made to this puzzle's metadata, oldest first. */
+  readonly history: readonly {
+    readonly field: string;
+    readonly was: string | null;
+    readonly became: string | null;
+    readonly at: number;
+    readonly by: string;
+  }[];
+  /** True for a correction whose puzzle has left the archive. */
+  readonly orphaned?: boolean;
+}
+
+/**
+ * A correction, field by field: absent leaves a field alone, `null` puts that
+ * one field back to the source, a value sets it.
+ *
+ * The three states are the shape of the route rather than a convenience, and
+ * they are why this is a bag of optional fields instead of a whole record —
+ * see `readOverrideChanges` in `server/submission-input.ts`. `JSON.stringify`
+ * drops undefined keys, so an object built by omitting what did not change
+ * serialises to exactly the body that route reads, with no filtering step in
+ * between for a later edit to get wrong.
+ */
+export interface PuzzleChanges {
+  readonly title?: string | null;
+  readonly author?: string | null;
+  readonly goal?: string | null;
+  readonly difficulty?: number | null;
+  readonly set?: string | null;
 }
 
 export class ReviewApi {
@@ -112,6 +183,36 @@ export class ReviewApi {
 
   reject(id: number, body: { note: string }): Promise<Verdict> {
     return this.decide(id, "reject", body);
+  }
+
+  /**
+   * The whole archive in one response, corrections and all.
+   *
+   * No paging and no server-side search, for the reason `/api/archive` has
+   * neither: it is twenty-odd kilobytes, and a page holding all of it filters
+   * on every keystroke without a round trip. 139 rows today.
+   */
+  puzzles(): Promise<{ reviewer: string; puzzles: readonly ReviewPuzzle[] }> {
+    return this.request("/api/review/puzzles");
+  }
+
+  async correct(id: number, changes: PuzzleChanges): Promise<ReviewPuzzle> {
+    const { puzzle } = await this.request<{ puzzle: ReviewPuzzle }>(
+      `/api/review/puzzles/${id}`,
+      { method: "PATCH", body: JSON.stringify(changes) },
+    );
+    return puzzle;
+  }
+
+  /**
+   * Puts a puzzle back to its source entirely.
+   *
+   * `reverted` comes back because the route is idempotent — reverting a puzzle
+   * that has no correction is a 200, not a 404 — and "there was nothing to
+   * revert" is a different thing to tell an officer from "done".
+   */
+  revert(id: number): Promise<{ reverted: boolean; puzzle: ReviewPuzzle }> {
+    return this.request(`/api/review/puzzles/${id}/override`, { method: "DELETE" });
   }
 
   private async decide(id: number, verb: string, body: unknown): Promise<Verdict> {

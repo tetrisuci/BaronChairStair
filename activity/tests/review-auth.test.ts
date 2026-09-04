@@ -327,11 +327,12 @@ function reviewApp(secret: string): AppRouter {
   const app = new Hono<{ Variables: Variables }>();
   app.onError(apiError);
   // Only the queue is reachable from this file. Deciding a submission is
-  // `tests/review-decide.test.ts`'s subject and it drives a real store for it;
-  // a stub here that pretended to write would be a second, quieter definition
-  // of what a decision does.
+  // `tests/review-decide.test.ts`'s subject and correcting a puzzle is
+  // `tests/review-override.test.ts`'s, and both drive a real store; a stub here
+  // that pretended to write would be a second, quieter definition of what those
+  // routes do.
   const unreached = () => {
-    throw new Error("this file does not decide submissions");
+    throw new Error("this file does not decide submissions or correct puzzles");
   };
   registerReviewRoutes(app, {
     secret,
@@ -340,7 +341,13 @@ function reviewApp(secret: string): AppRouter {
       submission: () => null,
       acceptSubmission: unreached,
       rejectSubmission: unreached,
+      overridesFor: () => [],
+      setOverride: unreached,
+      clearOverride: unreached,
+      acceptedPuzzles: () => [],
+      overrideHistory: () => [],
     },
+    archive: { originals: [], original: () => undefined },
   });
   return app;
 }

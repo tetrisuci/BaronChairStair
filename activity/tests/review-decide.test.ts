@@ -198,10 +198,17 @@ function open(): Opened {
   return { archive, store, schedule: new DayScheduleClass(archive, store) };
 }
 
-function reviewApp(store: Store): AppRouter {
+function reviewApp(store: Store, archive?: PuzzleArchive): AppRouter {
   const app = new Hono<{ Variables: Variables }>();
   app.onError(apiError);
-  registerReviewRoutes(app, { secret: SECRET, store });
+  // The archive is only reached for by the correction routes, which are
+  // `tests/review-override.test.ts`'s subject; an empty one here keeps this
+  // file's `open()` from having to hand one through every decision.
+  registerReviewRoutes(app, {
+    secret: SECRET,
+    store,
+    archive: archive ?? { originals: [], original: () => undefined },
+  });
   return app;
 }
 

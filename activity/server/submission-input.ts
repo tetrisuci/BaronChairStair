@@ -1,5 +1,6 @@
 /**
- * What a submission body — and an officer's verdict on one — is allowed to say.
+ * What a submission body — an officer's verdict on one, and an officer's
+ * correction to a puzzle already in the archive — is allowed to say.
  *
  * Split out of the route so that "everything the server refuses to believe"
  * reads as one short file, rather than as a hundred lines wedged into the
@@ -17,6 +18,11 @@
 import { HTTPException } from "hono/http-exception";
 import { MAX_DIFFICULTY, MAX_PIECES, MIN_DIFFICULTY } from "../shared/archive-filter";
 import { BOARD_HEIGHT, type Mino, pieceBudget, type RowCode } from "../shared/puzzle";
+import {
+  type OverridableField,
+  type OverrideChanges,
+  OVERRIDABLE_FIELDS,
+} from "./puzzle-overrides";
 import { type BoardShape, boardProblem } from "./puzzles";
 
 /** Long enough to name a puzzle, short enough to sit in a list of them. */
@@ -31,6 +37,24 @@ const MAX_TITLE_LENGTH = 60;
  * living in two places.
  */
 const MAX_GOAL_LENGTH = 120;
+
+/**
+ * A name to put on a puzzle.
+ *
+ * Only ever typed by an officer correcting a byline: an author's own name comes
+ * from their Discord profile at submit and is never a field on a body. Comfortably
+ * past the 32 Discord allows a username, and comfortably short of a sentence.
+ */
+const MAX_AUTHOR_LENGTH = 40;
+
+/**
+ * A set name, which is one of the club's own groupings.
+ *
+ * Under the 64 `sanitizeArchiveFilter` keeps: a player's saved filter drops set
+ * names longer than that, so a set past it is one nobody could ever filter for.
+ * The longest in the archive is 18.
+ */
+const MAX_SET_LENGTH = 40;
 
 /**
  * A reviewer's note.
@@ -68,6 +92,15 @@ export function readTitle(value: unknown): string {
 
 export function readGoal(value: unknown): string {
   return readText(value, "A goal", MAX_GOAL_LENGTH);
+}
+
+/** Only a correction ever carries one; see {@link MAX_AUTHOR_LENGTH}. */
+export function readAuthor(value: unknown): string {
+  return readText(value, "An author", MAX_AUTHOR_LENGTH);
+}
+
+export function readSet(value: unknown): string {
+  return readText(value, "A set", MAX_SET_LENGTH);
 }
 
 /**
@@ -206,4 +239,71 @@ export function readBoardShape(body: {
     });
   }
   return shape;
+}
+
+/**
+ * Refused field names, as a sentence that cannot be made into a payload.
+ *
+ * The names come from the caller's own JSON, and this string goes to a review
+ * page and a log line — the same two places `readText` refuses control
+ * characters on its way to. Key names took the identical path with none of the
+ * treatment, bounded only by the 512 KB body limit, so a caller could choose
+ * how much of both they filled. Three, quoted, forty characters each.
+ */
+function namesOf(refused: readonly string[]): string {
+  const shown = refused.slice(0, 3).map((name) => JSON.stringify(name.slice(0, 40)));
+  const rest = refused.length - shown.length;
+  return rest > 0 ? `${shown.join(", ")} and ${rest} more` : shown.join(", ");
+}
+
+/**
+ * A correction to a puzzle already in the archive, field by field.
+ *
+ * Three states per field, and the three-way distinction is the whole shape of
+ * the route: **absent** leaves a field as it stands, **null** reverts that one
+ * field to the source, and a **value** sets it. So one PATCH can fix a title
+ * while saying nothing about the difficulty, and a later one can put the title
+ * back without disturbing anything else.
+ *
+ * Each value goes through the reader the submission route already uses for the
+ * same field, so a title an officer types is held to exactly the rule a title
+ * an author types is. `readReviewedDifficulty` rather than a fourth synonym for
+ * the same range: this really is the reviewer's rating — the number that ends
+ * up on the puzzle and routes it through `dailyTierOf` and `rushBand` — arriving
+ * by a second door.
+ *
+ * **A field that is not correctable is refused, not ignored.** Silently
+ * dropping `board` would answer 200 to an officer who believes they have just
+ * fixed a puzzle's board, which is the one outcome worse than saying no.
+ */
+export function readOverrideChanges(body: Record<string, unknown>): OverrideChanges {
+  const named = Object.keys(body);
+  if (named.length === 0) {
+    throw new HTTPException(400, { message: "Name at least one field to correct" });
+  }
+  const refused = named.filter(
+    (key) => !OVERRIDABLE_FIELDS.includes(key as OverridableField),
+  );
+  if (refused.length > 0) {
+    throw new HTTPException(400, {
+      message:
+        `${namesOf(refused)} cannot be corrected. A puzzle's board, queue, hold, target ` +
+        "and solution are what it is: runs are filed against a puzzle id with no record of " +
+        "the board they were played on, so changing one would rewrite what every solve " +
+        "already on the leaderboard was worth.",
+    });
+  }
+
+  // Built by accumulation because `in` is the only way to tell an absent field
+  // from a null one, and that difference is what "leave it alone" means here.
+  const changes: { -readonly [K in OverridableField]?: OverrideChanges[K] } = {};
+  if ("title" in body) changes.title = body.title === null ? null : readTitle(body.title);
+  if ("author" in body) changes.author = body.author === null ? null : readAuthor(body.author);
+  if ("goal" in body) changes.goal = body.goal === null ? null : readGoal(body.goal);
+  if ("difficulty" in body) {
+    changes.difficulty =
+      body.difficulty === null ? null : readReviewedDifficulty(body.difficulty);
+  }
+  if ("set" in body) changes.set = body.set === null ? null : readSet(body.set);
+  return changes;
 }

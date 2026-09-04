@@ -10,6 +10,9 @@
  * read here: those rows live in SQLite, and an archive that had to open a
  * database to load itself could not be tested — nor built — without one, which
  * is the same argument `PastDays` makes from the other side of the same seam.
+ *
+ * Officers' corrections arrive by the same door, for the same reason, and go on
+ * last — see {@link applyOverrides}.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -30,6 +33,10 @@ import {
   type PuzzlePrompt,
   toPrompt,
 } from "../shared/puzzle";
+// Type-only, and it has to stay that way: `server/puzzle-overrides.ts` imports
+// `bun:sqlite`, and the point of this file's header is that loading an archive
+// needs no database. A type erases; an import would not.
+import type { OverrideFields, PuzzleOverride } from "./puzzle-overrides";
 
 /**
  * Folds `data/solutions.json` back in, when it is there.
@@ -127,15 +134,175 @@ function assertValid(puzzle: unknown, named: string): Puzzle {
   return candidate;
 }
 
+/**
+ * What is wrong with a stored correction — or null when nothing is.
+ *
+ * Reports the fault instead of throwing it, the way {@link boardProblem} does
+ * and for the same reason: the two callers say it in different voices. The
+ * merge below logs it and serves the source; the review page shows the officer
+ * the same effective values the next boot will.
+ *
+ * Deliberately narrower than the rule the PATCH route holds a *request* to.
+ * That one is where lengths and the difficulty scale are enforced, because a
+ * bad correction has to be a 400 to the officer who typed it rather than a row
+ * anything downstream has to cope with. This is the check on a row nobody typed
+ * — SQLite's column types are advisory, so a hand-edited `difficulty` can be
+ * the string "very hard" — and it stops at "is this the kind of value the code
+ * can act on", which is exactly where `jsonList` and `Store.pinnedRushPool`
+ * stop for their own columns. A full second copy of the route's rules here
+ * would be a second rule to keep in step, and the one that fired at boot would
+ * be the one nobody could answer.
+ */
+export function overrideProblem(override: OverrideFields): string | null {
+  for (const [field, value] of [
+    ["title", override.title],
+    ["author", override.author],
+    ["goal", override.goal],
+    ["set", override.set],
+  ] as const) {
+    if (value !== null && (typeof value !== "string" || value.length === 0)) {
+      return `${field} is ${JSON.stringify(value)}`;
+    }
+  }
+  // Finite, not merely a number: `dailyTierOf` and `rushBand` both compare it,
+  // and a NaN loses every comparison it is in — so an unrated-looking puzzle
+  // would appear in the hard tier by falling through rather than by matching.
+  if (override.difficulty !== null && !Number.isFinite(override.difficulty)) {
+    return `difficulty is ${JSON.stringify(override.difficulty)}`;
+  }
+  return null;
+}
+
+/**
+ * One puzzle with one officer's correction laid over it.
+ *
+ * `??` per field, which is what "NULL means use the source" reads as. Total and
+ * unchecked on purpose: {@link overrideProblem} is the gate, and both callers
+ * run it first, so a check in here would be a third place holding the same
+ * opinion.
+ *
+ * Nothing that identifies the puzzle or decides what a solve was worth can be
+ * reached from here — see `OVERRIDABLE_FIELDS` for why that is the whole point.
+ */
+export function withOverride(puzzle: Puzzle, override: OverrideFields): Puzzle {
+  return {
+    ...puzzle,
+    title: override.title ?? puzzle.title,
+    author: override.author ?? puzzle.author,
+    goal: override.goal ?? puzzle.goal,
+    difficulty: override.difficulty ?? puzzle.difficulty,
+    set: override.set ?? puzzle.set,
+  };
+}
+
+/**
+ * The corrections, over the club's file and the accepted submissions alike.
+ *
+ * One pass over the merged list, which is the point: a correction is written
+ * one way whatever a puzzle's source was, so there is one place that reads it
+ * back. Corrections go on **last** — after both sources are in and after each
+ * entry has been held to {@link assertValid} — so what an officer sees is what
+ * the archive serves, with nothing downstream of it to disagree.
+ *
+ * Then two lines of defence, and they are here because the failure mode is not
+ * a wrong title. `PuzzleArchive.load` runs at module scope and throws, so a
+ * correction that made a puzzle invalid would stop the whole server booting for
+ * every player — over one officer's typo, with the only way back being an edit
+ * to the database by hand. This codebase has been bitten by that shape once
+ * already: see the `targetAttack > 0` check in `server/review-routes.ts`.
+ *
+ * So a suspect correction is dropped and the source is served, loudly. The
+ * whole row goes rather than the offending field, because a half-applied
+ * correction is a puzzle in a state nobody ever wrote — source or override are
+ * the only two things a reader should have to reason about.
+ *
+ * The re-run of `assertValid` at the end costs a walk of a list already in
+ * memory and buys the guarantee structurally: none of the five editable fields
+ * is one of the three things it checks, so an override *cannot* make a puzzle
+ * invalid today — and this is what keeps that true if the editable set ever
+ * grows, rather than a comment asking the next person to notice.
+ */
+function applyOverrides(
+  puzzles: readonly Puzzle[],
+  overrides: readonly PuzzleOverride[],
+): Puzzle[] {
+  if (overrides.length === 0) return [...puzzles];
+  const corrections = new Map(overrides.map((override) => [override.puzzleId, override]));
+  return puzzles.map((puzzle) => {
+    const correction = corrections.get(puzzle.id);
+    if (!correction) return puzzle;
+
+    const refuse = (detail: string): Puzzle => {
+      console.warn(
+        `[puzzle] ignoring the correction to puzzle ${puzzle.id} (${detail}); serving what ` +
+          "its source says. Revert it with DELETE /api/review/puzzles/" +
+          `${puzzle.id}/override, or fix the row in puzzle_overrides.`,
+      );
+      return puzzle;
+    };
+
+    const fault = overrideProblem(correction);
+    if (fault) return refuse(fault);
+    const corrected = withOverride(puzzle, correction);
+    try {
+      return assertValid(corrected, `puzzle ${puzzle.id} as corrected`);
+    } catch (error) {
+      return refuse(String(error));
+    }
+  });
+}
+
+/**
+ * The corrected archive, unless correcting it would leave a tier empty.
+ *
+ * `applyOverrides` already refuses a correction that makes one puzzle invalid,
+ * so "an override cannot break a puzzle" is structural. A tier is the same
+ * promise one level up, and it was guarded nowhere: difficulty is what `byTier`
+ * partitions on and what a reviewer may now edit, so moving the last easy
+ * puzzle out of its band threw in the constructor — at module scope, before any
+ * route exists. The server would not boot, and the DELETE that undoes the
+ * correction lives on that server, so the documented way back was unreachable
+ * from anywhere but sqlite3.
+ *
+ * Falling back to the sources whole rather than to the offending row: the empty
+ * band is a property of the set, and picking which correction caused it is a
+ * guess where serving what the club wrote is not. Every correction is still on
+ * file and the officer's next DELETE lands on a server that is running.
+ */
+function correctedOrSource(
+  sources: readonly Puzzle[],
+  overrides: readonly PuzzleOverride[],
+): Puzzle[] {
+  const corrected = applyOverrides(sources, overrides);
+  const missing = DAILY_TIERS.filter((tier) => byTier(corrected)[tier].length === 0);
+  if (missing.length === 0) return corrected;
+  console.warn(
+    `[puzzle] ignoring every correction: they leave no ${missing.join(" or ")} puzzle, ` +
+      "and a day needs one of each. Revert one through the review tool and restart.",
+  );
+  return [...sources];
+}
+
 export class PuzzleArchive {
   private readonly byId: ReadonlyMap<number, Puzzle>;
+  private readonly originalById: ReadonlyMap<number, Puzzle>;
   private readonly tiers: Readonly<Record<DailyTier, readonly Puzzle[]>>;
 
+  /**
+   * @param puzzles what everything plays, reads and lists: sources with every
+   *   officer's correction already on them.
+   * @param originals the same puzzles as their sources have them, kept only so
+   *   the review tool can show what a correction changed *from*. Nothing else
+   *   should read these — a rotation, a listing or a prompt built from them
+   *   would be serving a correction that has already been made.
+   */
   private constructor(
     readonly puzzles: readonly Puzzle[],
+    readonly originals: readonly Puzzle[],
     private readonly dayOptions: DayOptions,
   ) {
     this.byId = new Map(puzzles.map((puzzle) => [puzzle.id, puzzle]));
+    this.originalById = new Map(originals.map((puzzle) => [puzzle.id, puzzle]));
     // The Map is exactly why this check has to exist. It resolves a duplicate
     // id cleanly — last one wins — while both copies stay in `puzzles`, which
     // is the array the daily rotation indexes into and the rush pool is
@@ -188,11 +355,16 @@ export class PuzzleArchive {
    * every tier is re-sorted by id in the constructor and the rush pool is
    * pinned per day — and everything about which of two puzzles sharing an id
    * the duplicate check names first.
+   *
+   * `overrides` comes last and is laid on last, over both. It is a fourth
+   * argument for the same reason `community` was a third: those rows live in
+   * SQLite and this file must go on loading without one.
    */
   static load(
     path: string,
     dayOptions: DayOptions = {},
     community: readonly Puzzle[] = [],
+    overrides: readonly PuzzleOverride[] = [],
   ): PuzzleArchive {
     let parsed: { puzzles?: unknown[] };
     try {
@@ -214,11 +386,23 @@ export class PuzzleArchive {
     const accepted = community.map((puzzle) =>
       assertValid(puzzle, `accepted puzzle ${puzzle?.id}`),
     );
-    return new PuzzleArchive([...file, ...accepted], dayOptions);
+    const sources = [...file, ...accepted];
+    return new PuzzleArchive(correctedOrSource(sources, overrides), sources, dayOptions);
   }
 
   get(id: number): Puzzle | undefined {
     return this.byId.get(id);
+  }
+
+  /**
+   * One puzzle as its source has it, before any officer's correction.
+   *
+   * For the review tool and nothing else, which is why it sits beside
+   * {@link get} rather than replacing it anywhere: every other reader wants the
+   * corrected puzzle, and this one only wants to say what changed.
+   */
+  original(id: number): Puzzle | undefined {
+    return this.originalById.get(id);
   }
 
   /** One tier's puzzle for a day. */

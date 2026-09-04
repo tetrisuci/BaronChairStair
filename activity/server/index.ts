@@ -102,10 +102,18 @@ const MAX_TOTAL_MS = 24 * 60 * MINUTE;
  */
 const store = new Store(config.paths.database);
 const community = store.acceptedPuzzles();
+/*
+ * The corrections come out of the same database and go on last, over both
+ * sources. This is the whole reason a correction survives `bun run puzzles`:
+ * that command rewrites `data/puzzles.json` from the club's CSVs and knows
+ * nothing about this table, so the rebuilt file is the *source* the corrections
+ * are laid over rather than the last word.
+ */
 const archive = PuzzleArchive.load(
   config.paths.puzzles,
   { timeZone: config.timeZone },
   community,
+  store.overridesFor(),
 );
 store.pinPastDays(pastDaysOf(archive));
 /*
@@ -871,7 +879,7 @@ app.get("/api/rush/leaderboard", requireSession, (c) => {
  * stay above with the rest of the stack rather than scattering with them.
  */
 registerSubmissionRoutes(app, store);
-registerReviewRoutes(app, { secret: config.reviewSecret, store });
+registerReviewRoutes(app, { secret: config.reviewSecret, store, archive });
 
 // ── Static client ────────────────────────────────────────────────────────────
 

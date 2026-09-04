@@ -206,6 +206,40 @@ person with SSH to this box is the officer, and that is the real trust root.
 
 **To revoke every outstanding link:** change `REVIEW_SECRET` and restart.
 
+### The two tabs
+
+**Queue** is the landing screen: puzzles players have sent, waiting on a
+verdict. Accepting one assigns it an id in the community band (100000 and up)
+and it joins the archive and the rotation **at the next restart** — the archive
+is read once at start-up, and the tool says so when you accept.
+
+**Archive** lists every puzzle, club and community, and corrects its metadata:
+title, author, goal, difficulty and set. Nothing else — a board, queue, hold,
+target or solution cannot be edited here, because runs are filed against a
+puzzle id with no record of the board they were played on, so changing one
+would rewrite what every solve already on the leaderboard was worth.
+
+Three things to know before you use it:
+
+- **Corrections live in SQLite, not in `data/puzzles.json`.** That file is
+  rewritten wholesale by `bun run puzzles`, so a correction written there would
+  die at the next rebuild. Surviving that rebuild is the whole reason the
+  override layer exists.
+- **Difficulty is rotation input.** It decides which of the easy/medium/hard
+  pools a puzzle is dealt from, and the order a rush stack comes in. Changing it
+  moves the puzzle for **future** days only: every day already played is written
+  down in `day_puzzles`, and a pinned rush stack keeps the difficulty it was
+  dealt with.
+- **Corrections reach players at the next restart**, like an accepted puzzle,
+  and for the same reason — a live-mutating archive would reshuffle a day under
+  players holding its prompt.
+
+Every correction and every revert is recorded per field in
+`puzzle_override_log`, append-only, with the name from the review link. If a
+correction ever stops the server booting, the log is how you find out what
+changed and who changed it; the fix is one `DELETE` through the tool, and the
+archive falls back to what the club wrote rather than refusing to start.
+
 ---
 
 ## Rolling back

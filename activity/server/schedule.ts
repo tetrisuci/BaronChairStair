@@ -157,7 +157,23 @@ export class DaySchedule {
         day,
         this.archive.puzzles.filter(isRushEligible).map((puzzle) => puzzle.id),
       );
-    return pinned.map((id) => this.resolve(day, "rush pool member", id));
+    // Ordered by the difficulty the day was dealt with, not the one it carries
+    // now. A pinned pool freezes the rush's MEMBERSHIP; `rushSequence` finishes
+    // by sorting on `rushBand`, which reads `difficulty` — and difficulty is
+    // now a field a reviewer can correct. So a correction plus the restart that
+    // carries it would re-derive a different stack from the same `day_rush` row
+    // and the same ticket seed: the drift this table exists to stop, arriving
+    // through the one field nobody had thought of as rotation input.
+    //
+    // The rest of the puzzle is served corrected. A fixed title or goal is what
+    // the officer meant to change, and neither is an ordering key.
+    return pinned.map((id) => {
+      const served = this.resolve(day, "rush pool member", id);
+      const source = this.archive.original(id);
+      return source && source.difficulty !== served.difficulty
+        ? { ...served, difficulty: source.difficulty }
+        : served;
+    });
   }
 
   /**
