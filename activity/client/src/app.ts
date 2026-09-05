@@ -302,7 +302,6 @@ export class App {
       return;
     }
 
-    this.masthead.setStreak(this.daily.streak, this.daily.totalSolved);
     this.showHome();
   }
 
@@ -1242,13 +1241,22 @@ export class App {
         resets: snapshot.resets,
         totalMs: snapshot.elapsedMs,
       });
-      this.masthead.setStreak(response.streak, response.totalSolved);
       // Remember the filed sheet so returning from practice restores it.
       // Only the tier that was filed. The other two are untouched — and their
       // solutions must stay null, or filing the easy one would reveal them.
       if (this.daily) {
         this.daily = {
           ...this.daily,
+          // The run that just landed is what moves these, and the response is
+          // the only place the new values exist — `api.daily()` runs once, at
+          // boot. They used to be spent immediately on the masthead tallies, so
+          // nothing needed to keep them; with those gone and the front page
+          // naming the streak in its own sentence, not carrying them here left
+          // that sentence printing the number from before the solve. A player
+          // extending a 6-day streak was told it was 6, and a player starting
+          // one today was told to start one.
+          streak: response.streak,
+          totalSolved: response.totalSolved,
           puzzles: this.daily.puzzles.map((entry) =>
             entry.tier === response.tier
               ? { ...entry, run: response.run, solution: response.solution }
@@ -1331,7 +1339,12 @@ export class App {
 
   private attachWalkthrough(puzzle: PuzzlePrompt, solution: readonly SolutionStep[]): void {
     this.solutionPlayer = new SolutionPlayer(puzzle, solution, BOARD_HEIGHT);
-    this.walkthrough.bind(this.solutionPlayer, () => {
+    this.walkthrough.bind(this.solutionPlayer, (stepped) => {
+      // The badge lands on the board and stays there, which is right for a
+      // result and wrong the moment the board becomes something to read. The
+      // first press of the walkthrough is where it stops being a verdict and
+      // starts being in the way of the answer it is sitting on top of.
+      if (stepped) this.badge.hide();
       if (this.solutionPlayer) this.renderer.draw(this.solutionPlayer.view());
     });
     replaceChildren(

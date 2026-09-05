@@ -1,10 +1,12 @@
 /**
  * The page's fixed furniture: the header and the credits strip along the bottom.
  *
- * The header carries the club's block mark and the two numbers a daily game
- * lives on — streak and total solved. It used to carry the day's number too,
- * which meant something while a day was one puzzle and named nothing once it
- * became three. The strip underneath credits whoever
+ * The header carries the club's block mark and whatever control the current
+ * screen slots into it. It used to carry the day's number, which meant
+ * something while a day was one puzzle and named nothing once it became three;
+ * and then a streak and a total-solved tally, which said in the corner of every
+ * screen what the front page already says in a sentence. The strip underneath
+ * credits whoever
  * drew the puzzle, which the archive records and which is half the fun of
  * playing a club's own puzzles — and, in its far corner, Petr.
  */
@@ -52,27 +54,13 @@ function petrEgg(): HTMLElement {
   });
 }
 
-function tally(key: string): { element: HTMLElement; value: HTMLElement } {
-  const value = el("span", { class: "tally__value", text: "0" });
-  const element = el(
-    "div",
-    { class: "tally" },
-    value,
-    el("span", { class: "tally__key", text: key }),
-  );
-  return { element, value };
-}
-
 export interface Masthead {
   readonly element: HTMLElement;
-  setStreak(streak: number, solved: number): void;
   /** Slots a control into the header's right-hand end. */
   mountControl(control: HTMLElement): void;
 }
 
 export function createMasthead(onHome: () => void = () => {}): Masthead {
-  const streak = tally("streak");
-  const solved = tally("solved");
   const controls = el("div", { class: "masthead__controls" });
 
   /*
@@ -93,21 +81,11 @@ export function createMasthead(onHome: () => void = () => {}): Masthead {
     { class: "masthead" },
     home,
     el("span", { class: "masthead__spacer" }),
-    el(
-      "div",
-      { class: "masthead__meta" },
-      streak.element,
-      solved.element,
-      controls,
-    ),
+    el("div", { class: "masthead__meta" }, controls),
   );
 
   return {
     element,
-    setStreak(current, total) {
-      streak.value.textContent = String(current);
-      solved.value.textContent = String(total);
-    },
     mountControl(control) {
       controls.append(control);
     },

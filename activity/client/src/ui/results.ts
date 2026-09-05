@@ -131,7 +131,15 @@ export function createVerdictPanel(handlers: VerdictHandlers): VerdictPanel {
 
 export interface WalkthroughPanel {
   readonly element: HTMLElement;
-  bind(player: SolutionPlayer, onChange: () => void): void;
+  /**
+   * @param onChange called whenever the board behind this panel should be
+   *   redrawn. `stepped` is true only when the player moved the solution
+   *   themselves, and false for the first render that happens as the panel is
+   *   built. The caller needs the difference: the verdict badge
+   *   sits on the board, and it should survive landing on a solve and then get
+   *   out of the way the moment somebody starts stepping through it.
+   */
+  bind(player: SolutionPlayer, onChange: (stepped: boolean) => void): void;
 }
 
 const CLEAR_LABELS: Readonly<Record<ClearName, string>> = {
@@ -157,7 +165,7 @@ export function createWalkthroughPanel(): WalkthroughPanel {
       const stepLabel = el("span", { class: "walkthrough__step" });
       const caption = el("div", { class: "walkthrough__caption" });
 
-      const render = () => {
+      const render = (stepped: boolean) => {
         const current = player.current;
         stepLabel.textContent = `${Math.min(player.position + 1, player.stepCount)} / ${player.stepCount}`;
         replaceChildren(
@@ -172,7 +180,7 @@ export function createWalkthroughPanel(): WalkthroughPanel {
               })
             : null,
         );
-        onChange();
+        onChange(stepped);
       };
 
       const control = (label: string, title: string, action: () => void) =>
@@ -183,7 +191,7 @@ export function createWalkthroughPanel(): WalkthroughPanel {
           on: {
             click: () => {
               action();
-              render();
+              render(true);
             },
           },
         });
@@ -209,7 +217,9 @@ export function createWalkthroughPanel(): WalkthroughPanel {
           text: "One solution on file — there may well be others.",
         }),
       );
-      render();
+      // Not a step: this is the panel drawing itself for the first time, and a
+      // result the player has not moved off yet.
+      render(false);
     },
   };
 }
