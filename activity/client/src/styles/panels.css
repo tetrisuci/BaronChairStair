@@ -556,8 +556,26 @@
 .explore__item:hover:not(:disabled) { background: var(--sun); border-color: var(--ink); }
 .explore__item:active:not(:disabled) { transform: translate(1px, 1px); }
 
-/* Today's puzzle, until it has been filed. Visible, so its absence is not a mystery. */
-.explore__item--locked { opacity: 0.45; cursor: not-allowed; }
+/*
+ * Today's puzzle, until it has been solved.
+ *
+ * Dimmed, but not so far that the reason beside it stops being readable — the
+ * row now carries its own sentence, and 0.45 on plum over cream took that below
+ * where anybody would bother. The label keeps full strength against the dimmed
+ * title, which is the right way round: the title is the thing you already know
+ * and the label is the thing you are missing.
+ */
+.explore__item--locked { opacity: 0.62; cursor: not-allowed; }
+
+.explore__locked {
+  margin-left: 8px;
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ink-soft);
+  white-space: nowrap;
+}
 
 .explore__id {
   font-family: var(--mono);

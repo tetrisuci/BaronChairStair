@@ -40,6 +40,7 @@ import { createBuilder, type Builder } from "./ui/builder";
 import type { SubmissionVerdict } from "./ui/builder-submit";
 import type { SubmissionBody } from "./ui/builder-state";
 import { createStartedPuzzles, type StartedPuzzles } from "./started";
+import { lockedPuzzleIds } from "./daily-lock";
 import { DuelClient } from "./game/duel";
 import {
   createDuelIntro,
@@ -416,18 +417,9 @@ export class App {
     return this.daily?.puzzles.find((entry) => entry.tier === this.dailyTier) ?? null;
   }
 
-  /**
-   * The puzzles practice will not open, because they have not been filed yet.
-   *
-   * Three of them now, and each is locked on its own run: rehearsing today's
-   * hard puzzle in the explorer before filing it is the thing this stops, and
-   * solving the easy one does not unlock the other two.
-   */
+  /** The puzzles practice will not open. The rule lives in `daily-lock.ts`. */
   private lockedPuzzleIds(): ReadonlySet<number> {
-    const locked = (this.daily?.puzzles ?? [])
-      .filter((entry) => !entry.run)
-      .map((entry) => entry.puzzle.id);
-    return new Set(locked);
+    return lockedPuzzleIds(this.daily?.puzzles ?? []);
   }
 
   private async loadArchive(): Promise<readonly ArchiveListing[]> {

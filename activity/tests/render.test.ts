@@ -25,6 +25,9 @@ import { withRush } from "../client/src/ui/daily-board";
 import { createRushResultCard } from "../client/src/ui/rush";
 import { createBuilder } from "../client/src/ui/builder";
 import { createStartedPuzzles } from "../client/src/started";
+import { createExplorer } from "../client/src/ui/explorer";
+import { lockedPuzzleIds } from "../client/src/daily-lock";
+import { DEFAULT_ARCHIVE_FILTER } from "../shared/archive-filter";
 import { createCredits } from "../client/src/ui/chrome";
 import { MAX_ROWS } from "../client/src/ui/builder-state";
 import type { RushPlayed } from "../client/src/api";
@@ -791,5 +794,91 @@ describe("the difficulty pips", () => {
     strip.update(null);
     expect(strip.element.querySelector(".credits__pips")!.childElementCount).toBe(0);
     expect(strip.element.querySelector(".credits__title")!.textContent).toBe("—");
+  });
+});
+
+describe("a puzzle the explorer will not open", () => {
+  const listing = (id: number, title: string) => ({
+    id,
+    title,
+    author: "satilea",
+    difficulty: 4,
+    goal: "Clear 1 TSD",
+    set: null,
+    pieces: 3,
+    targetAttack: 4,
+    community: false,
+  });
+
+  const shown = (locked: readonly number[]) => {
+    const made = createExplorer({
+      onPlay: () => {},
+      onRandom: () => {},
+      onFilter: () => {},
+      onClose: () => {},
+    } as never);
+    window.document.body.append(made.element as never);
+    made.update(
+      [listing(15, "protanopia"), listing(46, "stmb cave")] as never,
+      DEFAULT_ARCHIVE_FILTER,
+      new Set(locked),
+    );
+    return [...made.element.querySelectorAll(".explore__item")].map((row) => ({
+      text: (row.textContent ?? "").replace(/\s+/g, " "),
+      locked: row.className.includes("explore__item--locked"),
+      reason: row.querySelector(".explore__locked")?.textContent ?? null,
+    }));
+  };
+
+  test("says on the row why, rather than only in a tooltip", () => {
+    // The reason lived in a `title` attribute, which needs a hover nobody
+    // thinks to try — and a browser will not show one on a disabled button at
+    // all. So the only thing the player was told was that this row is
+    // different from the others, never why, which is what the greying looks
+    // like when you cannot read the explanation.
+    const rows = shown([15]);
+    expect(rows[0]!.locked).toBe(true);
+    expect(rows[0]!.reason).toBe("today's — solve it on the daily");
+    expect(rows[0]!.text).toContain("today's");
+  });
+
+  test("says nothing on a puzzle that is open", () => {
+    const rows = shown([15]);
+    expect(rows[1]!.locked).toBe(false);
+    expect(rows[1]!.reason).toBeNull();
+  });
+});
+
+describe("what practice may open of today's three", () => {
+  const day = (runs: readonly (boolean | null)[]) =>
+    runs.map((solved, index) => ({
+      puzzle: { id: 10 + index },
+      run: solved === null ? null : { solved },
+    }));
+
+  test("a puzzle you have solved is open", () => {
+    // The whole point of the lock is that today's three are not a rehearsal
+    // room. Once one is solved there is nothing left to rehearse for.
+    expect([...lockedPuzzleIds(day([true, null, null]))]).toEqual([11, 12]);
+  });
+
+  test("a puzzle you filed and did not solve stays shut", () => {
+    // The bug this pins. `recordRun` upserts a solve over a miss —
+    // `WHERE runs.solved = 0 AND excluded.solved = 1` — so a filed miss is not
+    // a finished puzzle: the player can still come back and file the solve.
+    // Unlocking on the row's existence let them practise it first, with the
+    // answer in hand, which is exactly the rehearsal the lock forbids.
+    expect([...lockedPuzzleIds(day([false, null, null]))]).toEqual([10, 11, 12]);
+  });
+
+  test("solving one does not open the other two", () => {
+    // Three puzzles, three places on the board. Read as "solved today" this
+    // would hand somebody the hard one for beating the easy one.
+    expect([...lockedPuzzleIds(day([true, true, null]))]).toEqual([12]);
+    expect([...lockedPuzzleIds(day([true, true, true]))]).toEqual([]);
+  });
+
+  test("a day that has not loaded locks nothing", () => {
+    expect([...lockedPuzzleIds([])]).toEqual([]);
   });
 });
