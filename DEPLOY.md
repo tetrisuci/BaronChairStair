@@ -105,8 +105,17 @@ that and abuse:
   post a backlink into an unrelated repository.
 - Control characters are stripped, as are the invisible ranges that let a title read as
   something other than what it says.
-- Replies are ephemeral, and the player is told their display name will be public
-  *before* they submit — it is in the command's own field description.
+- A filed report replies **in the channel**, so the club can see a bug is already
+  known. Anything about the *player* replies privately — too long, too often, and
+  "not set up yet" — because "you have filed three reports this hour" is not
+  something to read out in front of everybody, and neither is your own missing
+  `GITHUB_TOKEN`. A GitHub outage is the one public failure, because it is about
+  the world rather than about this club and the next person will hit it too. The
+  player is told their display name will be public *before* they submit, in the
+  command's own field description.
+- **Before the keys are set, `/report` answers privately and spends nobody's
+  quota.** That is the state you are in while reading this, so it is worth
+  knowing the command is safe to leave registered while you finish.
 
 That layer has tests, and they need no install:
 
