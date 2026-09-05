@@ -18,49 +18,11 @@ import { PuzzleRun } from "../client/src/game/runner";
 import { decodeBoard, ENGINE_ROWS, type PuzzlePrompt } from "../shared/puzzle";
 import { DEFAULT_HANDLING } from "../shared/tetris/handling";
 import { type InputEvent, parseInputLog, verifyRun } from "../shared/tetris/verify";
+import { PATIENCE, pump, pumpUntil, resetHarness, restoreClock, SAFE_LOCK_FRAMES } from "./harness";
 
-const FRAME_MS = 1000 / 60;
-/** Enough frames for anything grounded to lock, and then some. */
-const PATIENCE = 300;
-/**
- * The engine swallows a hard drop for a few frames after a piece locks, so that
- * a key still down at the lock cannot slam the next piece. A real player's next
- * press lands after that window, so the keys here do too.
- */
-const SAFE_LOCK_FRAMES = 8;
-
-// ── A clock and a frame loop, turned by hand ─────────────────────────────────
-
-let clock = 0;
-let scheduled: FrameRequestCallback | null = null;
-
-const realPerformance = globalThis.performance;
-globalThis.performance = { now: () => clock } as unknown as Performance;
-globalThis.requestAnimationFrame = (callback: FrameRequestCallback) => {
-  scheduled = callback;
-  return 1;
-};
-globalThis.cancelAnimationFrame = () => {
-  scheduled = null;
-};
 afterAll(() => {
-  globalThis.performance = realPerformance;
+  restoreClock();
 });
-
-/** Runs the run's own loop for `count` frames, one engine tick each. */
-function pump(count: number): void {
-  for (let index = 0; index < count; index++) {
-    const step = scheduled;
-    if (!step) return;
-    clock += FRAME_MS;
-    step(clock);
-  }
-}
-
-/** Runs the loop until `done`, so a test never has to guess a lock delay. */
-function pumpUntil(done: () => boolean): void {
-  for (let index = 0; index < PATIENCE && !done(); index++) pump(1);
-}
 
 // ── One puzzle, six O pieces, nothing to clear ───────────────────────────────
 
@@ -124,8 +86,7 @@ function playThreePieces(run: PuzzleRun): void {
 }
 
 beforeEach(() => {
-  clock = 0;
-  scheduled = null;
+  resetHarness();
 });
 
 describe("undo", () => {
