@@ -43,7 +43,19 @@ the half worth having your full attention.
 
 **Python 3.10 or newer.** `client/discord_bot.py` exits at start-up on anything older,
 with a message naming the version it found. Its dependencies are `discord.py`,
-`aiohttp` and `python-dotenv`.
+`aiohttp`, `python-dotenv` and `matplotlib`.
+
+`matplotlib` is not optional and is easy to miss: `discord_bot.py:114` imports
+`presence_tracker`, which imports it at module scope, so the bot does not start
+without it — it is not only needed by the graph command that uses it.
+
+**The replay commands need one more thing.** `/highlights` and
+`build_snapshots.py` spawn a TypeScript bridge (`server/server.ts`) that imports
+`@haelp/teto`, so run `bun install` **at the repository root** once. Everything
+else runs on Python alone. Bun can resolve the package on its own when there is
+no `node_modules` at all, so a fresh box may work without this — run it anyway,
+so the version is the one `bun.lock` pins rather than whatever the registry
+serves at the moment somebody asks for a replay.
 
 Use the interpreter that actually runs the bot, not a bare `python3` — a system
 interpreter usually has none of these installed:
