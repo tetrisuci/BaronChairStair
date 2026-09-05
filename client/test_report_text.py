@@ -98,6 +98,21 @@ class Bodies(unittest.TestCase):
         body = issue_body("one\ntwo\nthree", reporter="ada", guild=None)
         self.assertIn("one\ntwo\nthree", body)
 
+    def test_a_short_report_is_carried_whole(self):
+        # There is no minimum length. "puzzle 46 is unsolvable" is the report,
+        # and refusing it for brevity loses what the command exists to collect.
+        body = issue_body("rush hangs", reporter="ada", guild=None)
+        self.assertTrue(body.startswith("rush hangs"))
+
+    def test_the_footer_says_who_and_where_and_stops(self):
+        # It used to go on to say the reporter has no GitHub account and that an
+        # officer would pass a reply on. That is the maintainer's business to
+        # decide, not a sentence the bot should put in every issue it opens.
+        body = issue_body("it crashed", reporter="ada", guild="Tetris at UCI")
+        self.assertIn("*Filed with `/report` by **ada** in **Tetris at UCI**.*", body)
+        self.assertNotIn("no GitHub account", body)
+        self.assertNotIn("officer", body)
+
     def test_a_direct_message_says_so_rather_than_naming_nothing(self):
         self.assertIn("in a direct message", issue_body("x" * 20, reporter="ada", guild=None))
 

@@ -24,7 +24,6 @@ MAX_TITLE = 256
 # Long enough for a real report with a pasted board, short enough that the
 # tracker cannot be filled from one message.
 MAX_DESCRIPTION = 4000
-MIN_DESCRIPTION = 10
 
 # What one player may file, and over how long. Deliberately generous for a
 # person and useless for a script: three real reports in an hour is a busy day
@@ -149,8 +148,7 @@ def issue_body(description: str, *, reporter: str, guild: "str | None") -> str:
         f"{defang(description)}\n"
         f"\n"
         f"---\n"
-        f"*Filed with `/report` by **{one_line(reporter)}** {where}. "
-        f"They have no GitHub account — reply here and an officer will pass it on.*"
+        f"*Filed with `/report` by **{one_line(reporter)}** {where}.*"
     )
 
 
