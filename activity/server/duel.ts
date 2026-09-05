@@ -37,7 +37,7 @@
  */
 
 import type { Server, ServerWebSocket } from "bun";
-import { solvedUnderPolicy } from "./solve-verdict";
+import { playerPrompt, solvedUnderPolicy } from "./solve-verdict";
 
 /** Bun's server, typed with the data this module attaches to each socket. */
 type DuelServer = Server<SocketData>;
@@ -62,7 +62,7 @@ import {
   sanitizeSettings,
   withinBand,
 } from "../shared/duel";
-import { decodeBoard, ENGINE_ROWS, type Puzzle, toPrompt } from "../shared/puzzle";
+import { decodeBoard, ENGINE_ROWS, type Puzzle } from "../shared/puzzle";
 import { isRushEligible, RUSH_SKIPS, rushSequence } from "../shared/rush";
 import { type Handling, sanitizeHandling } from "../shared/tetris/handling";
 import { type InputEvent, InvalidRunError, parseInputLog, verifyRun } from "../shared/tetris/verify";
@@ -325,7 +325,7 @@ function startRound(duel: Duel): void {
   broadcast(duel, {
     type: "round",
     round: round.index,
-    puzzle: toPrompt(puzzle),
+    puzzle: playerPrompt(puzzle),
     endsAt,
     duel: view(duel),
   });
@@ -544,7 +544,7 @@ function sendRushPuzzle(duel: Duel, seat: Seat): void {
     index: seat.position,
     // Null rather than an ending: the stack is spent but the clock is not, and
     // the opponent can still be catching up.
-    puzzle: puzzle ? toPrompt(puzzle) : null,
+    puzzle: puzzle ? playerPrompt(puzzle) : null,
     endsAt: rush.endsAt,
     solved: seat.score,
     skipsLeft: seat.skipsLeft,

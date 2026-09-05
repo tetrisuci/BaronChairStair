@@ -3106,7 +3106,16 @@
    ],
    "hold": null,
    "targetAttack": 27,
-   "requiredClears": []
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 3
+    },
+    {
+     "clear": "tst",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 90,

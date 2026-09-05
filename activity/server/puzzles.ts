@@ -26,8 +26,11 @@ import {
   nextResetAt,
   puzzleIndexForDay,
 } from "../shared/daily";
+import { parseGoalLoosely } from "../shared/goal";
 import {
   BOARD_WIDTH,
+  type ClearRequirement,
+  clearShortfall,
   COMMUNITY_ID_BASE,
   type Puzzle,
   type PuzzlePrompt,
@@ -205,14 +208,63 @@ export function overrideProblem(override: OverrideFields): string | null {
  * reached from here — see `OVERRIDABLE_FIELDS` for why that is the whole point.
  */
 export function withOverride(puzzle: Puzzle, override: OverrideFields): Puzzle {
+  const goal = override.goal ?? puzzle.goal;
   return {
     ...puzzle,
     title: override.title ?? puzzle.title,
     author: override.author ?? puzzle.author,
-    goal: override.goal ?? puzzle.goal,
+    goal,
     difficulty: override.difficulty ?? puzzle.difficulty,
     set: override.set ?? puzzle.set,
+    requiredClears: goal === puzzle.goal ? puzzle.requiredClears : rederived(puzzle, goal),
   };
+}
+
+/**
+ * The clears a corrected goal names — but only if the answer still makes them.
+ *
+ * An officer can rewrite a goal, and `target_attack` is deliberately not
+ * overridable because a run is filed with no record of the bar it was scored
+ * against. A requirement is the same kind of thing, so it cannot simply follow
+ * the new wording: an officer tightening "Clear a TSD" to "Clear 2 TSDs" would
+ * otherwise make the puzzle unsolvable for everybody, including by its own
+ * reference solution, from the next restart.
+ *
+ * So the correction goes through the same gate the backfill does. The new
+ * sentence is parsed and checked against the shipped answer; if the answer does
+ * not satisfy it the puzzle keeps *no* requirement and scores on attack alone,
+ * which is the state it would have had if nobody had ever written one. Loud in
+ * the log, because an officer who tightened a goal and got nothing enforced
+ * should be able to find out why.
+ *
+ * `[]` rather than the previous value on a mismatch, deliberately: leaving the
+ * old requirement in force under new wording is the exact drift this exists to
+ * prevent — the page would say one thing and the server hold another.
+ */
+function rederived(puzzle: Puzzle, goal: string): readonly ClearRequirement[] {
+  const wanted = parseGoalLoosely(goal)?.clears ?? [];
+  if (wanted.length === 0) return [];
+
+  const answer = puzzle.solution;
+  if (!answer) {
+    // No answer key on this box — `data/solutions.json` is untracked, so this is
+    // an ordinary deployment rather than a broken one. Nothing to gate against
+    // means nothing to enforce.
+    return [];
+  }
+  const short = clearShortfall(
+    answer.flatMap((step) => (step.clear ? [step.clear] : [])),
+    wanted,
+  );
+  if (short.length > 0) {
+    console.warn(
+      `[puzzle] the corrected goal for ${puzzle.id} asks for clears its own solution does not ` +
+        `make (short ${short.map((entry) => `${entry.count} ${entry.clear}`).join(", ")}); serving it with ` +
+        "no clear requirement. Fix the wording or the puzzle.",
+    );
+    return [];
+  }
+  return wanted;
 }
 
 /**
@@ -491,7 +543,37 @@ export class PuzzleArchive {
     return nextResetAt(Date.now(), this.dayOptions);
   }
 
-  prompt(puzzle: Puzzle): PuzzlePrompt {
-    return toPrompt(puzzle);
+  /**
+   * A puzzle as a player receives it — with the clear requirement only when the
+   * server is actually going to enforce it.
+   *
+   * The flag has to reach the client, and this is how it does. `PuzzleRun` ends
+   * an attempt on `solvesPuzzle`, which reads `requiredClears` off the prompt;
+   * gating only the server left the client enforcing a rule the server had been
+   * told not to apply. In rush that is visible: a skipped or buzzer-ended
+   * segment pushes a live log, so a run the player watched go unsolved came
+   * back counted as solved, and the ranked score exceeded what the HUD showed.
+   *
+   * Withholding the field rather than shipping the mode keeps one rule in one
+   * place. A client that cannot see a requirement cannot enforce one, so `log`
+   * and `off` put both halves back exactly where `origin/main` had them, and
+   * the promise this rollout is built on — that forgetting to turn enforcement
+   * on costs nothing but a quiet log — is true rather than nearly true.
+   *
+   * **`enforce` is an argument, not a config read, and defaults to false.**
+   * Reading `config` here would put it in this module's import graph, and eight
+   * test files import `PuzzleArchive` at module scope *before* their `beforeAll`
+   * sets `DATABASE_PATH` — so config would settle on the wrong database and the
+   * suite would share one store across files that each asked for their own.
+   * That is the hazard `tests/duel.ts` and `tests/submissions.test.ts` both have
+   * headers about, and it cost five failures when this was written the other
+   * way. The default is the withholding one so that a caller who forgets leaves
+   * the client exactly where `origin/main` had it.
+   */
+  prompt(puzzle: Puzzle, enforce = false): PuzzlePrompt {
+    const prompt = toPrompt(puzzle);
+    if (enforce) return prompt;
+    const { requiredClears: _withheld, ...loose } = prompt;
+    return loose;
   }
 }

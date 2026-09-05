@@ -20,9 +20,27 @@
  * Default is `log` rather than `on`, and the direction is deliberate. Forgetting
  * to turn enforcement on costs nothing but a quiet log; forgetting to turn it
  * off during the cutover costs somebody their rush.
+ *
+ * **The flag reaches the client too, and has to.** `PuzzleRun` ends an attempt
+ * on `solvesPuzzle`, so gating only this function left the client enforcing a
+ * rule the server had been told not to apply — and in rush that is not
+ * academic: a skipped or buzzer-ended segment pushes a live log, so a run the
+ * player watched go unsolved came back counted as solved and the ranked score
+ * exceeded what the HUD showed. `PuzzleArchive.prompt` withholds
+ * `requiredClears` unless the mode is `on`, which is what makes the sentence
+ * above true rather than nearly true: a client that cannot see a requirement
+ * cannot enforce one.
  */
 
-import { clearShortfall, meetsTarget, solvesPuzzle, type ClearName, type Puzzle } from "@shared/puzzle";
+import {
+  clearShortfall,
+  meetsTarget,
+  solvesPuzzle,
+  toPrompt,
+  type ClearName,
+  type Puzzle,
+  type PuzzlePrompt,
+} from "@shared/puzzle";
 import { config } from "./config";
 
 export type GoalEnforcement = "off" | "log" | "on";
@@ -59,4 +77,23 @@ export function solvedUnderPolicy(
     );
   }
   return mode === "on" ? strict : loose;
+}
+
+/**
+ * Whether the clear requirement should reach the player's client at all.
+ *
+ * The one place the mode is read for this question, so the five prompt sites
+ * cannot answer it differently. `PuzzleArchive.prompt` deliberately does not
+ * read config itself — see its docblock.
+ */
+export function enforcingGoals(): boolean {
+  return config.goalEnforcement === "on";
+}
+
+/** A prompt for a player, with the requirement withheld unless it is enforced. */
+export function playerPrompt(puzzle: Puzzle): PuzzlePrompt {
+  const prompt = toPrompt(puzzle);
+  if (enforcingGoals()) return prompt;
+  const { requiredClears: _withheld, ...loose } = prompt;
+  return loose;
 }

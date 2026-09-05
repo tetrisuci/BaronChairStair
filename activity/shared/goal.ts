@@ -234,7 +234,11 @@ export function parseGoalLoosely(text: string): GoalSpec | null {
     // The clause is a constraint this vocabulary cannot hold. Enforcing what is
     // left would enforce a different, easier puzzle.
     if (REFUSAL.test(aside[1] ?? "")) return null;
-    rest = rest.slice(0, aside.index).trim();
+    // Stops stripped again, because the first pass ran before this one and a
+    // goal like "Send 3 TSDs and a TST.(ZJSOLI…)" keeps its full stop when the
+    // blueprint dump behind it comes off. It cost #89 the enforcement it
+    // otherwise qualifies for.
+    rest = rest.slice(0, aside.index).trim().replace(TRAILING_STOPS, "");
   }
 
   rest = rest.replace(GOAL_VERB, "").trim();
