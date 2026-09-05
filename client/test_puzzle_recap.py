@@ -15,7 +15,14 @@ import unittest
 
 try:
     import puzzle_recap
-except ModuleNotFoundError:  # pragma: no cover - depends on the environment
+except ModuleNotFoundError as missing:  # pragma: no cover - depends on the environment
+    # Only the bot dependency earns a skip. A bare `except ModuleNotFoundError`
+    # also swallows one raised from *inside* puzzle_recap — a typo'd import, a
+    # module that moved — and reports it as "discord.py is not installed",
+    # turning a broken module into a green suite with a reason that sends the
+    # reader somewhere else entirely. Anything but the names below re-raises.
+    if missing.name not in {"discord", "aiohttp", "dotenv"}:
+        raise
     puzzle_recap = None
 
 needs_discord = unittest.skipUnless(
@@ -36,6 +43,15 @@ def solver(identifier: str, name: str, marks: dict, solved: int, total_ms: int) 
     }
 
 
+#: The three characters a ranked row can begin with, read off the module so a
+#: renamed mark is a failure here rather than a filter that quietly matches
+#: nothing.
+MARKS = (
+    ()
+    if puzzle_recap is None
+    else (puzzle_recap.MARK_SOLVED, puzzle_recap.MARK_MISSED, puzzle_recap.MARK_ABSENT)
+)
+
 ALL_THREE = {"easy": True, "medium": True, "hard": True}
 EASY_ONLY = {"easy": True, "medium": False, "hard": False}
 
@@ -52,18 +68,43 @@ class DailyAlignment(unittest.TestCase):
     """
 
     def rows(self) -> list:
-        return [
+        """
+        More players than `RANKED_SHOWN`, so the overflow line is real.
+
+        With three rows the "also played" tail is never emitted, and the column
+        check below used to pass without ever meeting the one line in this
+        message that legitimately does not start with a grid.
+        """
+        board = [
             solver("1", "first", ALL_THREE, 3, 61_200),
             solver("2", "second", EASY_ONLY, 1, 21_900),
             solver("3", "third", EASY_ONLY, 1, 84_200),
         ]
+        extra = puzzle_recap.RANKED_SHOWN + 1 - len(board)
+        board += [solver(str(n + 4), f"p{n}", EASY_ONLY, 1, 90_000) for n in range(extra)]
+        return board
 
     def test_every_board_line_starts_at_the_same_column(self):
         lines = puzzle_recap._daily_lines(self.rows())
-        starts = {line.index("<@") for line in lines if "<@" in line and "—" in line}
+        # Only the ranked rows. Selecting on punctuation instead — "<@" and an
+        # em dash — also catches "also played — @x @y", which is prose, starts
+        # its mentions at a different offset by design, and would have failed
+        # this assertion on correct output the moment a board went past the cap.
+        ranked = [line for line in lines if line[:1] in MARKS]
+        self.assertGreater(len(ranked), 1)
+        starts = {line.index("<@") for line in ranked}
         # One distinct offset, or the column is not a column. A prefix on any
         # single line is what breaks this, whatever the prefix is.
         self.assertEqual(len(starts), 1, f"mention column is ragged: {starts}")
+
+    def test_the_overflow_line_is_present_and_deliberately_not_a_row(self):
+        # The line the filter above has to exclude. Asserting it exists keeps
+        # that exclusion honest: if the tail ever stops being emitted, the
+        # filter is guarding against nothing and should be simplified.
+        lines = puzzle_recap._daily_lines(self.rows())
+        tail = [line for line in lines if line.startswith("also played")]
+        self.assertEqual(len(tail), 1)
+        self.assertNotIn(tail[0][:1], MARKS)
 
     def test_the_leader_is_first_without_being_decorated(self):
         lines = puzzle_recap._daily_lines(self.rows())
