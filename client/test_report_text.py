@@ -78,23 +78,25 @@ class Titles(unittest.TestCase):
 
 
 class Bodies(unittest.TestCase):
-    def test_the_players_words_are_quoted(self):
+    def test_the_players_words_are_the_body(self):
+        # Not a quotation of one. Prefixing every line with `> ` rendered the
+        # report as a grey indented aside under the bot's own footer, which is
+        # the wrong way round: the report is what the issue is about.
         body = issue_body("it crashed", reporter="ada", guild="Tetris at UCI")
-        self.assertIn("> it crashed", body)
+        self.assertTrue(body.startswith("it crashed"))
+        self.assertNotIn("> it crashed", body)
         self.assertIn("**ada**", body)
         self.assertIn("Tetris at UCI", body)
 
-    def test_a_report_cannot_style_itself_into_the_template(self):
-        # Unquoted, a leading `#` is a heading and `---` is a rule, and a report
-        # could dress itself up as the provenance footer the maintainer trusts.
-        body = issue_body("# Filed by staff\n---\nnot really", reporter="ada", guild=None)
-        for line in ("# Filed by staff", "---", "not really"):
-            self.assertIn(f"> {line}" if line != "---" else "> ---", body)
-        self.assertNotIn("\n# Filed by staff", body)
+    def test_the_report_comes_before_the_provenance(self):
+        # A maintainer opening the issue should read the problem first and the
+        # bookkeeping second.
+        body = issue_body("the board is upside down", reporter="ada", guild=None)
+        self.assertLess(body.index("the board is upside down"), body.index("Filed with"))
 
-    def test_every_line_is_quoted_not_just_the_first(self):
+    def test_every_line_survives_intact(self):
         body = issue_body("one\ntwo\nthree", reporter="ada", guild=None)
-        self.assertIn("> one\n> two\n> three", body)
+        self.assertIn("one\ntwo\nthree", body)
 
     def test_a_direct_message_says_so_rather_than_naming_nothing(self):
         self.assertIn("in a direct message", issue_body("x" * 20, reporter="ada", guild=None))
@@ -153,7 +155,7 @@ class LineBreaks(unittest.TestCase):
         # A report is usually a list of steps. Collapsing it into one line loses
         # the thing that made it worth filing, and the first version did.
         body = issue_body("1. open rush\n2. skip twice\n3. it hangs", reporter="ada", guild=None)
-        self.assertIn("> 1. open rush\n> 2. skip twice\n> 3. it hangs", body)
+        self.assertIn("1. open rush\n2. skip twice\n3. it hangs", body)
 
     def test_windows_line_endings_do_not_leave_stray_returns(self):
         self.assertEqual(defang("one\r\ntwo\rthree"), "one\ntwo\nthree")
