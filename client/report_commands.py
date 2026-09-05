@@ -72,16 +72,20 @@ def _config() -> "tuple[str, str]":
 
 limiter = ReportLimiter()
 
-# A second bucket, above the individual. Three an hour each is right for a
-# person and no bound at all on a raided server: a hundred accounts is three
-# hundred issues an hour, filed under the bot's identity, which is enough for
-# GitHub to act on the token and leaves an officer deleting them by hand. Keyed
-# on the guild, and on `None` in a DM — where every DM shares one bucket, which
-# is correct, since a DM report carries no server to answer for it.
+# A second bucket, above the individual. A per-player limit is no bound at all
+# on a raided server: a hundred accounts is fifteen hundred issues an hour,
+# filed under the bot's identity, which is enough for GitHub to act on the token
+# and leaves an officer deleting them by hand. Keyed on the guild, and on `None`
+# in a DM — where every DM shares one bucket, which is correct, since a DM
+# report carries no server to answer for it.
+#
+# Held at four times the per-player limit rather than pinned to a number. One
+# enthusiastic reporter should not be able to close the door on the rest of the
+# club, and at 15 and 60 it takes four of them to do it.
 #
 # Deliberately not a global one: one raided server should not stop the others
 # reporting.
-GUILD_REPORTS_PER_WINDOW = 20
+GUILD_REPORTS_PER_WINDOW = 60
 guild_limiter = ReportLimiter(limit=GUILD_REPORTS_PER_WINDOW)
 
 
@@ -152,7 +156,7 @@ async def report_command(
     #
     # The filed report is public: the channel gets the link, so somebody else
     # hitting the same bug can see it is already known, and an officer can pick
-    # it up without being told. A refusal is not — "you have filed three reports
+    # it up without being told. A refusal is not — "you have filed fifteen reports
     # in the last hour" read out in front of the channel is a scolding, and the
     # length and rate checks are between the player and the bot.
     #

@@ -26,9 +26,14 @@ MAX_TITLE = 256
 MAX_DESCRIPTION = 4000
 
 # What one player may file, and over how long. Deliberately generous for a
-# person and useless for a script: three real reports in an hour is a busy day
-# for anybody, and the fourth can wait or go on an issue they already opened.
-REPORTS_PER_WINDOW = 3
+# person and still useless for a script.
+#
+# Was three, which turned out to be the wrong read of how reporting actually
+# goes: somebody sitting down to play a set of puzzles finds several things in
+# one evening, and the fourth report is usually the same person still being
+# useful rather than a person being a nuisance. Fifteen is past any honest
+# session and nowhere near a script.
+REPORTS_PER_WINDOW = 15
 WINDOW_SECONDS = 60 * 60
 
 #: C0 and DEL, all of it. For a *title*, where a newline breaks the request

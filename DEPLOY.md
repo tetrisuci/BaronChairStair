@@ -107,7 +107,7 @@ that and abuse:
   something other than what it says.
 - A filed report replies **in the channel**, so the club can see a bug is already
   known. Anything about the *player* replies privately — too long, too often, and
-  "not set up yet" — because "you have filed three reports this hour" is not
+  "not set up yet" — because "you have filed fifteen reports this hour" is not
   something to read out in front of everybody, and neither is your own missing
   `GITHUB_TOKEN`. A GitHub outage is the one public failure, because it is about
   the world rather than about this club and the next person will hit it too. The

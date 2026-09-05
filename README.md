@@ -112,7 +112,7 @@ the server, under the bot's identity, to whatever repository you name** — so t
 token should be fine-grained, scoped to Issues on that one repository, and able
 to do nothing else. `@mentions` and `#references` are defanged so a report
 cannot become a stranger's notification, the description is capped, and one
-player may file three reports an hour.
+player may file fifteen reports an hour, and one server sixty.
 
 ### `/activity` — who is around
 
