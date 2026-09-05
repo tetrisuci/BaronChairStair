@@ -19,7 +19,13 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 4
+   "targetAttack": 4,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 2,
@@ -50,7 +56,17 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 16
+   "targetAttack": 16,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 2
+    },
+    {
+     "clear": "tst",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 3,
@@ -85,7 +101,8 @@
     "L"
    ],
    "hold": null,
-   "targetAttack": 13
+   "targetAttack": 13,
+   "requiredClears": []
   },
   {
    "id": 4,
@@ -108,7 +125,13 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 4
+   "targetAttack": 4,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 5,
@@ -135,7 +158,13 @@
     "T"
    ],
    "hold": "J",
-   "targetAttack": 18
+   "targetAttack": 18,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 3
+    }
+   ]
   },
   {
    "id": 6,
@@ -160,7 +189,13 @@
     "T"
    ],
    "hold": "L",
-   "targetAttack": 9
+   "targetAttack": 9,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 2
+    }
+   ]
   },
   {
    "id": 7,
@@ -187,7 +222,8 @@
     "T"
    ],
    "hold": "Z",
-   "targetAttack": 12
+   "targetAttack": 12,
+   "requiredClears": []
   },
   {
    "id": 8,
@@ -211,7 +247,8 @@
     "L"
    ],
    "hold": "T",
-   "targetAttack": 6
+   "targetAttack": 6,
+   "requiredClears": []
   },
   {
    "id": 9,
@@ -243,7 +280,17 @@
     "T"
    ],
    "hold": "Z",
-   "targetAttack": 18
+   "targetAttack": 18,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 2
+    },
+    {
+     "clear": "tst",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 10,
@@ -272,7 +319,17 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 16
+   "targetAttack": 16,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 2
+    },
+    {
+     "clear": "quad",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 11,
@@ -302,7 +359,17 @@
     "I"
    ],
    "hold": null,
-   "targetAttack": 11
+   "targetAttack": 11,
+   "requiredClears": [
+    {
+     "clear": "tst",
+     "count": 1
+    },
+    {
+     "clear": "quad",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 12,
@@ -336,7 +403,13 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 22
+   "targetAttack": 22,
+   "requiredClears": [
+    {
+     "clear": "tst",
+     "count": 3
+    }
+   ]
   },
   {
    "id": 14,
@@ -363,7 +436,17 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 11
+   "targetAttack": 11,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 1
+    },
+    {
+     "clear": "tst",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 15,
@@ -383,7 +466,13 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 4
+   "targetAttack": 4,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 16,
@@ -420,7 +509,8 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 23
+   "targetAttack": 23,
+   "requiredClears": []
   },
   {
    "id": 17,
@@ -446,7 +536,13 @@
     "O"
    ],
    "hold": "T",
-   "targetAttack": 9
+   "targetAttack": 9,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 2
+    }
+   ]
   },
   {
    "id": 18,
@@ -475,7 +571,13 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 9
+   "targetAttack": 9,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 2
+    }
+   ]
   },
   {
    "id": 19,
@@ -501,7 +603,13 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 9
+   "targetAttack": 9,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 2
+    }
+   ]
   },
   {
    "id": 20,
@@ -532,7 +640,17 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 18
+   "targetAttack": 18,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 2
+    },
+    {
+     "clear": "tst",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 21,
@@ -561,7 +679,17 @@
     "I"
    ],
    "hold": null,
-   "targetAttack": 9
+   "targetAttack": 9,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 1
+    },
+    {
+     "clear": "quad",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 22,
@@ -593,7 +721,17 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 18
+   "targetAttack": 18,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 2
+    },
+    {
+     "clear": "tst",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 23,
@@ -629,7 +767,17 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 24
+   "targetAttack": 24,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 3
+    },
+    {
+     "clear": "tst",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 24,
@@ -672,7 +820,8 @@
     "I"
    ],
    "hold": "T",
-   "targetAttack": 49
+   "targetAttack": 49,
+   "requiredClears": []
   },
   {
    "id": 25,
@@ -709,7 +858,21 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 24
+   "targetAttack": 24,
+   "requiredClears": [
+    {
+     "clear": "tss",
+     "count": 1
+    },
+    {
+     "clear": "tsd",
+     "count": 2
+    },
+    {
+     "clear": "tst",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 26,
@@ -734,7 +897,17 @@
     "T"
    ],
    "hold": "Z",
-   "targetAttack": 11
+   "targetAttack": 11,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 1
+    },
+    {
+     "clear": "tst",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 27,
@@ -764,7 +937,17 @@
     "I"
    ],
    "hold": "T",
-   "targetAttack": 16
+   "targetAttack": 16,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 2
+    },
+    {
+     "clear": "quad",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 28,
@@ -791,7 +974,13 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 10
+   "targetAttack": 10,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 2
+    }
+   ]
   },
   {
    "id": 29,
@@ -820,7 +1009,13 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 16
+   "targetAttack": 16,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 3
+    }
+   ]
   },
   {
    "id": 30,
@@ -849,7 +1044,13 @@
     "I"
    ],
    "hold": null,
-   "targetAttack": 4
+   "targetAttack": 4,
+   "requiredClears": [
+    {
+     "clear": "quad",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 31,
@@ -877,7 +1078,13 @@
     "I"
    ],
    "hold": null,
-   "targetAttack": 4
+   "targetAttack": 4,
+   "requiredClears": [
+    {
+     "clear": "quad",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 32,
@@ -919,7 +1126,13 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 36
+   "targetAttack": 36,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 6
+    }
+   ]
   },
   {
    "id": 33,
@@ -947,7 +1160,17 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 11
+   "targetAttack": 11,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 1
+    },
+    {
+     "clear": "tst",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 34,
@@ -973,7 +1196,13 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 4
+   "targetAttack": 4,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 35,
@@ -1007,7 +1236,17 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 16
+   "targetAttack": 16,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 2
+    },
+    {
+     "clear": "tst",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 36,
@@ -1036,7 +1275,13 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 18
+   "targetAttack": 18,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 3
+    }
+   ]
   },
   {
    "id": 37,
@@ -1057,7 +1302,13 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 4
+   "targetAttack": 4,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 38,
@@ -1089,7 +1340,17 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 18
+   "targetAttack": 18,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 2
+    },
+    {
+     "clear": "tst",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 39,
@@ -1111,7 +1372,13 @@
     "O"
    ],
    "hold": null,
-   "targetAttack": 4
+   "targetAttack": 4,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 40,
@@ -1141,7 +1408,17 @@
     "I"
    ],
    "hold": null,
-   "targetAttack": 16
+   "targetAttack": 16,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 2
+    },
+    {
+     "clear": "quad",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 41,
@@ -1171,7 +1448,17 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 18
+   "targetAttack": 18,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 2
+    },
+    {
+     "clear": "tst",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 42,
@@ -1196,7 +1483,13 @@
     "I"
    ],
    "hold": null,
-   "targetAttack": 9
+   "targetAttack": 9,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 2
+    }
+   ]
   },
   {
    "id": 43,
@@ -1223,7 +1516,17 @@
     "I"
    ],
    "hold": null,
-   "targetAttack": 10
+   "targetAttack": 10,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 1
+    },
+    {
+     "clear": "quad",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 44,
@@ -1262,7 +1565,8 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 21
+   "targetAttack": 21,
+   "requiredClears": []
   },
   {
    "id": 45,
@@ -1304,7 +1608,8 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 23
+   "targetAttack": 23,
+   "requiredClears": []
   },
   {
    "id": 46,
@@ -1326,7 +1631,13 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 4
+   "targetAttack": 4,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 47,
@@ -1348,7 +1659,13 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 4
+   "targetAttack": 4,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 48,
@@ -1370,7 +1687,13 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 4
+   "targetAttack": 4,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 49,
@@ -1392,7 +1715,13 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 4
+   "targetAttack": 4,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 50,
@@ -1414,7 +1743,13 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 4
+   "targetAttack": 4,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 51,
@@ -1437,7 +1772,13 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 4
+   "targetAttack": 4,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 52,
@@ -1460,7 +1801,13 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 4
+   "targetAttack": 4,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 53,
@@ -1489,7 +1836,17 @@
     "I"
    ],
    "hold": null,
-   "targetAttack": 9
+   "targetAttack": 9,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 1
+    },
+    {
+     "clear": "quad",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 54,
@@ -1515,7 +1872,13 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 9
+   "targetAttack": 9,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 2
+    }
+   ]
   },
   {
    "id": 55,
@@ -1542,7 +1905,8 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 13
+   "targetAttack": 13,
+   "requiredClears": []
   },
   {
    "id": 56,
@@ -1569,7 +1933,8 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 16
+   "targetAttack": 16,
+   "requiredClears": []
   },
   {
    "id": 57,
@@ -1597,7 +1962,8 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 15
+   "targetAttack": 15,
+   "requiredClears": []
   },
   {
    "id": 59,
@@ -1624,7 +1990,17 @@
     "I"
    ],
    "hold": null,
-   "targetAttack": 10
+   "targetAttack": 10,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 1
+    },
+    {
+     "clear": "quad",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 60,
@@ -1651,7 +2027,17 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 11
+   "targetAttack": 11,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 1
+    },
+    {
+     "clear": "tst",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 61,
@@ -1681,7 +2067,17 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 21
+   "targetAttack": 21,
+   "requiredClears": [
+    {
+     "clear": "tss",
+     "count": 1
+    },
+    {
+     "clear": "tsd",
+     "count": 3
+    }
+   ]
   },
   {
    "id": 62,
@@ -1726,7 +2122,21 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 31
+   "targetAttack": 31,
+   "requiredClears": [
+    {
+     "clear": "tss",
+     "count": 3
+    },
+    {
+     "clear": "tsd",
+     "count": 2
+    },
+    {
+     "clear": "tst",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 63,
@@ -1750,7 +2160,13 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 10
+   "targetAttack": 10,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 2
+    }
+   ]
   },
   {
    "id": 64,
@@ -1782,7 +2198,8 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 19
+   "targetAttack": 19,
+   "requiredClears": []
   },
   {
    "id": 65,
@@ -1808,7 +2225,17 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 9
+   "targetAttack": 9,
+   "requiredClears": [
+    {
+     "clear": "tss",
+     "count": 1
+    },
+    {
+     "clear": "tst",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 66,
@@ -1839,7 +2266,17 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 16
+   "targetAttack": 16,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 2
+    },
+    {
+     "clear": "tst",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 67,
@@ -1869,7 +2306,13 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 14
+   "targetAttack": 14,
+   "requiredClears": [
+    {
+     "clear": "tst",
+     "count": 2
+    }
+   ]
   },
   {
    "id": 68,
@@ -1898,7 +2341,13 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 16
+   "targetAttack": 16,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 3
+    }
+   ]
   },
   {
    "id": 69,
@@ -1925,7 +2374,17 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 11
+   "targetAttack": 11,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 1
+    },
+    {
+     "clear": "tst",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 70,
@@ -1953,7 +2412,13 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 9
+   "targetAttack": 9,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 2
+    }
+   ]
   },
   {
    "id": 71,
@@ -1985,7 +2450,17 @@
     "I"
    ],
    "hold": null,
-   "targetAttack": 25
+   "targetAttack": 25,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 3
+    },
+    {
+     "clear": "quad",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 72,
@@ -2014,7 +2489,17 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 16
+   "targetAttack": 16,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 2
+    },
+    {
+     "clear": "quad",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 73,
@@ -2043,7 +2528,17 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 12
+   "targetAttack": 12,
+   "requiredClears": [
+    {
+     "clear": "tst",
+     "count": 1
+    },
+    {
+     "clear": "quad",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 74,
@@ -2071,7 +2566,17 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 11
+   "targetAttack": 11,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 1
+    },
+    {
+     "clear": "tst",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 75,
@@ -2100,7 +2605,13 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 16
+   "targetAttack": 16,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 3
+    }
+   ]
   },
   {
    "id": 76,
@@ -2126,7 +2637,17 @@
     "I"
    ],
    "hold": null,
-   "targetAttack": 7
+   "targetAttack": 7,
+   "requiredClears": [
+    {
+     "clear": "tss",
+     "count": 1
+    },
+    {
+     "clear": "quad",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 77,
@@ -2160,7 +2681,17 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 18
+   "targetAttack": 18,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 2
+    },
+    {
+     "clear": "tst",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 78,
@@ -2184,7 +2715,13 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 9
+   "targetAttack": 9,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 2
+    }
+   ]
   },
   {
    "id": 79,
@@ -2208,7 +2745,13 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 10
+   "targetAttack": 10,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 2
+    }
+   ]
   },
   {
    "id": 80,
@@ -2246,7 +2789,17 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 25
+   "targetAttack": 25,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 3
+    },
+    {
+     "clear": "tst",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 81,
@@ -2267,7 +2820,13 @@
     "I"
    ],
    "hold": null,
-   "targetAttack": 4
+   "targetAttack": 4,
+   "requiredClears": [
+    {
+     "clear": "quad",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 82,
@@ -2291,7 +2850,13 @@
     "I"
    ],
    "hold": null,
-   "targetAttack": 4
+   "targetAttack": 4,
+   "requiredClears": [
+    {
+     "clear": "quad",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 83,
@@ -2317,7 +2882,13 @@
     "I"
    ],
    "hold": null,
-   "targetAttack": 10
+   "targetAttack": 10,
+   "requiredClears": [
+    {
+     "clear": "quad",
+     "count": 2
+    }
+   ]
   },
   {
    "id": 84,
@@ -2344,7 +2915,13 @@
     "I"
    ],
    "hold": null,
-   "targetAttack": 10
+   "targetAttack": 10,
+   "requiredClears": [
+    {
+     "clear": "quad",
+     "count": 2
+    }
+   ]
   },
   {
    "id": 85,
@@ -2373,7 +2950,13 @@
     "I"
    ],
    "hold": null,
-   "targetAttack": 10
+   "targetAttack": 10,
+   "requiredClears": [
+    {
+     "clear": "quad",
+     "count": 2
+    }
+   ]
   },
   {
    "id": 86,
@@ -2402,7 +2985,13 @@
     "I"
    ],
    "hold": null,
-   "targetAttack": 9
+   "targetAttack": 9,
+   "requiredClears": [
+    {
+     "clear": "quad",
+     "count": 2
+    }
+   ]
   },
   {
    "id": 87,
@@ -2431,7 +3020,17 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 18
+   "targetAttack": 18,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 2
+    },
+    {
+     "clear": "tst",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 88,
@@ -2457,7 +3056,13 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 10
+   "targetAttack": 10,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 2
+    }
+   ]
   },
   {
    "id": 89,
@@ -2500,7 +3105,17 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 27
+   "targetAttack": 27,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 3
+    },
+    {
+     "clear": "tst",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 90,
@@ -2543,7 +3158,8 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 38
+   "targetAttack": 38,
+   "requiredClears": []
   },
   {
    "id": 91,
@@ -2577,7 +3193,13 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 23
+   "targetAttack": 23,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 4
+    }
+   ]
   },
   {
    "id": 92,
@@ -2607,7 +3229,17 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 18
+   "targetAttack": 18,
+   "requiredClears": [
+    {
+     "clear": "tst",
+     "count": 1
+    },
+    {
+     "clear": "tsd",
+     "count": 2
+    }
+   ]
   },
   {
    "id": 93,
@@ -2636,7 +3268,13 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 4
+   "targetAttack": 4,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 94,
@@ -2669,7 +3307,13 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 16
+   "targetAttack": 16,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 3
+    }
+   ]
   },
   {
    "id": 95,
@@ -2696,7 +3340,13 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 10
+   "targetAttack": 10,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 2
+    }
+   ]
   },
   {
    "id": 96,
@@ -2726,7 +3376,13 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 14
+   "targetAttack": 14,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 3
+    }
+   ]
   },
   {
    "id": 97,
@@ -2753,7 +3409,17 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 11
+   "targetAttack": 11,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 1
+    },
+    {
+     "clear": "tst",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 98,
@@ -2778,7 +3444,13 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 9
+   "targetAttack": 9,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 2
+    }
+   ]
   },
   {
    "id": 99,
@@ -2808,7 +3480,8 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 18
+   "targetAttack": 18,
+   "requiredClears": []
   },
   {
    "id": 100,
@@ -2838,7 +3511,8 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 18
+   "targetAttack": 18,
+   "requiredClears": []
   },
   {
    "id": 101,
@@ -2862,7 +3536,13 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 10
+   "targetAttack": 10,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 2
+    }
+   ]
   },
   {
    "id": 102,
@@ -2888,7 +3568,8 @@
     "I"
    ],
    "hold": null,
-   "targetAttack": 9
+   "targetAttack": 9,
+   "requiredClears": []
   },
   {
    "id": 103,
@@ -2919,7 +3600,13 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 15
+   "targetAttack": 15,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 3
+    }
+   ]
   },
   {
    "id": 104,
@@ -2965,7 +3652,8 @@
     "I"
    ],
    "hold": null,
-   "targetAttack": 31
+   "targetAttack": 31,
+   "requiredClears": []
   },
   {
    "id": 105,
@@ -2997,7 +3685,8 @@
     "I"
    ],
    "hold": null,
-   "targetAttack": 24
+   "targetAttack": 24,
+   "requiredClears": []
   },
   {
    "id": 106,
@@ -3040,7 +3729,17 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 30
+   "targetAttack": 30,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 4
+    },
+    {
+     "clear": "tst",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 107,
@@ -3066,7 +3765,13 @@
     "I"
    ],
    "hold": null,
-   "targetAttack": 9
+   "targetAttack": 9,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 2
+    }
+   ]
   },
   {
    "id": 108,
@@ -3094,7 +3799,13 @@
     "I"
    ],
    "hold": null,
-   "targetAttack": 9
+   "targetAttack": 9,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 2
+    }
+   ]
   },
   {
    "id": 109,
@@ -3118,7 +3829,13 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 5
+   "targetAttack": 5,
+   "requiredClears": [
+    {
+     "clear": "tss",
+     "count": 2
+    }
+   ]
   },
   {
    "id": 110,
@@ -3147,7 +3864,17 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 11
+   "targetAttack": 11,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 1
+    },
+    {
+     "clear": "tst",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 111,
@@ -3175,7 +3902,13 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 18
+   "targetAttack": 18,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 3
+    }
+   ]
   },
   {
    "id": 112,
@@ -3274,7 +4007,8 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 81
+   "targetAttack": 81,
+   "requiredClears": []
   },
   {
    "id": 113,
@@ -3305,7 +4039,8 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 13
+   "targetAttack": 13,
+   "requiredClears": []
   },
   {
    "id": 114,
@@ -3334,7 +4069,17 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 16
+   "targetAttack": 16,
+   "requiredClears": [
+    {
+     "clear": "tss",
+     "count": 1
+    },
+    {
+     "clear": "tsd",
+     "count": 2
+    }
+   ]
   },
   {
    "id": 115,
@@ -3355,7 +4100,8 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 4
+   "targetAttack": 4,
+   "requiredClears": []
   },
   {
    "id": 116,
@@ -3388,7 +4134,13 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 25
+   "targetAttack": 25,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 4
+    }
+   ]
   },
   {
    "id": 117,
@@ -3421,7 +4173,13 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 14
+   "targetAttack": 14,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 3
+    }
+   ]
   },
   {
    "id": 118,
@@ -3457,7 +4215,13 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 20
+   "targetAttack": 20,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 4
+    }
+   ]
   },
   {
    "id": 119,
@@ -3486,7 +4250,13 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 16
+   "targetAttack": 16,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 3
+    }
+   ]
   },
   {
    "id": 120,
@@ -3515,7 +4285,8 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 11
+   "targetAttack": 11,
+   "requiredClears": []
   },
   {
    "id": 121,
@@ -3544,7 +4315,21 @@
     "T"
    ],
    "hold": "J",
-   "targetAttack": 15
+   "targetAttack": 15,
+   "requiredClears": [
+    {
+     "clear": "tss",
+     "count": 1
+    },
+    {
+     "clear": "tsd",
+     "count": 1
+    },
+    {
+     "clear": "tst",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 122,
@@ -3572,7 +4357,17 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 11
+   "targetAttack": 11,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 1
+    },
+    {
+     "clear": "tst",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 123,
@@ -3594,7 +4389,8 @@
     "L"
    ],
    "hold": null,
-   "targetAttack": 2
+   "targetAttack": 2,
+   "requiredClears": []
   },
   {
    "id": 124,
@@ -3623,7 +4419,21 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 16
+   "targetAttack": 16,
+   "requiredClears": [
+    {
+     "clear": "tss",
+     "count": 1
+    },
+    {
+     "clear": "tsd",
+     "count": 1
+    },
+    {
+     "clear": "tst",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 125,
@@ -3661,7 +4471,21 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 30
+   "targetAttack": 30,
+   "requiredClears": [
+    {
+     "clear": "tss",
+     "count": 1
+    },
+    {
+     "clear": "tsd",
+     "count": 2
+    },
+    {
+     "clear": "tst",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 126,
@@ -3688,7 +4512,17 @@
     "I"
    ],
    "hold": null,
-   "targetAttack": 7
+   "targetAttack": 7,
+   "requiredClears": [
+    {
+     "clear": "tss",
+     "count": 1
+    },
+    {
+     "clear": "quad",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 127,
@@ -3719,7 +4553,17 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 18
+   "targetAttack": 18,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 2
+    },
+    {
+     "clear": "tst",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 128,
@@ -3742,7 +4586,13 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 4
+   "targetAttack": 4,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 129,
@@ -3775,7 +4625,8 @@
     "I"
    ],
    "hold": null,
-   "targetAttack": 16
+   "targetAttack": 16,
+   "requiredClears": []
   },
   {
    "id": 130,
@@ -3805,7 +4656,13 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 14
+   "targetAttack": 14,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 3
+    }
+   ]
   },
   {
    "id": 131,
@@ -3839,7 +4696,17 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 27
+   "targetAttack": 27,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 3
+    },
+    {
+     "clear": "tst",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 132,
@@ -3865,7 +4732,17 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 12
+   "targetAttack": 12,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 1
+    },
+    {
+     "clear": "tst",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 133,
@@ -3906,7 +4783,8 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 22
+   "targetAttack": 22,
+   "requiredClears": []
   },
   {
    "id": 134,
@@ -3939,7 +4817,13 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 18
+   "targetAttack": 18,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 3
+    }
+   ]
   },
   {
    "id": 135,
@@ -3974,7 +4858,17 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 28
+   "targetAttack": 28,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 3
+    },
+    {
+     "clear": "tst",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 136,
@@ -4010,7 +4904,17 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 27
+   "targetAttack": 27,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 3
+    },
+    {
+     "clear": "tst",
+     "count": 1
+    }
+   ]
   },
   {
    "id": 137,
@@ -4035,7 +4939,8 @@
     "I"
    ],
    "hold": null,
-   "targetAttack": 10
+   "targetAttack": 10,
+   "requiredClears": []
   },
   {
    "id": 138,
@@ -4072,7 +4977,17 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 27
+   "targetAttack": 27,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 2
+    },
+    {
+     "clear": "tst",
+     "count": 2
+    }
+   ]
   },
   {
    "id": 139,
@@ -4102,7 +5017,8 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 16
+   "targetAttack": 16,
+   "requiredClears": []
   },
   {
    "id": 140,
@@ -4127,7 +5043,17 @@
     "T"
    ],
    "hold": null,
-   "targetAttack": 6
+   "targetAttack": 6,
+   "requiredClears": [
+    {
+     "clear": "tsd",
+     "count": 1
+    },
+    {
+     "clear": "tsmini",
+     "count": 1
+    }
+   ]
   }
  ]
 }

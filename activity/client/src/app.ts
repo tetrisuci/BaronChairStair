@@ -1333,7 +1333,7 @@ export class App {
   private presentVerdict(fields: ShareFields, run: StoredRun | null): void {
     this.verdict.update(fields, run, { scored: this.sheet?.scored ?? true });
     replaceChildren(this.hud.left, this.verdict.element, this.leaderboard.element);
-    this.hud.showFinal(fields.attack, fields.targetAttack);
+    this.hud.showFinal(fields.attack, fields.targetAttack, fields.clears);
     this.relayout();
   }
 

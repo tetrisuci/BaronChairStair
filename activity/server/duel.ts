@@ -37,6 +37,7 @@
  */
 
 import type { Server, ServerWebSocket } from "bun";
+import { playerPrompt, solvedUnderPolicy } from "./solve-verdict";
 
 /** Bun's server, typed with the data this module attaches to each socket. */
 type DuelServer = Server<SocketData>;
@@ -61,7 +62,7 @@ import {
   sanitizeSettings,
   withinBand,
 } from "../shared/duel";
-import { decodeBoard, ENGINE_ROWS, meetsTarget, type Puzzle, toPrompt } from "../shared/puzzle";
+import { decodeBoard, ENGINE_ROWS, type Puzzle } from "../shared/puzzle";
 import { isRushEligible, RUSH_SKIPS, rushSequence } from "../shared/rush";
 import { type Handling, sanitizeHandling } from "../shared/tetris/handling";
 import { type InputEvent, InvalidRunError, parseInputLog, verifyRun } from "../shared/tetris/verify";
@@ -324,7 +325,7 @@ function startRound(duel: Duel): void {
   broadcast(duel, {
     type: "round",
     round: round.index,
-    puzzle: toPrompt(puzzle),
+    puzzle: playerPrompt(puzzle),
     endsAt,
     duel: view(duel),
   });
@@ -480,7 +481,7 @@ function awardClaim(duel: Duel, playerId: string, position: number, rawEvents: u
     seat.handling,
     events,
   );
-  if (!meetsTarget(verified.attack, round.puzzle.targetAttack)) {
+  if (!solvedUnderPolicy(verified.attack, verified.clears, round.puzzle, "duel round")) {
     throw new InvalidRunError("That log does not solve this round");
   }
 
@@ -543,7 +544,7 @@ function sendRushPuzzle(duel: Duel, seat: Seat): void {
     index: seat.position,
     // Null rather than an ending: the stack is spent but the clock is not, and
     // the opponent can still be catching up.
-    puzzle: puzzle ? toPrompt(puzzle) : null,
+    puzzle: puzzle ? playerPrompt(puzzle) : null,
     endsAt: rush.endsAt,
     solved: seat.score,
     skipsLeft: seat.skipsLeft,
@@ -589,7 +590,7 @@ function awardRushClaim(duel: Duel, seat: Seat, position: number, rawEvents: unk
     seat.handling,
     events,
   );
-  if (!meetsTarget(verified.attack, puzzle.targetAttack)) {
+  if (!solvedUnderPolicy(verified.attack, verified.clears, puzzle, "duel rush")) {
     throw new InvalidRunError("That log does not solve this puzzle");
   }
 

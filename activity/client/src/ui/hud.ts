@@ -3,7 +3,7 @@
  * on the left, what the puzzle wants and what is coming on the right.
  */
 
-import type { Mino, PuzzlePrompt } from "@shared/puzzle";
+import { clearShortfall, type ClearName, type ClearRequirement, type Mino, type PuzzlePrompt } from "@shared/puzzle";
 import type { RunSnapshot } from "../game/runner";
 import { pieceGlyph } from "../render/piece-glyph";
 import { el, formatDuration, panel, replaceChildren, stat } from "./dom";
@@ -26,7 +26,8 @@ export interface Hud {
   setHistory(canUndo: boolean, canRedo: boolean): void;
   update(snapshot: RunSnapshot): void;
   /** Freezes the meter at a finished run's total. */
-  showFinal(attack: number, targetAttack: number): void;
+  /** @param clears what the run actually made, so an unmet requirement still shows. */
+  showFinal(attack: number, targetAttack: number, clears?: readonly ClearName[]): void;
 }
 
 const QUEUE_PREVIEW_LIMIT = 7;
@@ -80,6 +81,9 @@ export function createHud(callbacks: HudCallbacks): Hud {
 
   const left = el("div", { class: "rail rail--left" }, holdPanel, progressPanel);
 
+  /** The clears the puzzle on the board demands. Set by `setPuzzle`. */
+  let required: readonly ClearRequirement[] = [];
+
   // ── Right rail ─────────────────────────────────────────────────────────────
   const goalText = el("p", { class: "goal__text", text: "—" });
   const goalSub = el("p", { class: "goal__sub", text: "" });
@@ -101,11 +105,27 @@ export function createHud(callbacks: HudCallbacks): Hud {
 
   const right = el("div", { class: "rail" }, goalPanel, meterPanel, queuePanel);
 
-  function paintMeter(attack: number, target: number): void {
+  /** The clears this puzzle still owes, as a phrase. Empty when it owes none. */
+  function owed(clears: readonly ClearName[]): string {
+    return clearShortfall(clears, required)
+      .map((entry) => `${entry.count} more ${CLEAR_LABELS[entry.clear] ?? entry.clear}`)
+      .join(", ");
+  }
+
+  /**
+   * The bar, and whether the target is actually *met*.
+   *
+   * Attack alone used to light it green, which under a clear requirement is the
+   * meter telling the player they are done while the run carries on and the
+   * server disagrees. The caption carries the reason, because a full bar that
+   * is not green is a puzzle, not an answer.
+   */
+  function paintMeter(attack: number, target: number, still = ""): void {
     const ratio = target === 0 ? 0 : Math.min(1, attack / target);
     meterValue.textContent = String(attack);
     meterFill.style.width = `${ratio * 100}%`;
-    meter.classList.toggle("meter--met", attack >= target && target > 0);
+    meter.classList.toggle("meter--met", attack >= target && target > 0 && still === "");
+    meterOf.textContent = still === "" ? `of ${target} sent` : `still needs ${still}`;
   }
 
   function renderHold(piece: Mino | null, locked: boolean): void {
@@ -157,15 +177,19 @@ export function createHud(callbacks: HudCallbacks): Hud {
 
     setPuzzle(puzzle) {
       const pieces = puzzle.queue.length + (puzzle.hold ? 1 : 0);
+      // Held for the meter, which has to know what is still owed on every
+      // update. Absent on a puzzle with no requirement, and on every puzzle
+      // while `GOAL_ENFORCEMENT` is not `on` — the prompt withholds it, so the
+      // meter reads exactly as it always did.
+      required = puzzle.requiredClears ?? [];
       goalText.textContent = puzzle.goal || "Send as much as the reference line";
       goalSub.textContent = `${puzzle.targetAttack} attack · ${pieces} pieces`;
-      meterOf.textContent = `of ${puzzle.targetAttack} sent`;
       paintMeter(0, puzzle.targetAttack);
     },
     update(snapshot) {
       renderHold(snapshot.hold, snapshot.holdLocked);
       renderQueue(snapshot.upcoming, snapshot.piecesPlaced);
-      paintMeter(snapshot.attack, snapshot.targetAttack);
+      paintMeter(snapshot.attack, snapshot.targetAttack, owed(snapshot.clears));
 
       const line = snapshot.clears.map((clear) => CLEAR_LABELS[clear] ?? clear).join(" + ");
       replaceChildren(
@@ -176,8 +200,8 @@ export function createHud(callbacks: HudCallbacks): Hud {
         stat("So far", line || "—"),
       );
     },
-    showFinal(attack, targetAttack) {
-      paintMeter(attack, targetAttack);
+    showFinal(attack, targetAttack, clears = []) {
+      paintMeter(attack, targetAttack, owed(clears));
     },
   };
 }

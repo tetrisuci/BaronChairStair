@@ -148,6 +148,7 @@ function acceptOne(): number {
     handling: DEFAULT_HANDLING,
     piecesPlaced: 1,
     clears: ["double"],
+    requiredClears: null,
   };
   const filed = store.recordSubmission(draft);
   const decided = store.acceptSubmission(filed.submissionId, {

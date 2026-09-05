@@ -13,7 +13,6 @@ import { HTTPException } from "hono/http-exception";
 import {
   decodeBoard,
   ENGINE_ROWS,
-  meetsTarget,
   pieceBudget,
   type Puzzle,
   toListing,
@@ -42,6 +41,7 @@ import {
   verifyGuild,
 } from "./auth";
 import { config } from "./config";
+import { enforcingGoals, solvedUnderPolicy } from "./solve-verdict";
 import { Store, type StoredRun } from "./db";
 import { DaySchedule, pastDaysOf } from "./schedule";
 import {
@@ -255,7 +255,7 @@ app.get("/api/daily", requireSession, (c) => {
     resetsAt,
     puzzles: DAILY_TIERS.map((tier) => ({
       tier,
-      puzzle: archive.prompt(puzzles[tier]),
+      puzzle: archive.prompt(puzzles[tier], enforcingGoals()),
       run: runs[tier] ?? null,
       // Gated per tier, not per day, and then per puzzle. Solving the easy one
       // must not hand over the hard one's answer — with one run a day that
@@ -287,7 +287,7 @@ app.post("/api/daily/run", requireSession, async (c) => {
   const verified = verifyRun(setup, handling, events);
 
   const { run, isFirst } = store.recordRun(day, tier, puzzle.id, session.player, session.guildId, {
-    solved: meetsTarget(verified.attack, puzzle.targetAttack),
+    solved: solvedUnderPolicy(verified.attack, verified.clears, puzzle, "daily"),
     attack: verified.attack,
     targetAttack: puzzle.targetAttack,
     durationMs: verified.durationMs,
@@ -520,7 +520,7 @@ app.get("/api/archive/:id", requireSession, (c) => {
   const puzzle = archive.get(Number.parseInt(c.req.param("id") ?? "", 10));
   if (!puzzle) throw new HTTPException(404, { message: "No such puzzle" });
   return c.json({
-    puzzle: archive.prompt(puzzle),
+    puzzle: archive.prompt(puzzle, enforcingGoals()),
     // `?? null` for the same reason as `earnedSolution`: an absent
     // `data/solutions.json` must read as "no solution", not as no field.
     solution: maySeeSolution(c.get("session"), puzzle.id) ? (puzzle.solution ?? null) : null,
@@ -702,7 +702,7 @@ app.post("/api/rush/start", requireSession, async (c) => {
     day,
     durationMs: RUSH_DURATION_MS,
     skips: RUSH_SKIPS,
-    puzzles: sequenceFor(ticket).map((puzzle) => archive.prompt(puzzle)),
+    puzzles: sequenceFor(ticket).map((puzzle) => archive.prompt(puzzle, enforcingGoals())),
   });
 });
 
@@ -738,7 +738,10 @@ app.post("/api/rush/run", requireSession, async (c) => {
       handling,
       segment.events,
     );
-    return { solved: meetsTarget(verified.attack, puzzle.targetAttack), durationMs: verified.durationMs };
+    return {
+      solved: solvedUnderPolicy(verified.attack, verified.clears, puzzle, "rush"),
+      durationMs: verified.durationMs,
+    };
   });
 
   // A puzzle is left behind by solving it or by skipping it — a dead board just

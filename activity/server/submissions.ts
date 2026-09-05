@@ -16,8 +16,9 @@
 
 import type { Database } from "bun:sqlite";
 import {
-  COMMUNITY_ID_BASE,
   type ClearName,
+  type ClearRequirement,
+  COMMUNITY_ID_BASE,
   type Mino,
   type Puzzle,
   type RowCode,
@@ -68,6 +69,22 @@ export interface SubmissionDraft {
   readonly handling: Handling;
   readonly piecesPlaced: number;
   readonly clears: readonly ClearName[];
+  /**
+   * The clears an accepted copy of this puzzle will demand, frozen at submit.
+   *
+   * Derived from the author's own goal and checked against the run they solved
+   * it with — the same gate `tools/backfill-required-clears.ts` applies to the
+   * club's archive. Null when the sentence names nothing a count can hold, or
+   * when the author's own solve does not satisfy what they wrote.
+   *
+   * **A column rather than a derivation at boot.** `goal` is overridable by an
+   * officer, and `target_attack` is deliberately not, because a run is filed
+   * with no record of the bar it was scored against. A clear requirement is the
+   * same kind of thing, so it is frozen the same way: what the author solved is
+   * what everybody else is held to, and a later wording fix cannot re-scope a
+   * puzzle that already has runs against it.
+   */
+  readonly requiredClears: readonly ClearRequirement[] | null;
 }
 
 export interface Submission extends Omit<SubmissionDraft, "player"> {
@@ -153,6 +170,7 @@ interface SubmissionRow {
   handling: string;
   pieces_placed: number;
   clears: string;
+  required_clears: string | null;
   status: string;
   reviewer_note: string | null;
   reviewed_at: number | null;
@@ -165,8 +183,8 @@ interface SubmissionRow {
 const COLUMNS = `
   submission_id, player_id, author_name, guild_id, title, goal, claimed_difficulty,
   board, queue, hold, target_attack, solution, events, handling, pieces_placed,
-  clears, status, reviewer_note, reviewed_at, reviewed_by, puzzle_id, difficulty,
-  created_at
+  clears, required_clears, status, reviewer_note, reviewed_at, reviewed_by,
+  puzzle_id, difficulty, created_at
 `;
 
 /** How many pending rows a review queue hands over at once. */
@@ -226,6 +244,10 @@ function toSubmission(row: SubmissionRow): Submission {
     queue: jsonList<Mino>(id, "queue", row.queue),
     hold: row.hold as Mino | null,
     targetAttack: row.target_attack,
+    requiredClears:
+      row.required_clears === null
+        ? null
+        : (jsonList<ClearRequirement>(id, "required_clears", row.required_clears) ?? null),
     solution: jsonList<SolutionStep>(id, "solution", row.solution),
     events: jsonList<InputEvent>(id, "events", row.events),
     // Through the sanitiser rather than cast: it is total, it is what the
@@ -269,8 +291,8 @@ export function insertSubmission(db: Database, draft: SubmissionDraft): Submissi
       `INSERT INTO submissions (player_id, author_name, guild_id, title, goal,
                                 claimed_difficulty, board, queue, hold, target_attack,
                                 solution, events, handling, pieces_placed, clears,
-                                status, created_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, 'pending', ?16)`,
+                                required_clears, status, created_at)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, 'pending', ?17)`,
     )
     .run(
       draft.player.id,
@@ -288,6 +310,7 @@ export function insertSubmission(db: Database, draft: SubmissionDraft): Submissi
       JSON.stringify(draft.handling),
       draft.piecesPlaced,
       JSON.stringify(draft.clears),
+      draft.requiredClears === null ? null : JSON.stringify(draft.requiredClears),
       Date.now(),
     );
 
@@ -468,6 +491,10 @@ function toArchivePuzzle(submission: Submission): Puzzle {
     queue: submission.queue,
     hold: submission.hold,
     targetAttack: submission.targetAttack,
+    // `[]` and not `undefined` for a submission that carries none: a player's
+    // puzzle has always been read by the tool that took it, so "nobody has
+    // looked" is never true of one.
+    requiredClears: submission.requiredClears ?? [],
     // Carried on the row, so a community puzzle needs no data/solutions.json
     // entry — which is the only reason it can be added without a rebuild of a
     // file that lives in a public repository.

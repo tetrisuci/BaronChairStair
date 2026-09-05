@@ -10,7 +10,8 @@
  */
 
 import { HTTPException } from "hono/http-exception";
-import { decodeBoard, ENGINE_ROWS } from "../shared/puzzle";
+import { parseGoalLoosely } from "../shared/goal";
+import { clearShortfall, decodeBoard, ENGINE_ROWS } from "../shared/puzzle";
 import { sanitizeHandling } from "../shared/tetris/handling";
 import { parseInputLog, verifyRun } from "../shared/tetris/verify";
 import type { Store } from "./db";
@@ -135,6 +136,22 @@ export function registerSubmissionRoutes(app: AppRouter, store: Store): void {
       });
     }
 
+    // What this puzzle will demand of everybody else, frozen now.
+    //
+    // Same gate as the archive backfill: the requirement comes from the
+    // author's own sentence, never from their solve — deriving it from the
+    // answer would make whatever line they happened to play definitionally
+    // correct, incidental clears and all — but it is *checked* against that
+    // solve, and a goal their own run does not satisfy enforces nothing.
+    //
+    // Frozen on the row rather than re-read at boot because `goal` is
+    // overridable by an officer and `target_attack` deliberately is not: a run
+    // is filed with no record of the bar it was scored against. A clear
+    // requirement is the same kind of bar.
+    const wanted = parseGoalLoosely(goal)?.clears ?? [];
+    const requiredClears =
+      wanted.length > 0 && clearShortfall(verified.clears, wanted).length === 0 ? wanted : null;
+
     const submission = store.recordSubmission({
       player: session.player,
       guildId: session.guildId,
@@ -143,6 +160,7 @@ export function registerSubmissionRoutes(app: AppRouter, store: Store): void {
       claimedDifficulty,
       ...shape,
       targetAttack: verified.attack,
+      requiredClears,
       // `VerifiedPlacement` is a `SolutionStep` plus the frame it locked on, and
       // the frame is the author's timing rather than part of the answer. Dropped
       // here rather than at the reveal, so there is only one place it can leak.

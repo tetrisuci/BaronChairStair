@@ -598,6 +598,7 @@ describe("the submissions table", () => {
     handling: DEFAULT_HANDLING,
     piecesPlaced: 1,
     clears: ["tsd"],
+    requiredClears: null,
   });
 
   test("comes back as what went in, and survives a restart", () => {

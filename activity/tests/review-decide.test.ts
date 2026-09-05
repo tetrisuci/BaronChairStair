@@ -144,6 +144,9 @@ function draft(overrides: Partial<SubmissionDraft> = {}): SubmissionDraft {
   return {
     player: { id: "ada", username: "Ada", avatarUrl: null },
     guildId: "g1",
+    // Null, not []: this fixture's goal is prose, so the submit route would
+    // have derived nothing from it either.
+    requiredClears: null,
     title: "Two rows, one O",
     goal: "Clear both rows",
     claimedDifficulty: 2,

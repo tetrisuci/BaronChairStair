@@ -16,7 +16,7 @@ import {
   type BoardCell,
   type ClearName,
   decodeBoard,
-  meetsTarget,
+  solvesPuzzle,
   type Mino,
   pieceBudget,
   type PuzzlePrompt,
@@ -188,7 +188,7 @@ export class PuzzleRun {
       // A piece the ledger cannot account for is the engine's padding, not the
       // puzzle's. It never counts and it always ends the run.
       if (piece === null || piece === "G" || !this.ledger.spend(piece)) {
-        this.finish(meetsTarget(this.attack, this.puzzle.targetAttack) ? "solved" : "failed");
+        this.finish(solvesPuzzle(this.attack, this.clears, this.puzzle) ? "solved" : "failed");
         return;
       }
       this.piecesPlaced++;
@@ -401,7 +401,7 @@ export class PuzzleRun {
     // continuing to accept input would leave the player driving a board whose
     // moves the server will never see.
     if (this.events.length >= MAX_EVENTS) {
-      this.finish(meetsTarget(this.attack, this.puzzle.targetAttack) ? "solved" : "failed");
+      this.finish(solvesPuzzle(this.attack, this.clears, this.puzzle) ? "solved" : "failed");
       return;
     }
 
@@ -466,8 +466,22 @@ export class PuzzleRun {
     }
   }
 
+  /**
+   * Whether the attempt is over, after every lock.
+   *
+   * The attack target alone used to end it, and that is the bug this feature
+   * exists for read from the other side: a puzzle asking for three TSDs is
+   * worth twelve, and the run stopped at twelve however the player got there —
+   * so the intended line was never the only line, and enforcing the clears on
+   * the server without changing this would have ended the run *before* the
+   * player could make the clear being demanded. Stricter scoring and an
+   * unsolvable puzzle are the same edit unless both move together.
+   *
+   * So the run now continues past the attack target while a required clear is
+   * still outstanding, and ends when the pieces run out.
+   */
   private checkForEnd(): void {
-    if (meetsTarget(this.attack, this.puzzle.targetAttack)) this.finish("solved");
+    if (solvesPuzzle(this.attack, this.clears, this.puzzle)) this.finish("solved");
     else if (this.ledger.remaining === 0) this.finish("failed");
   }
 

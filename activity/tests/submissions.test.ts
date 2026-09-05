@@ -610,3 +610,66 @@ describe("the length a queue may be", () => {
     expect(await errorOf(tooLong)).toContain("at most");
   });
 });
+
+describe("what an accepted puzzle will demand of everybody else", () => {
+  /**
+   * The author's sentence becomes the rule, and their own solve is what proves
+   * it is a rule anybody can meet. The fixture's goal is "Clear 1 TSD" and its
+   * solve makes exactly that, so the requirement survives the round trip.
+   */
+  test("a goal the author's own solve satisfies is frozen on the row", async () => {
+    const response = await submit(draft({ title: "Tuck the T frozen" }), await tokenFor("freeze"));
+    expect(response.status).toBe(200);
+
+    const store = openStore();
+    try {
+      const stored = store
+        .pendingSubmissions()
+        .find((entry) => entry.title === "Tuck the T frozen");
+      expect(stored?.requiredClears).toEqual([{ clear: "tsd", count: 1 }]);
+    } finally {
+      store.close();
+    }
+  });
+
+  /**
+   * The gate, from the other side. A goal naming a clear the author never made
+   * enforces nothing rather than shipping a puzzle nobody — including its own
+   * author — can solve.
+   */
+  test("a goal the author's own solve does not satisfy enforces nothing", async () => {
+    const response = await submit(
+      draft({ title: "Tuck the T ungated", goal: "Clear 3 TSTs" }),
+      await tokenFor("gate"),
+    );
+    expect(response.status).toBe(200);
+
+    const store = openStore();
+    try {
+      const stored = store
+        .pendingSubmissions()
+        .find((entry) => entry.title === "Tuck the T ungated");
+      expect(stored?.requiredClears).toBeNull();
+    } finally {
+      store.close();
+    }
+  });
+
+  test("a prose goal names nothing a count can hold, and so demands nothing", async () => {
+    const response = await submit(
+      draft({ title: "Tuck the T prose", goal: "make it look nice" }),
+      await tokenFor("prose"),
+    );
+    expect(response.status).toBe(200);
+
+    const store = openStore();
+    try {
+      const stored = store
+        .pendingSubmissions()
+        .find((entry) => entry.title === "Tuck the T prose");
+      expect(stored?.requiredClears).toBeNull();
+    } finally {
+      store.close();
+    }
+  });
+});
