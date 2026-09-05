@@ -10,7 +10,7 @@
  * Generic over the run so this stays free of the runner, the rush and the duel
  * client, all three of which pull in the engine.
  */
-export type PlayMode = "daily" | "rush" | "explore" | "duel";
+export type PlayMode = "daily" | "rush" | "explore" | "duel" | "build";
 
 export function activeRun<T>(
   mode: PlayMode,
@@ -18,6 +18,8 @@ export function activeRun<T>(
     readonly daily: T | null;
     readonly rush: T | null | undefined;
     readonly duel: T | null | undefined;
+    /** A draft being played inside the builder. Scored by nobody. */
+    readonly build: T | null | undefined;
   },
 ): T | null {
   // Keyed on the mode rather than on whichever session is still non-null, and
@@ -26,5 +28,6 @@ export function activeRun<T>(
   // daily attempt waiting underneath.
   if (mode === "duel") return sessions.duel ?? null;
   if (mode === "rush") return sessions.rush ?? null;
+  if (mode === "build") return sessions.build ?? null;
   return sessions.daily;
 }

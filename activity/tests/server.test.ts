@@ -11,8 +11,9 @@
  * process.
  */
 
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { readFileSync, rmSync } from "node:fs";
+import { beforeAll, describe, expect, test } from "bun:test";
+import { archive, hasSolutions, solutionOf } from "./archive";
+import { readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 // Type-only, so nothing under `server/` is loaded before `beforeAll` has set the
@@ -45,9 +46,42 @@ beforeAll(async () => {
   fetchApp = server.fetch;
 });
 
-afterAll(() => {
-  for (const suffix of ["", "-wal", "-shm"]) rmSync(DB + suffix, { force: true });
-});
+/**
+ * Nothing deletes this run's database, and no test file may.
+ *
+ * Six files share it — `grep -rn puzzle-routes- tests/` — and `bun test` gives
+ * no order between them, so an `afterAll` here was deleting a file five other
+ * files were still using. The failure it produced is a quiet one and it does
+ * not look like a teardown bug: the app's store keeps its open handle and goes
+ * on writing to the now-unlinked inode, while any later `new Store(path)` —
+ * `openStore()` in `submissions.test.ts` is one — finds no file, *creates* it
+ * (the constructor is `create: true` plus `CREATE TABLE IF NOT EXISTS`), and
+ * reads an empty database. The assertion then fails with a count of 0 or a null
+ * row, which reads as "the route did not store it" rather than "the file moved
+ * under us". It reached production as four failures in `submissions.test.ts` on
+ * a Linux box while macOS ran the same commit green, because the two order the
+ * files differently.
+ *
+ * So the file is left for the OS to reclaim — it is in `tmpdir()` and keyed by
+ * pid, so runs cannot collide — and tidiness is handled below instead, by
+ * sweeping what *earlier* runs left rather than what this one is using.
+ */
+const STALE_AFTER_MS = 60 * 60 * 1000;
+
+for (const name of readdirSync(tmpdir())) {
+  const owner = /^puzzle-routes-(\d+)\.sqlite(?:-wal|-shm)?$/.exec(name);
+  // Never this run's, and never a live one: another `bun test` may be running
+  // on this box right now, and its database is not ours to remove. An hour is
+  // far longer than the suite takes and far shorter than anyone would keep a
+  // temp file on purpose.
+  if (!owner || Number(owner[1]) === process.pid) continue;
+  const path = join(tmpdir(), name);
+  try {
+    if (Date.now() - statSync(path).mtimeMs > STALE_AFTER_MS) rmSync(path, { force: true });
+  } catch {
+    // Raced with another run's own sweep, or gone already. Either is fine.
+  }
+}
 
 const BASE = "http://localhost";
 
@@ -186,7 +220,7 @@ describe("request handling", () => {
  * be reconstructed from the answer on disk and sent as keystrokes, exactly as
  * `tools/e2e-submit.ts` does against a running server.
  */
-const archive: Puzzle[] = JSON.parse(readFileSync("data/puzzles.json", "utf8")).puzzles;
+// Merged with the untracked answers; see tests/archive.ts.
 
 /** Enough segments for a skip in the middle with solves on either side of it. */
 const SEGMENTS_PLAYED = 5;
@@ -251,7 +285,7 @@ function solvingLog(puzzle: Puzzle): InputEvent[] {
     frame += 2;
   };
 
-  for (const step of puzzle.solution.slice(0, pieceBudget(puzzle))) {
+  for (const step of solutionOf(puzzle).slice(0, pieceBudget(puzzle))) {
     if (toLetter(engine.falling.symbol) !== step.piece) {
       tap("hold");
       engine.hold(false, true);
@@ -311,7 +345,16 @@ async function errorOf(response: Response): Promise<string> {
  * open five rushes between them. Another start belongs in an existing test
  * rather than in a sixth call.
  */
-describe("puzzle rush", () => {
+/*
+ * Guarded, like every other block that needs the club's reference answers:
+ * `data/solutions.json` is untracked — an answer key beside the puzzles is an
+ * answer key for everybody — so a fresh clone has boards and no solutions, and
+ * `solutionOf` throws rather than returning one. `tests/archive.ts` states the
+ * rule these blocks were missing: a test that builds a solving log skips, so
+ * somebody cloning this repo sees a suite that passes rather than one that
+ * looks broken by their own checkout.
+ */
+describe.skipIf(!hasSolutions)("puzzle rush", () => {
   let token = "";
   let practiceRush: RushStartBody;
 
@@ -610,6 +653,13 @@ describe("the daily recap", () => {
     expect(await errorOf(response)).toContain("guild is required");
   });
 
+  /** Every key name in a response, however deep, so a check can name one. */
+  function keysDeep(value: unknown): string[] {
+    if (Array.isArray(value)) return value.flatMap(keysDeep);
+    if (value === null || typeof value !== "object") return [];
+    return Object.entries(value).flatMap(([key, child]) => [key, ...keysDeep(child)]);
+  }
+
   test.skipIf(!enabled)("names the puzzle, the streak and both boards", async () => {
     const today = Number(
       ((await (await get("/api/today")).json()) as { day: number }).day,
@@ -628,7 +678,13 @@ describe("the daily recap", () => {
     expect(Array.isArray(body.daily.rows)).toBe(true);
     expect(Array.isArray(body.rush.entries)).toBe(true);
     // No solution or board anywhere in it — the bot never needs the answer.
-    expect(JSON.stringify(body)).not.toContain("solution");
+    //
+    // Checked by key and not by substring. `not.toContain("solution")` over the
+    // serialised body reads the same and is wrong: archive puzzle 15 carries the
+    // goal "Clear 1 TSD (2 solutions)", so the assertion failed on the prose the
+    // recap is supposed to include, on whichever days that puzzle is dealt.
+    expect(keysDeep(body)).not.toContain("solution");
+    expect(keysDeep(body)).not.toContain("board");
   });
 });
 

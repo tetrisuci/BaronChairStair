@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Review queue — Daily Tetris</title>
+    <!--
+      This file must stay at client/review/index.html. The directory is what
+      makes the build emit dist/review/index.html, and that is what Hono's
+      static middleware serves at /review: it appends index.html only for a
+      directory and never tries <path>.html, so a flat dist/review.html would
+      fall through and answer 200 with the game. See server/static-routes.ts.
+    -->
+    <!--
+      Belt to the Referrer-Policy header, for a proxy that drops headers: the
+      link arrives in this page's query string, and a Referer carrying it is
+      the one way it leaves here. The page also renders no outbound links.
+    -->
+    <meta name="referrer" content="no-referrer" />
+    <meta name="robots" content="noindex, nofollow" />
+  </head>
+  <body>
+    <div id="review" class="review">
+      <p class="label">opening the review queue</p>
+    </div>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

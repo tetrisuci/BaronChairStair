@@ -352,7 +352,7 @@ function endRound(duel: Duel, winnerId: string | null, reason: RoundEnd): void {
     winnerId,
     reason,
     duel: view(duel),
-    solution: round.puzzle.solution,
+    solution: round.puzzle.solution ?? null,
     nextRoundAt: last ? null : Date.now() + intermissionMs,
   });
 

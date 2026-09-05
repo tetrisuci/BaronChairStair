@@ -153,6 +153,18 @@ button {
   outline-offset: 2px;
 }
 
+/*
+ * `hidden` means hidden, whatever the class on the element says.
+ *
+ * The user agent's rule is `[hidden] { display: none }` at the very bottom of
+ * the cascade, so any `display` set by a class beats it — and almost everything
+ * on this page is a flex or grid container with one. The result is an element
+ * that reports `hidden === true` and is on screen anyway, which has now been
+ * patched one selector at a time three times (`.spec`, `.build__goals`,
+ * `.build__check`). This is that patch, once, for everything.
+ */
+[hidden] { display: none !important; }
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

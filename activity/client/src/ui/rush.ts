@@ -7,7 +7,7 @@
  * way to play the same game, not a different app bolted on.
  */
 
-import type { RushPlayed, RushRun } from "../api";
+import type { RushPlayed, RushRecord, RushRun, RushScope } from "../api";
 import type { RushSnapshot } from "../game/rush";
 import { el, formatDuration, panel, replaceChildren, stat } from "./dom";
 
@@ -277,6 +277,78 @@ export function createRushBoard(): RushBoard {
             el("span", { class: "board-list__rank", text: String(index + 1) }),
             el("span", { class: "board-list__name", text: entry.player.username }),
             el("span", { class: "board-list__score", text: String(entry.solved) }),
+          ),
+        ),
+      );
+    },
+  };
+}
+
+// ── The record book ──────────────────────────────────────────────────────────
+
+export interface RushRecords {
+  readonly element: HTMLElement;
+  update(entries: readonly RushRecord[], scope: RushScope, selfId: string): void;
+}
+
+/**
+ * Every player's best rush, ever — not today's.
+ *
+ * The daily board answers "who ran today" and is empty for most of a morning.
+ * This one is a record book, and a record that expired at midnight would not be
+ * one. Two scopes rather than two boards: the rows and the ranking are
+ * identical and only the population changes, so a tab is the honest control.
+ *
+ * The day each record was set is on the row. Without it a board that never
+ * resets reads as though everything on it happened recently, and a number
+ * somebody set months ago looks like today's form.
+ */
+export function createRushRecords(onScope: (scope: RushScope) => void): RushRecords {
+  const tabs = el("div", { class: "tiers" });
+  const body = el("div", { class: "board-list" });
+  const element = panel("Best ever", {}, tabs, body);
+
+  return {
+    element,
+    update(entries, scope, selfId) {
+      replaceChildren(
+        tabs,
+        ...(["global", "server"] as const).map((each) => {
+          const button = el("button", {
+            class: `btn btn--small tiers__pick${each === scope ? " tiers__pick--on" : ""}`,
+            text: each === "global" ? "Everyone" : "This server",
+          });
+          button.addEventListener("click", () => onScope(each));
+          return button;
+        }),
+      );
+
+      if (entries.length === 0) {
+        replaceChildren(
+          body,
+          el("p", {
+            class: "note",
+            text:
+              scope === "server"
+                ? "Nobody here has finished a rush yet."
+                : "No rush has been filed anywhere yet.",
+          }),
+        );
+        return;
+      }
+
+      replaceChildren(
+        body,
+        ...entries.map((entry, index) =>
+          el(
+            "div",
+            {
+              class: `board-list__row${entry.player.id === selfId ? " board-list__row--self" : ""}`,
+              title: `${entry.solved} solved · last at ${formatDuration(entry.timeToLastSolveMs)}`,
+            },
+            el("span", { class: "board-list__rank", text: String(index + 1) }),
+            el("span", { class: "board-list__name", text: entry.player.username }),
+            el("span", { class: "board-list__score", text: `${entry.solved} · #${entry.day}` }),
           ),
         ),
       );

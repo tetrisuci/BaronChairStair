@@ -108,3 +108,57 @@ export class BitReader {
     return acc;
   }
 }
+
+/**
+ * The writer side of the same stream.
+ *
+ * Bits are collected one per slot and packed at the end, mirroring
+ * {@link bitsFromBase64}: at a few hundred bits the array costs nothing and it
+ * keeps every write the obvious loop rather than a shift/mask dance.
+ */
+export class BitWriter {
+  private readonly bits: number[] = [];
+
+  write(value: number, count = 1): void {
+    for (let shift = count - 1; shift >= 0; shift--) {
+      // Divide rather than shift, for the same reason `read` multiplies: a
+      // 32-bit value would sign-flip through `>>`.
+      this.bits.push(Math.floor(value / 2 ** shift) % 2);
+    }
+  }
+
+  /** The inverse of {@link BitReader.readVarint}: 1-bit-led little-endian nibbles. */
+  writeVarint(value: number): void {
+    let rest = value;
+    while (rest > 0) {
+      this.write(1);
+      this.write(rest % 16, 4);
+      rest = Math.floor(rest / 16);
+    }
+    this.write(0);
+  }
+
+  /**
+   * Base64 with no `=`, which is how blueprint writes it.
+   *
+   * Padded out to whole four-character groups. The reader infers a partial
+   * final character from the payload length and rejects `length % 4 === 1`
+   * outright, which a bit stream of the wrong size lands on about a third of
+   * the time — so the stream is filled with zero bits to a multiple of 24,
+   * where the length says "nothing was dropped" and every written bit survives.
+   *
+   * Safe because decoding stops at the End opcode: the zeroes are past it and
+   * are never read as instructions.
+   */
+  toBase64(): string {
+    const GROUP_BITS = BITS_PER_CHAR * 4;
+    while (this.bits.length % GROUP_BITS !== 0) this.bits.push(0);
+    let out = "";
+    for (let i = 0; i < this.bits.length; i += BITS_PER_CHAR) {
+      let value = 0;
+      for (let j = 0; j < BITS_PER_CHAR; j++) value = value * 2 + (this.bits[i + j] ?? 0);
+      out += BASE64_ALPHABET[value];
+    }
+    return out;
+  }
+}

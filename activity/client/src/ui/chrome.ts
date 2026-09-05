@@ -15,12 +15,16 @@ import { el, replaceChildren } from "./dom";
 
 /** Difficulty above this is shown as "and then some" rather than more pips. */
 const MAX_PIPS = 5;
+/**
+ * Rating points per square: two, so the archive's 1-to-10 covers the five.
+ *
+ * The bands that falls out to, written down because it is the contract rather
+ * than an accident of the arithmetic — 1–2 fills one square, 3–4 two, 5–6
+ * three, 7–8 four, 9–10 five, and anything above ten is five and a `+`. The
+ * archive runs to 20, so that last band is fourteen real puzzles and not a
+ * theoretical one.
+ */
 const PIP_SCALE = 2;
-
-export interface CreditFields {
-  readonly day: number;
-  readonly puzzle: PuzzlePrompt | null;
-}
 
 /** The club's logo motif: four coloured blocks in a square. */
 function blockMark(): HTMLElement {
@@ -112,15 +116,29 @@ export function createMasthead(onHome: () => void = () => {}): Masthead {
 
 export interface Credits {
   readonly element: HTMLElement;
-  update(fields: CreditFields): void;
+  /**
+   * The puzzle on the board, or null when there is no board.
+   *
+   * It took a `{ day, puzzle }` and read only the puzzle; the day is the
+   * countdown's, and `setCountdown` is where that arrives.
+   */
+  update(puzzle: PuzzlePrompt | null): void;
   setCountdown(text: string): void;
 }
 
 /**
  * The archive's difficulty is a loose 1-to-10-and-beyond vibe scale, so it is
  * shown as filled blocks rather than a precise number it does not deserve.
+ * `PIP_SCALE` carries the bands; `tests/render.test.ts` pins them.
+ *
+ * Zero is unrated rather than easy, so it fills nothing and says so — the
+ * archive has seven of them, and they ask for things like "2 TSS, 3 TSD".
+ *
+ * Exported rather than re-implemented on the front door: `PIP_SCALE` and its
+ * bands are a contract, and a second copy of the arithmetic is a second place
+ * for it to drift from the test that pins it.
  */
-function difficultyPips(difficulty: number): HTMLElement {
+export function difficultyPips(difficulty: number): HTMLElement {
   const filled = Math.min(MAX_PIPS, Math.ceil(difficulty / PIP_SCALE));
   const dots = Array.from({ length: MAX_PIPS }, (_, index) =>
     el("span", { class: `pips__dot${index < filled ? " pips__dot--on" : ""}` }),
@@ -155,10 +173,14 @@ export function createCredits(): Credits {
 
   return {
     element,
-    update({ puzzle }) {
-      title.textContent = puzzle?.title || "Untitled";
+    update(puzzle) {
+      // Blank rather than "Untitled" over five empty pips. The strip is
+      // furniture on every screen, so it outlives the board it describes
+      // unless something says otherwise — and no puzzle is not a puzzle with
+      // no name and no rating. The dash is what it says before the first one.
+      title.textContent = puzzle ? puzzle.title || "Untitled" : "—";
       by.textContent = puzzle ? `by ${puzzle.author}` : "";
-      replaceChildren(pips, difficultyPips(puzzle?.difficulty ?? 0));
+      replaceChildren(pips, puzzle ? difficultyPips(puzzle.difficulty) : null);
     },
     setCountdown(text) {
       countdown.textContent = text;

@@ -10,7 +10,28 @@
 
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { decodeBoard, pieceBudget, type Puzzle } from "../shared/puzzle";
+import {
+  decodeBoard,
+  meetsTarget,
+  pieceBudget,
+  type Puzzle,
+  type SolutionStep,
+} from "../shared/puzzle";
+import {
+  type BuilderSolve,
+  cellIndex,
+  EMPTY_STATE,
+  NO_TARGET,
+  submitBlocker,
+  toPuzzle,
+  toSubmission,
+} from "../client/src/ui/builder-state";
+import {
+  readBoardShape,
+  readClaimedDifficulty,
+  readGoal,
+  readTitle,
+} from "../server/submission-input";
 import { createPuzzleEngine, toLetter } from "../shared/tetris/engine";
 import { DEFAULT_HANDLING } from "../shared/tetris/handling";
 import { findPaths } from "../shared/tetris/pathfinder";
@@ -21,7 +42,7 @@ const ENGINE_ROWS = 40;
 /** One frame down, one frame up: long enough to register, short of DAS. */
 const FRAMES_PER_INPUT = 2;
 
-const puzzles: Puzzle[] = JSON.parse(readFileSync("data/puzzles.json", "utf8")).puzzles;
+import { archive as puzzles, hasSolutions, solutionOf } from "./archive";
 
 function setupFor(puzzle: Puzzle) {
   return {
@@ -31,9 +52,12 @@ function setupFor(puzzle: Puzzle) {
   };
 }
 
-/** Turns the solution into keystrokes a player could plausibly have made. */
-function inputLogFor(puzzle: Puzzle): InputEvent[] {
-  const { engine } = createPuzzleEngine(setupFor(puzzle), DEFAULT_HANDLING);
+/** Turns a list of placements into keystrokes a player could plausibly have made. */
+function logFor(
+  setup: ReturnType<typeof setupFor>,
+  steps: readonly Pick<SolutionStep, "piece" | "cells">[],
+): InputEvent[] {
+  const { engine } = createPuzzleEngine(setup, DEFAULT_HANDLING);
   const events: InputEvent[] = [];
   let frame = 0;
 
@@ -43,14 +67,14 @@ function inputLogFor(puzzle: Puzzle): InputEvent[] {
     frame += FRAMES_PER_INPUT;
   };
 
-  for (const step of puzzle.solution) {
+  for (const step of steps) {
     if (toLetter(engine.falling.symbol) !== step.piece) {
       tap("hold");
       engine.hold(false, true);
     }
     const routes = findPaths(engine, step.cells);
     const route = routes[0];
-    if (!route) throw new Error(`unreachable placement for puzzle ${puzzle.id}`);
+    if (!route) throw new Error(`unreachable placement: ${step.piece} at ${JSON.stringify(step.cells)}`);
     for (const key of route) {
       tap(key);
       engine.press(key);
@@ -61,19 +85,33 @@ function inputLogFor(puzzle: Puzzle): InputEvent[] {
   return events;
 }
 
-describe("puzzle archive", () => {
+/** Turns the solution into keystrokes a player could plausibly have made. */
+function inputLogFor(puzzle: Puzzle): InputEvent[] {
+  return logFor(setupFor(puzzle), solutionOf(puzzle));
+}
+
+/*
+ * Both blocks below need the club's reference answers, and this file was the
+ * one that imported `hasSolutions` and then never used it — so a checkout
+ * without `data/solutions.json` got 53 errors reading "puzzle N has no solution
+ * loaded" instead of 53 skips. `tests/archive.ts` states the convention its
+ * four siblings follow: a test that builds a solving log guards and skips, so
+ * somebody cloning this repo sees a suite that passes rather than one that
+ * looks broken by their own checkout.
+ */
+describe.skipIf(!hasSolutions)("puzzle archive", () => {
   test("every puzzle has a positive, reachable target", () => {
     expect(puzzles.length).toBeGreaterThan(100);
     for (const puzzle of puzzles) {
       expect(puzzle.targetAttack).toBeGreaterThan(0);
-      expect(puzzle.solution.length).toBeGreaterThan(0);
-      expect(puzzle.solution.length).toBeLessThanOrEqual(pieceBudget(puzzle));
+      expect(solutionOf(puzzle).length).toBeGreaterThan(0);
+      expect(solutionOf(puzzle).length).toBeLessThanOrEqual(pieceBudget(puzzle));
       expect(puzzle.board.every((row) => row.length === 10)).toBe(true);
     }
   });
 });
 
-describe("verifyRun", () => {
+describe.skipIf(!hasSolutions)("verifyRun", () => {
   // A spread across queue lengths and difficulties rather than the whole
   // archive: the search is quadratic in placements and this runs on every save.
   const sample = puzzles.filter((_, index) => index % 11 === 0);
@@ -88,7 +126,7 @@ describe("verifyRun", () => {
       // replay can only match the target or beat it. Falling short is the
       // drift this guards against.
       expect(result.attack).toBeGreaterThanOrEqual(puzzle.targetAttack);
-      expect(result.placements.length).toBe(puzzle.solution.length);
+      expect(result.placements.length).toBe(solutionOf(puzzle).length);
     },
   );
 });
@@ -113,5 +151,144 @@ describe("input log validation", () => {
     expect(() =>
       parseInputLog([{ frame: 0, type: "keydown", data: { key: "hold", subframe: 1.5 } }]),
     ).toThrow(/subframe/);
+  });
+});
+
+/**
+ * The builder's own end of the same path.
+ *
+ * `toPuzzle` is the only conversion between a board somebody painted and a
+ * board the engine plays, and everything below it here is the shipping path —
+ * the setup the daily builds, and the verifier the server scores with. A flip,
+ * an off-by-one row or the wrong letter for garbage would all still round-trip
+ * through the blueprint encoder and still fail here.
+ */
+describe("a draft the builder compiles", () => {
+  test("is a puzzle the engine plays and the verifier scores", () => {
+    // A T-slot: row 1 open at 3, 4 and 5, row 0 open at 4, and an overhang on
+    // row 2 that leaves only columns 3 and 4 to drop through — so the T has to
+    // be rotated into place rather than dropped there, which is what makes it a
+    // spin. Row 2 survives the clear, or emptying the board would make this a
+    // perfect clear and hide the TSD behind it.
+    const cells = new Map<number, "g">();
+    for (let x = 0; x < 10; x++) if (x !== 4) cells.set(cellIndex(x, 0), "g");
+    for (const x of [0, 1, 2, 6, 7, 8, 9]) cells.set(cellIndex(x, 1), "g");
+    for (const x of [0, 1, 2, 5, 6, 7, 8, 9]) cells.set(cellIndex(x, 2), "g");
+    const puzzle = toPuzzle({ ...EMPTY_STATE, cells, queue: ["T"], goal: "Clear 1 TSD" });
+
+    const setup = {
+      board: decodeBoard(puzzle.board, ENGINE_ROWS),
+      queue: puzzle.queue,
+      hold: puzzle.hold,
+    };
+    const events = parseInputLog(
+      logFor(setup, [
+        {
+          piece: "T",
+          cells: [
+            [3, 1],
+            [4, 1],
+            [5, 1],
+            [4, 0],
+          ],
+        },
+      ]),
+    );
+    const result = verifyRun(setup, DEFAULT_HANDLING, events);
+
+    expect(result.clears).toEqual(["tsd"]);
+    expect(result.attack).toBe(4);
+  });
+
+  test("plays its queue out when the goal names no attack", () => {
+    // At a target of zero `meetsTarget` is true before the first piece lands,
+    // and the test would end having proved nothing. `NO_TARGET` is what makes
+    // the run play on, so the builder can report what the author managed.
+    const draft = { ...EMPTY_STATE, queue: ["T"] as const, goal: "Clear 1 TSD" };
+    expect(toPuzzle(draft).targetAttack).toBe(NO_TARGET);
+    expect(meetsTarget(4, NO_TARGET)).toBe(false);
+    expect(meetsTarget(0, 0)).toBe(true);
+  });
+});
+
+/**
+ * The other end of the same path: a draft on its way to review.
+ *
+ * `toSubmission` writes the field names `POST /api/submissions` reads, and
+ * nothing else lines the two up. A rename on either side is a 400 no other test
+ * in this suite can see, because `tests/builder.test.ts` supplies only the
+ * browser's half of the body and `tests/submissions.test.ts` writes its own
+ * board out by hand — deliberately, and it says so: "the builder is the next
+ * step's problem." This is that step.
+ *
+ * The route's validators are imported rather than the route itself.
+ * `server/submission-input` reaches only `server/puzzles`, which reads a JSON
+ * file and no configuration, so importing them here does not enrol this file in
+ * the one-database-per-run contract `tests/submissions.test.ts` documents.
+ */
+describe("the body the builder compiles", () => {
+  /** Only `handling` and `events` are read; the snapshot travels for the type. */
+  const solve: BuilderSolve = {
+    snapshot: {
+      phase: "solved",
+      attack: 4,
+      targetAttack: NO_TARGET,
+      piecesPlaced: 1,
+      pieceBudget: 1,
+      clears: ["tsd"],
+      elapsedMs: 900,
+      resets: 0,
+      hold: null,
+      upcoming: [],
+      holdLocked: false,
+    },
+    events: [{ frame: 0, type: "keydown", data: { key: "hardDrop", subframe: 0 } }],
+    handling: DEFAULT_HANDLING,
+  };
+
+  test("is one the route's own validators take", () => {
+    const cells = new Map<number, "g">();
+    for (const x of [0, 1, 2, 6, 7, 8, 9]) cells.set(cellIndex(x, 0), "g");
+    const draft = {
+      ...EMPTY_STATE,
+      cells,
+      queue: ["T" as const, "L" as const],
+      hold: "O" as const,
+      goal: "Clear 1 TSD",
+      title: "Well Named",
+      difficulty: 12,
+    };
+
+    const body = toSubmission(draft, solve);
+
+    expect(readTitle(body.title)).toBe("Well Named");
+    expect(readGoal(body.goal)).toBe("Clear 1 TSD");
+    expect(readClaimedDifficulty(body.claimedDifficulty)).toBe(12);
+    // The board, queue and hold under the names the route reads them by, and
+    // through the same `boardProblem` an archived puzzle is held to.
+    expect(readBoardShape(body)).toEqual({
+      board: ["GGG...GGGG"],
+      queue: ["T", "L"],
+      hold: "O",
+    });
+  });
+
+  test("is refused by those validators exactly where the builder refuses it", () => {
+    // The two halves of the same rule, checked against each other rather than
+    // each against its own idea of the truth. `submitBlocker` exists so the
+    // author is told while the board is still theirs to fix; it is worth
+    // nothing if it lets through something the route then throws away.
+    const full = new Map<number, "g">();
+    for (let x = 0; x < 10; x++) full.set(cellIndex(x, 0), "g");
+    const draft = {
+      ...EMPTY_STATE,
+      cells: full,
+      queue: ["T" as const],
+      goal: "Clear 1 TSD",
+      title: "Well Named",
+    };
+
+    expect(submitBlocker(draft, solve)).not.toBeNull();
+    expect(() => readBoardShape(toSubmission(draft, solve))).toThrow();
   });
 });

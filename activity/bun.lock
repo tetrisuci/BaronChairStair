@@ -6,7 +6,7 @@
       "name": "@baronchairstair/daily-puzzle",
       "dependencies": {
         "@discord/embedded-app-sdk": "^2.1.0",
-        "@haelp/teto": "^4.2.6",
+        "@haelp/teto": "4.2.7",
         "hono": "^4.6.0",
       },
       "devDependencies": {

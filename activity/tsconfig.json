@@ -20,5 +20,16 @@
     },
     "baseUrl": "."
   },
-  "include": ["shared/**/*.ts", "client/**/*.ts", "server/**/*.ts", "tools/**/*.ts", "tests/**/*.ts"]
+  "include": [
+    "shared/**/*.ts",
+    "client/**/*.ts",
+    "server/**/*.ts",
+    "tools/**/*.ts",
+    "tests/**/*.ts",
+    // Named, not left to luck. It was in the program only because one test
+    // happens to import it, so it was checked by accident and would have gone
+    // unchecked again the moment that import moved — and it is the file that
+    // decides which pages the build emits.
+    "vite.config.ts"
+  ]
 }

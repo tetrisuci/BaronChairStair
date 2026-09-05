@@ -8,10 +8,16 @@
  */
 
 import { Hono } from "hono";
-import type { Context, Next } from "hono";
-import { serveStatic } from "hono/bun";
+import type { Context } from "hono";
 import { HTTPException } from "hono/http-exception";
-import { decodeBoard, ENGINE_ROWS, meetsTarget, pieceBudget, toListing } from "../shared/puzzle";
+import {
+  decodeBoard,
+  ENGINE_ROWS,
+  meetsTarget,
+  pieceBudget,
+  type Puzzle,
+  toListing,
+} from "../shared/puzzle";
 import { sanitizeArchiveFilter } from "../shared/archive-filter";
 
 import { sanitizeHandling } from "../shared/tetris/handling";
@@ -31,16 +37,31 @@ import {
   mintRushTicket,
   mintSession,
   readRushTicket,
-  readSession,
   type RushTicket,
   type Session,
   verifyGuild,
 } from "./auth";
 import { config } from "./config";
-import { Store } from "./db";
-import { callerKey, limitBodySize, MAX_BODY_BYTES, rateLimit } from "./limits";
+import { Store, type StoredRun } from "./db";
+import { DaySchedule, pastDaysOf } from "./schedule";
+import {
+  callerKey,
+  limitBodySize,
+  MAX_BODY_BYTES,
+  rateLimit,
+  readJsonBody,
+} from "./limits";
 import { DAILY_TIERS, type DailyTier } from "../shared/daily";
 import { PuzzleArchive } from "./puzzles";
+import {
+  apiError,
+  GUEST_ID,
+  requireSession,
+  type Variables,
+} from "./http";
+import { registerReviewRoutes } from "./review-routes";
+import { registerStaticRoutes } from "./static-routes";
+import { registerSubmissionRoutes } from "./submission-routes";
 import {
   type SocketData,
   duelSocket,
@@ -64,10 +85,48 @@ const MINUTE = 60_000;
 /** A day of it: anything longer is a broken clock, not a long think. */
 const MAX_TOTAL_MS = 24 * 60 * MINUTE;
 
-const archive = PuzzleArchive.load(config.paths.puzzles, { timeZone: config.timeZone });
+/*
+ * Store, then archive, then the backfill — and that order is load-bearing.
+ *
+ * The archive used to be built first and handed to the store's constructor. It
+ * cannot be any more: accepted player submissions are part of the archive and
+ * they live in this database, so the archive needs the store. The store's
+ * backfill still needs the archive, because the derivation is the archive's.
+ * The cycle is broken by making the backfill a step of its own rather than part
+ * of opening a database — see `Store.pinPastDays`.
+ *
+ * Deriving history from a club-only archive and rebuilding afterwards was the
+ * obvious alternative, and it is wrong: the two archives disagree about every
+ * day nobody has played the moment one puzzle has ever been accepted, so the
+ * pinned history would be a pool this process is not serving from.
+ */
 const store = new Store(config.paths.database);
+const community = store.acceptedPuzzles();
+/*
+ * The corrections come out of the same database and go on last, over both
+ * sources. This is the whole reason a correction survives `bun run puzzles`:
+ * that command rewrites `data/puzzles.json` from the club's CSVs and knows
+ * nothing about this table, so the rebuilt file is the *source* the corrections
+ * are laid over rather than the last word.
+ */
+const archive = PuzzleArchive.load(
+  config.paths.puzzles,
+  { timeZone: config.timeZone },
+  community,
+  store.overridesFor(),
+);
+store.pinPastDays(pastDaysOf(archive));
+/*
+ * Every "what did day N hold" below goes through here, never through the
+ * archive's own derivation. The archive still derives — that is where an
+ * unpinned day's answer comes from — but a route that asked it directly would
+ * be re-deriving a day somebody has already played, and once the pool grows
+ * with accepted submissions the two answers stop agreeing. `archive` keeps only
+ * what does not depend on the pool's size: the clock, the id lookup, the whole
+ * listing, and the prompt shape.
+ */
+const schedule = new DaySchedule(archive, store);
 
-type Variables = { session: Session };
 const app = new Hono<{ Variables: Variables }>();
 
 /**
@@ -94,34 +153,24 @@ app.use("/api/daily/run", rateLimit({ max: 20, windowMs: MINUTE }, callerKey));
 // A rush is five minutes long, so nobody honest opens many of them a minute.
 app.use("/api/rush/start", rateLimit({ max: 6, windowMs: MINUTE }, callerKey));
 app.use("/api/rush/run", rateLimit({ max: 12, windowMs: MINUTE }, callerKey));
+// Tighter than the daily's twenty, because a submission replays a board the
+// caller chose rather than one of today's three. Nobody writes five puzzles a
+// minute, so this only ever costs somebody who is not writing puzzles.
+app.use("/api/submissions", rateLimit({ max: 5, windowMs: MINUTE }, callerKey));
+// Ten a minute on the exchange, knowing it may be one shared bucket: behind a
+// proxy with `TRUST_PROXY` unset, `callerKey` falls back to the socket's peer
+// address and every caller arrives as the proxy. What actually stands between a
+// stranger and the review queue is 256 bits of HMAC, not this line.
+app.use("/api/review/session", rateLimit({ max: 10, windowMs: MINUTE }, callerKey));
+// Accepting replays a stored solve, so it is an engine call like the two above
+// — behind a reviewer token rather than open, but a queue nobody clears at
+// thirty a minute is not a queue anybody is reading.
+app.use("/api/review/submissions/*", rateLimit({ max: 30, windowMs: MINUTE }, callerKey));
 app.use("/api/*", rateLimit({ max: 240, windowMs: MINUTE }, callerKey));
 
-app.onError((error, c) => {
-  if (error instanceof HTTPException) {
-    // An exception carrying its own Response knows best. Otherwise Hono renders
-    // the message as plain text, which every caller here reads as JSON and
-    // reports as a bare "Request failed (409)" — so the one sentence explaining
-    // what went wrong never reaches the player who needed it.
-    return error.res ?? c.json({ error: error.message }, error.status);
-  }
-  if (error instanceof AuthError) {
-    return c.json({ error: error.message }, error.status as 401);
-  }
-  // A malformed run is a bad request, not a server fault; saying so keeps real
-  // faults visible in the log instead of drowning in client bugs.
-  if (error instanceof InvalidRunError) return c.json({ error: error.message }, 400);
-  console.error("[puzzle]", error);
-  return c.json({ error: "Something went wrong on the server" }, 500);
-});
+app.onError(apiError);
 
 // ── Auth ─────────────────────────────────────────────────────────────────────
-
-async function requireSession(c: Context<{ Variables: Variables }>, next: Next) {
-  const header = c.req.header("Authorization") ?? "";
-  const token = header.startsWith("Bearer ") ? header.slice("Bearer ".length) : undefined;
-  c.set("session", await readSession(token));
-  await next();
-}
 
 app.get("/api/config", (c) =>
   c.json({
@@ -137,21 +186,20 @@ app.get("/api/config", (c) =>
  * activity can be played outside Discord.
  */
 app.post("/api/session", async (c) => {
-  type SessionBody = { code?: string; guildId?: string | null };
-  const body: SessionBody = await c.req.json<SessionBody>().catch(() => ({}) as SessionBody);
+  const body = await readJsonBody(c);
   const guildId = typeof body.guildId === "string" && body.guildId ? body.guildId : null;
 
-  if (!body.code) {
+  if (typeof body.code !== "string" || body.code === "") {
     if (!config.allowGuestPlay) throw new AuthError("An authorization code is required");
     // Every guest is the same player, so a guild claim from one would let
     // anyone write to any leaderboard under a shared identity. Guests are
     // global-only.
-    const player = { id: "guest", username: "guest", avatarUrl: null };
+    const player = { id: GUEST_ID, username: GUEST_ID, avatarUrl: null };
     const { token } = await mintSession(player, null);
     return c.json({ token, player, guest: true });
   }
 
-  const { accessToken, player } = await exchangeCode(body.code);
+  const { accessToken, player } = await exchangeCode(String(body.code));
   store.upsertPlayer(player);
   const { token } = await mintSession(player, await verifyGuild(accessToken, guildId));
   return c.json({ token, player, accessToken, guest: false });
@@ -166,7 +214,8 @@ app.post("/api/session", async (c) => {
  * chooses the board a log is replayed against, so a log played on the hard one
  * and filed as "easy" simply fails to solve the easy one. It cannot be used to
  * file somebody else's result, and it cannot be used to fetch an answer —
- * every solution below is gated on the run stored for that same tier.
+ * every solution below is gated on the run stored for that same tier, against
+ * that same puzzle.
  */
 function readTier(value: unknown): DailyTier {
   const tier = DAILY_TIERS.find((candidate) => candidate === value);
@@ -174,9 +223,32 @@ function readTier(value: unknown): DailyTier {
   return tier;
 }
 
+/**
+ * The reference solution, if this player has earned it on this exact puzzle.
+ *
+ * Keyed on the puzzle the run was filed against — `runs.puzzle_id` — and not on
+ * (day, tier). A stored run names the board it was played on; matching it to a
+ * freshly chosen puzzle by tier alone handed out the answer to a board the
+ * player had never seen, every time the two disagreed. They disagreed whenever
+ * the pool changed underneath a day, which is exactly what accepting community
+ * puzzles does.
+ *
+ * Pinned days mean the two can no longer drift apart. This is what turns that
+ * into something the route checks rather than something it assumes, and it
+ * costs one comparison.
+ */
+function earnedSolution(run: StoredRun | undefined, puzzle: Puzzle) {
+  if (!run?.solved || run.puzzleId !== puzzle.id) return null;
+  // `?? null`, because `solution` became optional when the answers moved into
+  // `data/solutions.json`. Undefined is dropped by `JSON.stringify` entirely,
+  // so a client reading a documented `solution: … | null` would get no key at
+  // all on a server running without that file.
+  return puzzle.solution ?? null;
+}
+
 app.get("/api/daily", requireSession, (c) => {
   const session = c.get("session");
-  const { day, puzzles, resetsAt } = archive.today();
+  const { day, puzzles, resetsAt } = schedule.today();
   const runs = store.runsFor(day, session.player.id);
   return c.json({
     day,
@@ -185,10 +257,11 @@ app.get("/api/daily", requireSession, (c) => {
       tier,
       puzzle: archive.prompt(puzzles[tier]),
       run: runs[tier] ?? null,
-      // Gated per tier, not per day. Solving the easy one must not hand over
-      // the hard one's answer — with one run a day that distinction did not
-      // exist, and reading it as "solved today" is a solution leak.
-      solution: runs[tier]?.solved ? puzzles[tier].solution : null,
+      // Gated per tier, not per day, and then per puzzle. Solving the easy one
+      // must not hand over the hard one's answer — with one run a day that
+      // distinction did not exist, and reading it as "solved today" is a
+      // solution leak.
+      solution: earnedSolution(runs[tier], puzzles[tier]),
     })),
     streak: store.streak(session.player.id, day),
     totalSolved: store.totalSolved(session.player.id),
@@ -197,19 +270,9 @@ app.get("/api/daily", requireSession, (c) => {
 
 app.post("/api/daily/run", requireSession, async (c) => {
   const session = c.get("session");
-  const { day, puzzles } = archive.today();
+  const { day, puzzles } = schedule.today();
 
-  const body = await c.req
-    .json<{
-      tier?: unknown;
-      handling?: unknown;
-      events?: unknown;
-      resets?: unknown;
-      totalMs?: unknown;
-    }>()
-    .catch(() => {
-      throw new HTTPException(400, { message: "Request body is not valid JSON" });
-    });
+  const body = await readJsonBody(c);
   const tier = readTier(body.tier);
   const puzzle = puzzles[tier];
   const handling = sanitizeHandling(body.handling);
@@ -242,8 +305,11 @@ app.post("/api/daily/run", requireSession, async (c) => {
     streak: store.streak(session.player.id, day),
     totalSolved: store.totalSolved(session.player.id),
     // Same rule as every other route: the answer is only ever sent to somebody
-    // who has solved it. Filing a deliberately empty run must not buy it.
-    solution: run.solved ? puzzle.solution : null,
+    // who has solved it, on the puzzle they solved. Filing a deliberately empty
+    // run must not buy it — and neither must an earlier row for this same tier,
+    // which is what `recordRun` hands back when today's attempt did not improve
+    // on it.
+    solution: earnedSolution(run, puzzle),
     leaderboard: store.leaderboard(day, session.guildId, tier, LEADERBOARD_SIZE),
   });
 });
@@ -283,7 +349,7 @@ app.get("/api/daily/leaderboard", requireSession, (c) => {
  * channel. Public: everything here is on the puzzle's own front page.
  */
 app.get("/api/today", (c) => {
-  const { day, puzzles, resetsAt } = archive.today();
+  const { day, puzzles, resetsAt } = schedule.today();
   const describe = (puzzle: (typeof puzzles)[DailyTier]) => ({
     id: puzzle.id,
     title: puzzle.title,
@@ -374,7 +440,7 @@ app.get("/api/recap", (c) => {
   // parameter would put strangers into one server's recap.
   if (!guildId) throw new HTTPException(400, { message: "guild is required" });
 
-  const { puzzles } = archive.forDay(day);
+  const { puzzles } = schedule.forDay(day);
   return c.json({
     day,
     puzzles: DAILY_TIERS.map((tier) => ({
@@ -430,10 +496,19 @@ function maySeeSolution(session: Session, puzzleId: number): boolean {
   // today's puzzle" no longer has a single answer, and the tier matters: the
   // gate has to be the run for *this* puzzle's tier. Read as "solved today" it
   // would hand the hard answer to somebody who solved the easy one.
+  //
+  // Sound only because the day is pinned: while the three were re-derived, a
+  // puzzle that had been today's easy an hour ago was suddenly none of today's,
+  // and this answered `true` for it while players were still holding its
+  // prompt.
   const day = archive.currentDay();
-  const tier = archive.tierOfDay(day, puzzleId);
+  const tier = schedule.tierOfDay(day, puzzleId);
   if (!tier) return true;
-  return store.runFor(day, session.player.id, tier)?.solved === true;
+  const run = store.runFor(day, session.player.id, tier);
+  // And the run has to be the run on *this* puzzle, for the same reason
+  // `earnedSolution` checks it: a row filed under this tier against some other
+  // board proves nothing about this one.
+  return run?.solved === true && run.puzzleId === puzzleId;
 }
 
 app.get("/api/archive", requireSession, (c) => {
@@ -446,7 +521,9 @@ app.get("/api/archive/:id", requireSession, (c) => {
   if (!puzzle) throw new HTTPException(404, { message: "No such puzzle" });
   return c.json({
     puzzle: archive.prompt(puzzle),
-    solution: maySeeSolution(c.get("session"), puzzle.id) ? puzzle.solution : null,
+    // `?? null` for the same reason as `earnedSolution`: an absent
+    // `data/solutions.json` must read as "no solution", not as no field.
+    solution: maySeeSolution(c.get("session"), puzzle.id) ? (puzzle.solution ?? null) : null,
   });
 });
 
@@ -458,24 +535,19 @@ app.get("/api/prefs", requireSession, (c) =>
 
 app.put("/api/prefs", requireSession, async (c) => {
   const session = c.get("session");
-  const body = await c.req
-    .json<{
-      preferences?: { version?: unknown; handling?: unknown; keybinds?: unknown; filter?: unknown };
-    }>()
-    .catch(() => {
-      throw new HTTPException(400, { message: "Request body is not valid JSON" });
-    });
+  const body = await readJsonBody(c);
   // Stored preferences are player-controlled, so only the known shapes are kept
   // — never the raw body, which would let anyone use the row as free unbounded
   // storage. The version travels through so the client can spot its own stale
   // copies; the server never interprets it.
-  const claimed = body.preferences?.version;
+  const preferences = (body.preferences ?? {}) as Record<string, unknown>;
+  const claimed = preferences.version;
   const version = Number.isInteger(claimed) ? (claimed as number) : 0;
   store.savePreferences(session.player, {
     version,
-    handling: sanitizeHandling(body.preferences?.handling),
-    keybinds: sanitizeKeybinds(body.preferences?.keybinds),
-    filter: sanitizeArchiveFilter(body.preferences?.filter),
+    handling: sanitizeHandling(preferences.handling),
+    keybinds: sanitizeKeybinds(preferences.keybinds),
+    filter: sanitizeArchiveFilter(preferences.filter),
   });
   return c.json({ ok: true });
 });
@@ -554,14 +626,22 @@ function parseRushSegments(input: unknown, limit: number): RushSegment[] {
   return segments;
 }
 
-/** The puzzles a ticket's rush was built from, re-derived rather than trusted. */
+/**
+ * The puzzles a ticket's rush was built from, re-derived rather than trusted.
+ *
+ * From the day's *pinned* pool, so re-deriving really does reproduce what was
+ * handed out. Drawn straight from `archive.puzzles`, it did not: the ticket
+ * carries a seed and no pool identity, so a deploy inside the five-minute
+ * window scored an in-flight run against a different set of forty puzzles and
+ * reported the result as if nothing had happened.
+ */
 function sequenceFor(ticket: RushTicket) {
-  return rushSequence(archive.puzzles, ticket.seed);
+  return rushSequence(schedule.rushPoolFor(ticket.day), ticket.seed);
 }
 
 app.get("/api/rush", requireSession, (c) => {
   const session = c.get("session");
-  const { day, resetsAt } = archive.today();
+  const { day, resetsAt } = schedule.today();
   return c.json({
     day,
     resetsAt,
@@ -582,8 +662,8 @@ app.get("/api/rush", requireSession, (c) => {
  */
 app.post("/api/rush/start", requireSession, async (c) => {
   const session = c.get("session");
-  const { day } = archive.today();
-  const body = await c.req.json<{ practice?: unknown }>().catch(() => ({}) as { practice?: unknown });
+  const { day } = schedule.today();
+  const body = await readJsonBody(c);
   const practice = body.practice === true;
 
   // The daily rush can be played as often as you like. Only the first one of
@@ -628,17 +708,7 @@ app.post("/api/rush/start", requireSession, async (c) => {
 
 app.post("/api/rush/run", requireSession, async (c) => {
   const session = c.get("session");
-  const body = await c.req
-    .json<{
-      ticket?: unknown;
-      handling?: unknown;
-      segments?: unknown;
-      timeToLastSolveMs?: unknown;
-      skipsUsed?: unknown;
-    }>()
-    .catch(() => {
-      throw new HTTPException(400, { message: "Request body is not valid JSON" });
-    });
+  const body = await readJsonBody(c);
 
   const ticket = await readRushTicket(body.ticket);
   // A ticket is bound to whoever it was minted for; presenting somebody else's
@@ -776,6 +846,29 @@ function timeToLastSolve(
   return Math.min(ceiling, Math.max(Math.min(played, ceiling), value));
 }
 
+/**
+ * The all-time rush board, in two scopes.
+ *
+ * `scope=server` narrows to the caller's guild; anything else is global. The
+ * guild comes from the session and never from the query, so "server" cannot be
+ * pointed at somebody else's.
+ *
+ * A session with no guild — the activity opened outside a server, and every
+ * guest session — cannot have a server scope, and asking for one used to be
+ * answered with `store.rushRecords(null)`, which means "across all servers".
+ * That is the global board returned under `scope: "server"`, so the client lit
+ * the "This server" tab over everybody's records. It answers `global` now, and
+ * says so, which is the tab the client then lights.
+ */
+app.get("/api/rush/records", requireSession, (c) => {
+  const session = c.get("session");
+  const server = c.req.query("scope") === "server" && session.guildId !== null;
+  return c.json({
+    scope: server ? "server" : "global",
+    entries: store.rushRecords(server ? session.guildId : null, LEADERBOARD_SIZE),
+  });
+});
+
 app.get("/api/rush/leaderboard", requireSession, (c) => {
   const session = c.get("session");
   const day = archive.currentDay();
@@ -785,41 +878,84 @@ app.get("/api/rush/leaderboard", requireSession, (c) => {
   });
 });
 
+// ── Player submissions and review ────────────────────────────────────────────
+
+/*
+ * Both registered here rather than declared here, and both above the `/api/*`
+ * catch-all below: a route added after it is dead code that answers 404, and
+ * one added after the static handler answers 200 with the game.
+ *
+ * They moved into files of their own because this one had passed a thousand
+ * lines with a review GUI still to come. `server/http.ts` holds the two things
+ * a route module cannot invent for itself — the `Variables` shape and the error
+ * mapping — so a route reads there exactly as it read here, and the rate limits
+ * stay above with the rest of the stack rather than scattering with them.
+ */
+registerSubmissionRoutes(app, store);
+registerReviewRoutes(app, { secret: config.reviewSecret, store, archive });
+
 // ── Static client ────────────────────────────────────────────────────────────
 
 // Everything else falls through to index.html, so unmatched API routes have to
 // be turned away here or a typo'd endpoint answers 200 with a web page.
 app.all("/api/*", (c) => c.json({ error: `No such endpoint: ${c.req.path}` }, 404));
 
-// Any real file in the build — bundles, fonts, icons — is served as itself;
-// `serveStatic` falls through when the path does not exist, so unknown routes
-// still reach the single-page fallback below.
-const buildRoot = relativeTo(config.paths.clientBuild);
-app.use("*", serveStatic({ root: buildRoot }));
-app.get("*", serveStatic({ path: `${buildRoot}/index.html` }));
+// Both pages in the build, and the headers the review one needs. Registered
+// from a module of its own so a test can point a build root at a fixture: the
+// activity and the review tool come out of the same `dist`, and "/review served
+// the game" is a silent success rather than an error.
+registerStaticRoutes(app, relativeTo(config.paths.clientBuild));
 
 /**
- * `serveStatic` resolves against the process working directory, so the build
- * has to be expressed relative to it. A deployment started from somewhere else
- * entirely would serve nothing silently, so say so at startup instead.
+ * `serveStatic` resolves against the process working directory, so a build
+ * inside it is expressed relative to it.
+ *
+ * An absolute root works too — `registerStaticRoutes` passes `root` and `path`
+ * separately for exactly that reason — so this is a note, not a failure. What
+ * it costs is that the process is then pinned to one checkout rather than to
+ * wherever it was started, which is worth saying once at boot and is the only
+ * thing left to say: `warnAboutMissingPages` covers the case where the files
+ * genuinely are not there, and that is the warning an operator can act on.
+ *
+ * It used to end "or the page will not load", which stopped being true when the
+ * single-page fallback started passing `path` rather than a joined string. A
+ * warning nobody can act on is worse than none: it teaches the operator to
+ * ignore the log the real warning is printed to.
  */
 function relativeTo(absolute: string): string {
   const cwd = `${process.cwd()}/`;
   if (absolute.startsWith(cwd)) return absolute.slice(cwd.length);
   console.warn(
-    `[puzzle] the client build at ${absolute} is outside the working directory ` +
-      `${process.cwd()} — start the server from the activity directory, or the ` +
-      "page will not load.",
+    `[puzzle] serving the client build from ${absolute}, which is outside the ` +
+      `working directory ${process.cwd()} — it will load, but this process is ` +
+      "pinned to that checkout.",
   );
   return absolute;
 }
 
 console.log(
   `puzzle — day ${archive.currentDay()}, ` +
-    `${archive.puzzles.length} puzzles, resetting at midnight ${config.timeZone}, ` +
+    `${archive.puzzles.length} puzzles` +
+    // Said at startup because this is the only moment it is ever answered. An
+    // accepted puzzle joins the archive here and nowhere else, so a restart
+    // that did not pick one up looks exactly like a restart that did.
+    (community.length > 0 ? ` (${community.length} from players)` : "") +
+    `, resetting at midnight ${config.timeZone}, ` +
     `listening on :${config.port}` +
     (config.allowGuestPlay ? " (guest play enabled)" : ""),
 );
+
+// Loud, because the failure it warns about is the quiet one. Behind a proxy
+// with this unset, every player shares one rate-limit bucket and starts
+// collecting 429s; the alternative default — trusting the header — is a bucket
+// per forged header, which is no limit at all and says nothing when abused.
+if (config.isProduction && !config.trustProxy) {
+  console.warn(
+    "[limits] TRUST_PROXY is not set, so rate limits are keyed on the socket's peer " +
+      "address. If cloudflared, nginx or Caddy is in front of this, every player counts " +
+      "as one caller — set TRUST_PROXY=true in activity/.env and restart.",
+  );
+}
 
 useArchive(archive.puzzles);
 // A lobby nobody joins, and a finished match nobody plays again, would

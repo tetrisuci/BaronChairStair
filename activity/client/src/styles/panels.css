@@ -368,6 +368,33 @@
 .screen--wide { --screen-width: 720px; }
 
 /*
+ * Two columns' worth, for the one screen that has two.
+ *
+ * 1080 is the deck's own 1090 cap less its shadow gutter, so the front door is
+ * exactly as wide as the board it leads to. 720 cannot carry a hero sheet and
+ * a leaderboard side by side, and stacking them is what the narrow layout is
+ * for rather than what the desk-sized one should settle for.
+ *
+ * It carries the row as well as the width, and is used *instead of*
+ * `.screen--fill` rather than beside it — `--fill` stretches an auto row, which
+ * is only a floor. With two columns that is not enough: a leaderboard forty
+ * rows deep makes the row forty rows tall, the whole screen scrolls, and the
+ * panel never learns it was supposed to shrink and scroll inside itself,
+ * because nothing above it ever had a height to shrink against. `1fr` of a
+ * screen that does have one is what hands the rail a definite height, and a
+ * definite height is the one thing `.rail`'s `min-height: 0` needs in order to
+ * mean anything.
+ *
+ * A left column taller than the row still overflows it and `.screen` still
+ * scrolls to reach it, because that overflow lands in the scroll region rather
+ * than on top of the credits strip.
+ */
+.screen--full {
+  --screen-width: 1080px;
+  grid-template-rows: minmax(0, 1fr);
+}
+
+/*
  * One card, filling the height it is given, managing its own overflow. The
  * default screen stacks cards at their natural height and scrolls the lot;
  * that is right for the rush cards and wrong for a card whose whole point is a
@@ -439,7 +466,8 @@
 .explore__slot { display: contents; }
 
 .explore__search,
-.explore__number {
+.explore__number,
+.build__field {
   padding: 5px 8px;
   border: var(--edge) solid var(--ink);
   border-radius: var(--radius-sm);
@@ -456,7 +484,8 @@
 .explore__select { flex: 1 1 140px; }
 
 .explore__search:focus-visible,
-.explore__number:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
+.explore__number:focus-visible,
+.build__field:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
 
 .explore__count {
   margin: 0;
@@ -527,8 +556,26 @@
 .explore__item:hover:not(:disabled) { background: var(--sun); border-color: var(--ink); }
 .explore__item:active:not(:disabled) { transform: translate(1px, 1px); }
 
-/* Today's puzzle, until it has been filed. Visible, so its absence is not a mystery. */
-.explore__item--locked { opacity: 0.45; cursor: not-allowed; }
+/*
+ * Today's puzzle, until it has been solved.
+ *
+ * Dimmed, but not so far that the reason beside it stops being readable — the
+ * row now carries its own sentence, and 0.45 on plum over cream took that below
+ * where anybody would bother. The label keeps full strength against the dimmed
+ * title, which is the right way round: the title is the thing you already know
+ * and the label is the thing you are missing.
+ */
+.explore__item--locked { opacity: 0.62; cursor: not-allowed; }
+
+.explore__locked {
+  margin-left: 8px;
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ink-soft);
+  white-space: nowrap;
+}
 
 .explore__id {
   font-family: var(--mono);
@@ -553,11 +600,12 @@
 }
 
 /*
- * The day's three, across the top of the left rail.
+ * A row of two or three short labels that share the width they are given —
+ * now the record book's scopes, and once the day's three difficulties.
  *
- * Wrapping rather than scrolling: three short labels fit on one line at any
- * width the activity is given, and a row that scrolled would hide one of them
- * — which is the one thing this control exists to prevent.
+ * Wrapping rather than scrolling: the labels fit on one line at any width the
+ * activity is given, and a row that scrolled would hide one of them, which is
+ * the one thing a control like this exists to prevent.
  */
 .tiers {
   display: flex;
@@ -568,9 +616,8 @@
 
 .tiers__pick { flex: 1 1 auto; }
 
-
-
-/* The chooser's rows carry a goal and a byline, so they stack. */
+/* A row carrying a goal and a byline under its title — the day's sheets, and
+   the rush and duel lists that borrowed the shape from the chooser. */
 .explore__by { color: var(--ink-soft); font-size: 11px; }
 .explore__goal {
   display: block;
@@ -580,27 +627,178 @@
   white-space: normal;
 }
 
-/* Done, and still worth being able to open again. */
-.explore__item--done .explore__id { background: var(--good); }
+/* ── Builder ──────────────────────────────────────────────────────────────── */
 
 /*
- * The front door's four ways on.
- *
- * Wrapping, and each one wide enough to be a target rather than a word: this
- * is the first thing a player meets, and Discord gives the activity a window
- * whose shape nobody controls.
+ * Nothing in here sets `overflow-y`. Every card is a stack of fixed blocks, so
+ * the rail is the only scroller on the screen and the `.explore__list--flow`
+ * trap above — a scroller nested in a scroller, eating the wheel wherever the
+ * pointer happens to sit — never arises.
  */
-.home__nav {
+
+.build__palette {
   display: flex;
-  gap: 8px;
   flex-wrap: wrap;
-  margin: 12px 0;
+  gap: 6px;
 }
 
-.home__go {
-  flex: 1 1 120px;
-  padding-block: 12px;
+.build__swatch {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 7px;
+  border: var(--edge) solid var(--ink-line);
+  border-radius: var(--radius-sm);
+  background: var(--cream);
 }
+.build__swatch--on {
+  background: var(--sun);
+  border-color: var(--ink);
+  box-shadow: 2px 2px 0 var(--ink);
+}
+.build__chip {
+  width: 16px;
+  height: 16px;
+  border: 1px solid var(--ink);
+  border-radius: 2px;
+}
+/* Erase has no colour of its own; the dashed edge is what says so. */
+.build__swatch--erase .build__chip { background: var(--cream); border-style: dashed; }
+.build__key {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--ink);
+}
+
+/*
+ * The middle of the deck, where the game's stage goes — see sheet.css. The
+ * padding is the grid's own hard offset shadow: without the room it is drawn
+ * over the gutter and shaved off by whichever ancestor is scrolling.
+ */
+.build__board {
+  display: grid;
+  place-items: center;
+  min-width: 0;
+  min-height: 0;
+  padding: 0 var(--drop) var(--drop) 0;
+}
+
+/*
+ * No gap anywhere in the grid: a pointer is mapped to a cell by arithmetic off
+ * the container's box, and a gutter would put the seams half a cell out. The
+ * ruling is an inset shadow on each cell instead.
+ */
+/*
+ * Height-led, not width-led.
+ *
+ * The field is ten wide and twenty tall, so square cells make the board twice
+ * as tall as it is wide. Sizing it by width put the floor well below the bottom
+ * of a Discord window; the height is taken first and the width follows from the
+ * ratio, so all twenty rows fit the room the board is given.
+ *
+ * That height is now the whole of the deck row rather than a slice of the
+ * viewport, which is the point of mounting the board as a stage instead of
+ * inside a card. `min-height` is not the same claim: a percentage of a row
+ * sized by *its* content resolves to auto — twenty empty rows, which is
+ * nothing — and that is what the deck does on the short viewport in narrow.css
+ * where it scrolls instead of fitting. The floor matches `.stage`'s own.
+ */
+.build__grid {
+  height: 100%;
+  min-height: 200px;
+  aspect-ratio: 1 / 2;
+  width: auto;
+  max-width: 100%;
+  border: var(--edge) solid var(--ink);
+  border-radius: var(--radius-sm);
+  background: var(--cream);
+  box-shadow: var(--drop) var(--drop) 0 var(--ink);
+  /* A paint stroke must not scroll the screen out from under itself. */
+  touch-action: none;
+}
+.build__grid { display: grid; grid-template-rows: repeat(20, 1fr); }
+.build__row { display: grid; grid-template-columns: repeat(10, 1fr); }
+/* Square by construction now: twenty equal rows in a box of ratio 1:2. */
+.build__cell {
+  box-shadow: inset 0 0 0 1px var(--board-grid);
+}
+.build__cell--on { box-shadow: inset 0 0 0 2px var(--ink); }
+.build__cell--cursor { outline: var(--edge) dashed var(--ink); outline-offset: -3px; }
+
+/*
+ * Where a test run's piece would land.
+ *
+ * A wash of the piece's own colour rather than a neutral outline, which is what
+ * the canvas board does and for the same reason: on a cream field a grey ghost
+ * is the first thing to disappear, and the colour says which piece is landing
+ * as well as where. Fading the whole cell takes the ruling with it, which at
+ * this size is what keeps the ghost from reading as a block.
+ */
+.build__cell--ghost { opacity: 0.34; }
+
+/*
+ * The goal, line by line, while a test is on: what was asked for on the left
+ * and what the run managed on the right.
+ */
+.build__check { display: grid; gap: 4px; }
+.build__check-line {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--warn);
+}
+.build__check-line--met { color: var(--good-ink); }
+/* The run's own words for what it did, under the list of what was asked. */
+.build__check-extra { margin: 0; }
+
+.build__hold { min-width: 92px; }
+.build__legend { font-family: var(--mono); font-size: 10px; }
+
+/*
+ * Wrapping, not scrolling: a 74-piece queue takes about six lines of a rail,
+ * and a horizontal scroller inside a scrolling rail would eat the wheel.
+ */
+.build__strip { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; }
+.build__strip-first {
+  padding: 1px;
+  border: 1px solid var(--ink);
+  border-radius: 2px;
+  background: var(--sun);
+}
+
+/*
+ * The goal's counters: one row per clear the goal actually names, plus attack.
+ *
+ * Count first, word second. The number is the thing that changes and the word
+ * beside it is its label, which is the opposite arrangement to the explorer's
+ * filter rows — there the label names a control that could be anything, here it
+ * names the count in front of it. Ten fixed rows were the alternative and they
+ * filled the rail with zeroes nobody had typed.
+ */
+.build__goals { display: grid; gap: 6px; }
+.build__goal {
+  display: grid;
+  grid-template-columns: 68px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+/* Square, so the × reads as the row's own control and not as a word. */
+.build__goal-drop { padding: 3px 8px; line-height: 1; }
+/* Never the thing that wraps: the button beside it is two letters wide. */
+.build__goal-pick { flex: 1 1 110px; min-width: 0; }
+
+/*
+ * The fields fill their panel, which is a flex *column* — so a `flex` shorthand
+ * here would set a basis along the height and stand a text box on end. The one
+ * exception is the hold letter, which is one character wide and says so.
+ */
+.build__letter { width: 44px; text-align: center; text-transform: uppercase; }
+.build__pieces { text-transform: uppercase; }
+.build__warning { color: var(--warn); }
 
 /* ── The day's one board ──────────────────────────────────────────────────── */
 

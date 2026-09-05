@@ -15,7 +15,7 @@ Environment (see example.env):
     PUZZLE_API      Base URL of the activity server, e.g.
                        https://puzzle.example.com
     PUZZLE_API_KEY  Shared secret matching the server's BOT_API_KEY.
-                       Only needed for /puzzle standings and /puzzle rush.
+                       Only needed for the recap, which reads /api/recap.
 """
 
 import logging
@@ -50,7 +50,7 @@ GRADE_BANDS = (
 )
 
 
-# Lent by discord_bot at boot so /puzzle play can note where it announced the
+# Lent by discord_bot at boot so /puzzle can note where it announced the
 # day. Left as None when nothing wired it up: this module stays importable on
 # its own, and a missing recap must never stop the commands working.
 recap_db: "sqlite3.Connection | None" = None

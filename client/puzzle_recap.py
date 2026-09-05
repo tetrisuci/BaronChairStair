@@ -1,5 +1,5 @@
 """
-Yesterday's results, posted as a reply to yesterday's ``/puzzle play``.
+Yesterday's results, posted as a reply to yesterday's ``/puzzle``.
 
 The shape is borrowed from the Wordle bot: when the day turns over, whoever
 announced the puzzle gets a reply naming everybody who played, fastest first,
@@ -84,7 +84,7 @@ def record_play(db: sqlite3.Connection, guild_id: int, day: int,
     """
     Remembers where a day was announced. The first announcement wins.
 
-    ``OR IGNORE`` rather than ``OR REPLACE``: running ``/puzzle play`` again
+    ``OR IGNORE`` rather than ``OR REPLACE``: running ``/puzzle`` again
     later in the day, or in a second channel, should not move tomorrow's reply
     away from the message everybody already saw.
     """
