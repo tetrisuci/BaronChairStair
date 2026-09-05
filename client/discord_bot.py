@@ -115,6 +115,7 @@ import presence_tracker
 import puzzle_commands
 import puzzle_recap
 from puzzle_commands import puzzle_command
+import report_commands
 
 log = logging.getLogger(__name__)
 
@@ -1502,6 +1503,10 @@ async def activity_now(interaction: discord.Interaction,
 
 bot.tree.add_command(activity)
 bot.tree.add_command(puzzle_command)
+# Its own top-level command rather than `/puzzle report`: Discord will not
+# let a command be both invocable and a group, and `/puzzle` is the one
+# people already type. See report_commands.py's header.
+bot.tree.add_command(report_commands.report_command)
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

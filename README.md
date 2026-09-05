@@ -28,6 +28,9 @@ BaronChairStair/
 │   ├── render.py             attack-burst highlight boards
 │   ├── presence_tracker.py   samples who is online, every 10 minutes
 │   ├── puzzle_commands.py    the /puzzle command; talks to the activity server
+│   ├── report_commands.py    /report — files a GitHub issue for a player
+│   ├── report_text.py        what a report looks like once published
+│   ├── test_report_text.py   `python3 -m unittest discover -s client`
 │   └── puzzle_recap.py       yesterday's results, replied to yesterday's post
 ├── activity/                 the Discord Activity (own README, own tests)
 ├── internship_poller.py      Greenhouse / Lever / Ashby / Workday poller
@@ -88,6 +91,28 @@ Once a day, after the puzzle turns over, the bot replies to that server's own
 how fast, who missed, and how long the server's run of solves is. It happens
 once per server per day, and only in servers that announced the puzzle in the
 first place, because the reply needs something to reply to.
+
+### `/report` — a bug, without a GitHub account
+
+```
+/report category:<Bugged puzzle | UI issue | …> description:<what happened>
+```
+
+Files a GitHub issue on the player's behalf, so somebody can say "puzzle 46 is
+unsolvable" without making an account. The title is their Discord display name
+and the category; the body is what they wrote, quoted, with a line saying who
+sent it and from which server.
+
+Its own command rather than `/puzzle report`: Discord will not let a command be
+both invocable and a group, and `/puzzle` is the one people already type.
+
+Needs `GITHUB_TOKEN` and `GITHUB_REPO`; without them the command still
+registers and explains what is missing. **It publishes text typed by anybody in
+the server, under the bot's identity, to whatever repository you name** — so the
+token should be fine-grained, scoped to Issues on that one repository, and able
+to do nothing else. `@mentions` and `#references` are defanged so a report
+cannot become a stranger's notification, the description is capped, and one
+player may file three reports an hour.
 
 ### `/activity` — who is around
 
