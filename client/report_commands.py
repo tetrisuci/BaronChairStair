@@ -18,6 +18,10 @@ the same bug should be able to see it is already known — so the confirmation a
 its link go to the channel. Refusals do not: a rate limit read out in front of
 everybody is a scolding, and it is nobody else's business.
 
+The line between them is whether the answer is about the *player*. Too long,
+too often, and not set up yet are all private. A GitHub outage is public,
+because it is about the world and the next person to try will hit it too.
+
 Not a subcommand of `/puzzle`. Discord will not let a command be both invocable
 and a group, and `/puzzle` is the one people type to announce the day; making it
 a group to fit this in would rename the command everybody already knows for the
@@ -180,6 +184,29 @@ async def report_command(
         )
         return
 
+    # Not wired up is a refusal, not an outage, and it belongs with the other
+    # four — above the deferral, answered privately.
+    #
+    # It shipped below it, which put "GITHUB_TOKEN or GITHUB_REPO is unset; the
+    # two-minute fix is in example.env" into the channel: operator-facing text,
+    # read out to players who can do nothing with it, and the exact failure a
+    # club hits on the day they turn the command on. It also contradicted
+    # `open_issue`'s own rule that a credential problem is logged and never
+    # shown. `_config()` is two `os.getenv` calls, so it costs nothing to ask
+    # here, before there is anything to wait for.
+    #
+    # Above the rate limits, not merely above the deferral. A club that has not
+    # finished setting the command up must not spend anybody's quota on saying
+    # so — that is the slot-burning this command was already fixed for once.
+    token, repo = _config()
+    if not token or not repo:
+        await interaction.response.send_message(
+            "Reports aren't wired up yet — an officer needs to finish setting this up. "
+            "Tell them, and try again after that.",
+            ephemeral=True,
+        )
+        return
+
     if not limiter.take(interaction.user.id):
         minutes = max(1, limiter.opens_in(interaction.user.id) // 60)
         await interaction.response.send_message(
@@ -202,8 +229,9 @@ async def report_command(
         )
         return
 
-    # Public from here. Everything below either files an issue or explains why
-    # the club's own setup stopped it, and both are worth the channel seeing.
+    # Public from here. What follows either files an issue, which the channel
+    # should see, or hits a GitHub outage — and "GitHub wouldn't take that just
+    # now" is a fact about the world rather than about this club.
     await interaction.response.defer(thinking=True)
 
     reporter = interaction.user.display_name
@@ -228,5 +256,11 @@ async def report_command(
     await interaction.followup.send(
         f"Filed as **{category.value}** — {url}\n"
         f"Reported by {interaction.user.mention}, on a public tracker under their "
-        "Discord display name. Reply on the issue to add to it."
+        "Discord display name. Reply on the issue to add to it.",
+        # Named, not pinged. The mention renders as their name and notifies
+        # nobody — they are standing right there, having just run the command,
+        # and every other broadcast in this bot pins `NO_MENTIONS` for the same
+        # reason. Mirrored rather than imported: `discord_bot` imports this
+        # module, so reaching back for its constant would be a cycle.
+        allowed_mentions=discord.AllowedMentions.none(),
     )
