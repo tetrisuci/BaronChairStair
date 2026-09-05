@@ -100,7 +100,7 @@ first place, because the reply needs something to reply to.
 
 Files a GitHub issue on the player's behalf, so somebody can say "puzzle 46 is
 unsolvable" without making an account. The title is their Discord display name
-and the category; the body is what they wrote, quoted, with a line saying who
+and the category; the body is what they wrote, followed by a line saying who
 sent it and from which server.
 
 Its own command rather than `/puzzle report`: Discord will not let a command be

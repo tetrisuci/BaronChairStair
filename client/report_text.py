@@ -121,24 +121,36 @@ def issue_body(description: str, *, reporter: str, guild: "str | None") -> str:
     """
     The report, and enough provenance to answer it.
 
-    The description is quoted rather than inlined. A `#` at the start of a line
-    is a heading and `---` is a rule, so unquoted text can style itself into
-    looking like part of the template — and the one thing a maintainer has to be
-    able to tell at a glance is which words are the player's.
+    **The description is the body, not a quotation of one.** It used to be
+    prefixed line by line with `> `, which is how the report ended up rendering
+    as a grey indented block underneath the only unquoted prose on the page —
+    the bot's own footer. That inverts the issue: a maintainer opens it to read
+    what broke, and what broke was the part styled as an aside.
+
+    The quoting was there to keep the player's words visibly theirs, since
+    unquoted text can style itself with a `#` heading or a `---` rule and look
+    like part of the template. That still holds, and it is worth less than
+    legibility: a report is a few sentences from a club member, the footer names
+    them and the server they wrote from, and a maintainer who wants certainty has
+    the edit history. Markdown inside a blockquote renders anyway — headings,
+    bold and rules all survive `> ` — so the quoting bought less containment than
+    it looked like it did.
+
+    What is *not* traded away is `defang`, which is what stops a report reaching
+    out of this page and pinging people or cross-linking somebody else's
+    repository. That runs on every path into here.
 
     Deliberately no Discord user id. The repository is public and an id is a
     durable handle to a person; the display name is what the club asked to
     publish, and it is enough to reply to somebody in the server.
     """
-    lines = defang(description).splitlines() or [""]
-    quoted = "\n".join(f"> {line}" for line in lines)
     where = f"in **{one_line(guild)}**" if guild else "in a direct message"
     return (
-        f"{quoted}\n"
+        f"{defang(description)}\n"
         f"\n"
         f"---\n"
-        f"Filed through `/report` by **{one_line(reporter)}** {where}. "
-        f"They have no GitHub account; reply here and an officer will pass it on."
+        f"*Filed with `/report` by **{one_line(reporter)}** {where}. "
+        f"They have no GitHub account — reply here and an officer will pass it on.*"
     )
 
 
