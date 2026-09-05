@@ -35,7 +35,6 @@ from discord import app_commands
 
 from report_text import (
     MAX_DESCRIPTION,
-    MIN_DESCRIPTION,
     REPORTS_PER_WINDOW,
     ReportLimiter,
     issue_body,
@@ -147,9 +146,15 @@ async def report_command(
     await interaction.response.defer(thinking=True, ephemeral=True)
 
     text = description.strip()
-    if len(text) < MIN_DESCRIPTION:
+    # No minimum length. A short report is still a report — "puzzle 46 is
+    # unsolvable" is eight characters of useful signal, and turning somebody
+    # away for brevity loses the thing the command exists to collect.
+    #
+    # Empty is still refused, because it is not a short report but the absence
+    # of one: `issue_body("")` files an issue whose whole body is the footer.
+    if not text:
         await interaction.followup.send(
-            "Tell us a bit more than that — what happened, and what you expected instead.",
+            "There was nothing in that report — say what happened and send it again.",
             ephemeral=True,
         )
         return
