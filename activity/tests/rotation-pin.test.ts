@@ -254,7 +254,6 @@ describe("what a pinned day is worth to the routes that read it", () => {
 });
 
 /**
- * ── ADDED IN REVIEW. BOTH OF THESE FAIL AGAINST THE CURRENT CODE. ───────────
  *
  * They are here as the demonstration of two confirmed defects, not as a fix;
  * see the review report. Delete them only by making them pass.
@@ -372,7 +371,7 @@ describe("a reviewer's correction survives the same way growth does", () => {
     // And the correction is real rather than the test having failed to make
     // one: the same pool ordered by the *corrected* difficulty does move, which
     // is precisely what `rushPoolFor` freezing the ordering key prevents.
-    const pool = after.store.pinnedRushPool(day)!.map((id) => after.archive.get(id)!);
+    const pool = after.store.pinnedRushPool(day)!.ids.map((id) => after.archive.get(id)!);
     expect(stackFor(pool, day)).not.toEqual(pinnedStack);
   });
 
@@ -390,5 +389,68 @@ describe("a reviewer's correction survives the same way growth does", () => {
     // lands on a server that is running.
     expect(after.archive.puzzles.length).toBe(before.archive.puzzles.length);
     expect(after.archive.get(easy[0]!.id)!.difficulty).toBe(easy[0]!.difficulty);
+  });
+});
+
+describe("a rebuilt sheet does not move a pinned rush stack", () => {
+  /*
+   * The half the first fix missed. `rushSequence` sorts on `rushBand`, which
+   * reads `difficulty`, so a pinned pool freezes the stack only if the band is
+   * frozen with it. The first version overlaid the difficulty from
+   * `archive.original(id)` — the source file *as it stands now* — which
+   * defended against a reviewer's correction and not at all against the thing
+   * that actually rewrites that file: `bun run puzzles`, which regenerates
+   * data/puzzles.json wholesale from the club's spreadsheet.
+   *
+   * Measured before the fix: membership identical, the day's three unmoved, and
+   * 26 of 40 slots holding a different puzzle — which `sequenceFor` then scores
+   * an in-flight ranked run against, segment by segment.
+   */
+  test("a puzzle re-rated in the club's file keeps the rung it was pinned at", () => {
+    const before = open(clubPath);
+    const day = before.archive.currentDay();
+    const pinnedStack = stackFor(before.schedule.rushPoolFor(day), day);
+
+    // The club re-rates a puzzle that is genuinely in this day's forty, and
+    // `bun run puzzles` writes the sheet out again.
+    const moved = before.archive.get(pinnedStack[12]!)!;
+    const rerated = JSON.parse(readFileSync(clubPath, "utf8")) as { puzzles: Puzzle[] };
+    const rebuiltPath = join(clubPath, "..", "puzzles-rerated.json");
+    writeFileSync(
+      rebuiltPath,
+      JSON.stringify({
+        puzzles: rerated.puzzles.map((puzzle) =>
+          puzzle.id === moved.id
+            ? { ...puzzle, difficulty: moved.difficulty > 5 ? 1 : 20 }
+            : puzzle,
+        ),
+      }),
+    );
+
+    const after = open(rebuiltPath);
+    expect(stackFor(after.schedule.rushPoolFor(day), day)).toEqual(pinnedStack);
+
+    // And the rebuild really did move it, so this is not a test that passes by
+    // failing to change anything: ordered by what the file says now, it walks.
+    const live = after.store.pinnedRushPool(day)!.ids.map((id) => after.archive.get(id)!);
+    expect(stackFor(live, day)).not.toEqual(pinnedStack);
+  });
+
+  test("a day pinned after a correction is pinned at the corrected rung", () => {
+    // The opposite failure of the same line. The old overlay was unconditional,
+    // so a day first pinned a month *after* a reviewer corrected a rating still
+    // ranked that puzzle on its stale one — DEPLOY.md promises the change moves
+    // the puzzle for future days, and for the rush half it moved it for none.
+    const first = open(clubPath);
+    const today = first.archive.currentDay();
+    const target = first.archive.puzzles.filter(isRushEligible)[3]!;
+    first.store.setOverride(target.id, { difficulty: 20 }, "reviewer");
+
+    const after = open(clubPath, first.store.overridesFor());
+    const future = today + 30;
+    const banded = after.schedule
+      .rushPoolFor(future)
+      .find((puzzle) => puzzle.id === target.id)!;
+    expect(banded.difficulty).toBe(20);
   });
 });

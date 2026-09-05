@@ -475,7 +475,6 @@ describe("the stored solve has to still solve the stored board", () => {
   });
 
   /**
-   * ADDED BY REVIEW — currently RED.
    *
    * `server/review-routes.ts` says at the top that its two guards are here
    * "rather than at load time, because `PuzzleArchive.load` runs at module
@@ -533,7 +532,6 @@ describe("the stored solve has to still solve the stored board", () => {
   });
 
   /**
-   * ADDED BY REVIEW — currently RED.
    *
    * `reverify` replays the stored log and then throws the replay away. It
    * compares two scalars — the attack and the placement count — and the archive

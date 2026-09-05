@@ -533,10 +533,20 @@ describe("writing down what a day dealt", () => {
     // ids in a different order are a different forty puzzles.
     const store = new Store(path);
     try {
+      const pool = (ids: readonly number[], bands: readonly number[]) =>
+        ids.map((id, index) => ({ id, difficulty: bands[index]! }));
+
       expect(store.pinnedRushPool(5)).toBeNull();
-      expect(store.pinRushPool(5, [30, 10, 20])).toEqual([30, 10, 20]);
-      expect(store.pinRushPool(5, [1, 2, 3])).toEqual([30, 10, 20]);
-      expect(store.pinnedRushPool(5)).toEqual([30, 10, 20]);
+      expect(store.pinRushPool(5, pool([30, 10, 20], [4, 9, 1]))).toEqual({
+        ids: [30, 10, 20],
+        difficulties: [4, 9, 1],
+      });
+      // The first ticket decides both halves; a later one reads them back.
+      expect(store.pinRushPool(5, pool([1, 2, 3], [7, 7, 7]))).toEqual({
+        ids: [30, 10, 20],
+        difficulties: [4, 9, 1],
+      });
+      expect(store.pinnedRushPool(5)).toEqual({ ids: [30, 10, 20], difficulties: [4, 9, 1] });
     } finally {
       store.close();
     }
@@ -554,7 +564,7 @@ describe("writing down what a day dealt", () => {
 
     const store = new Store(path);
     try {
-      expect(() => store.pinnedRushPool(4)).toThrow("not a list of puzzle ids");
+      expect(() => store.pinnedRushPool(4)).toThrow("not a list of numbers");
       expect(() => store.pinnedRushPool(5)).toThrow("not valid JSON");
     } finally {
       store.close();

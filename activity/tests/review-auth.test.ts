@@ -464,7 +464,6 @@ describe("letting a reviewer in", () => {
 
 describe("the window a link actually buys", () => {
   /**
-   * ADDED BY REVIEW — currently RED, and the second assertion is the defect.
    *
    * `tools/review-link.ts` prints "Anyone holding this link is a reviewer for
    * the next N minutes", and the README's bolded **What the link is worth** says

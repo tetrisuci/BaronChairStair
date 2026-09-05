@@ -40,11 +40,11 @@ resolve and the command picker looks unchanged.
 
 Daily recap (backed by puzzle_recap.py; polled every 5 minutes):
     Once the puzzle day turns over, the bot replies to that server's own
-    /puzzle play message with yesterday's results — solvers fastest first,
+    /puzzle message with yesterday's results — solvers fastest first,
     everyone who missed grouped after them, and the server's streak. Exactly
     once per server per day: the claim is a (guild_id, day) primary key in
     stats.db, not a timer, so a restart at any hour cannot double-post it.
-    A server that never ran /puzzle play gets no recap; there is nothing to
+    A server that never ran /puzzle gets no recap; there is nothing to
     reply to. This is the one place the bot mentions people on purpose.
 
 Activity tracker (backed by presence_tracker.py; samples every 10 minutes):

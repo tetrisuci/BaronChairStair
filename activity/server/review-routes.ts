@@ -2,10 +2,11 @@
  * Letting an officer in, showing them what is waiting, taking their verdict —
  * and taking their corrections to puzzles that are already in.
  *
- * There is no review page yet. What is here is the door and what is behind it: a
- * link minted on the VPS by `tools/review-link.ts` is traded for a bearer token,
- * and that token carries the queue and the two decisions. Enough for an officer
- * with `curl`, and exactly what the page will call when it exists.
+ * The door and what is behind it: a link minted on the VPS by
+ * `tools/review-link.ts` is traded for a bearer token, and that token carries
+ * the queue, the two decisions and the corrections. `client/review/` is the
+ * page that calls these, and every route here is reachable with `curl` alone,
+ * which is what the DEPLOY.md runbook leans on.
  *
  * The corrections are the second thing behind that door and they are a
  * different kind of write: an accept creates a puzzle, a PATCH here changes

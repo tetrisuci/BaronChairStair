@@ -79,10 +79,11 @@ export class ReviewPage {
   }
 
   async showQueue(flash?: string): Promise<void> {
+    const mine = ++this.navigation;
     this.painter = null;
     this.select("queue");
     const answer = await this.guard(() => this.api.queue());
-    if (!answer) return;
+    if (!answer || mine !== this.navigation) return;
     replaceChildren(
       this.body,
       flash ? el("p", { class: "review__status review__status--good", text: flash }) : null,
@@ -107,10 +108,11 @@ export class ReviewPage {
    * correction they came here to make.
    */
   private async showArchive(): Promise<void> {
+    const mine = ++this.navigation;
     this.painter = null;
     this.select("archive");
     const answer = await this.guard(() => this.api.puzzles());
-    if (!answer) return;
+    if (!answer || mine !== this.navigation) return;
 
     // Reassigned, never written into: the rows on screen were drawn from the
     // array this replaces, and `map` leaves that one exactly as it was.
@@ -152,6 +154,21 @@ export class ReviewPage {
 
     replaceChildren(this.body, el("div", { class: "review__archive" }, list.element, form));
   }
+
+  /**
+   * Which navigation is the current one.
+   *
+   * Every screen here paints synchronously, awaits its own fetch, and then
+   * replaces the body — with nothing cancelling the one it interrupted. Click
+   * Queue then Archive on a cold box and the archive paints first, then the
+   * older queue response lands on top of it: the Archive tab carries
+   * `aria-current` over a queue body. One click during the boot fetch is enough.
+   *
+   * A counter rather than an AbortController: the requests are cheap and
+   * already in flight, and what matters is not stopping them but refusing to
+   * paint an answer nobody is waiting for any more.
+   */
+  private navigation = 0;
 
   /** Which tab the officer is on. The detail screen is part of the queue's. */
   private select(open: Tab): void {

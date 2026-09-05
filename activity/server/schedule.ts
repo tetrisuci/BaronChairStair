@@ -155,23 +155,37 @@ export class DaySchedule {
       this.store.pinnedRushPool(day) ??
       this.store.pinRushPool(
         day,
-        this.archive.puzzles.filter(isRushEligible).map((puzzle) => puzzle.id),
+        this.archive.puzzles
+          .filter(isRushEligible)
+          .map((puzzle) => ({ id: puzzle.id, difficulty: puzzle.difficulty })),
       );
-    // Ordered by the difficulty the day was dealt with, not the one it carries
-    // now. A pinned pool freezes the rush's MEMBERSHIP; `rushSequence` finishes
-    // by sorting on `rushBand`, which reads `difficulty` — and difficulty is
-    // now a field a reviewer can correct. So a correction plus the restart that
-    // carries it would re-derive a different stack from the same `day_rush` row
-    // and the same ticket seed: the drift this table exists to stop, arriving
-    // through the one field nobody had thought of as rotation input.
-    //
-    // The rest of the puzzle is served corrected. A fixed title or goal is what
-    // the officer meant to change, and neither is an ordering key.
-    return pinned.map((id) => {
+    /*
+     * Ordered by the difficulty the day was dealt with, not the one the archive
+     * carries now.
+     *
+     * A pinned pool freezes the rush's MEMBERSHIP; `rushSequence` finishes by
+     * sorting on `rushBand`, which reads `difficulty` — so freezing the ids and
+     * reading their band live froze only half of it. Both ways of moving that
+     * band are real: a reviewer can correct it, and `bun run puzzles` rewrites
+     * `data/puzzles.json` wholesale from the club's sheet. Measured on the
+     * second: editing one puzzle's rating and restarting left the membership
+     * and the day's three untouched and moved 26 of 40 slots, which
+     * `sequenceFor` then scores an in-flight ranked run against.
+     *
+     * Reading it back from `day_rush` rather than from the archive is what
+     * closes both. An earlier version overlaid `archive.original(id)` — the
+     * source file as it stands right now — which defended against the reviewer
+     * and not against the rebuild, and also meant a correction never reached
+     * the ladder on any day, including days pinned long afterwards.
+     *
+     * The rest of the puzzle is served corrected. A fixed title or goal is what
+     * an officer meant to change, and neither is an ordering key.
+     */
+    return pinned.ids.map((id, index) => {
       const served = this.resolve(day, "rush pool member", id);
-      const source = this.archive.original(id);
-      return source && source.difficulty !== served.difficulty
-        ? { ...served, difficulty: source.difficulty }
+      const band = pinned.difficulties?.[index];
+      return band !== undefined && band !== served.difficulty
+        ? { ...served, difficulty: band }
         : served;
     });
   }

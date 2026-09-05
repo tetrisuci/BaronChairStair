@@ -32,6 +32,43 @@ import {
 
 /** Marks a run filed when a day held one puzzle and there was nothing to name. */
 const LEGACY_SLOT = "legacy";
+
+/** One member of a pinned rush pool: its id, and the band it was pinned at. */
+export interface PinnedMember {
+  readonly id: number;
+  readonly difficulty: number;
+}
+
+export interface PinnedRushPool {
+  readonly ids: readonly number[];
+  /**
+   * What each id's difficulty was on the day this row was written, or null for
+   * a row from before the column existed — in which case the caller has to fall
+   * back to the archive and accept that a rebuilt file moves the ladder.
+   */
+  readonly difficulties: readonly number[] | null;
+}
+
+/**
+ * A JSON column back as a list of numbers, or a loud failure.
+ *
+ * Parsed defensively even though this process wrote it. A JSON column is a blob
+ * to SQLite, so nothing but this checks it, and a list that came back holding a
+ * string or a null would not fail — it would reach `rushSequence`, deal an
+ * undefined puzzle, and score a run against it.
+ */
+function numberList(raw: string, named: string): number[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new Error(`${named} is not valid JSON`, { cause: error });
+  }
+  if (!Array.isArray(parsed) || !parsed.every((value) => Number.isFinite(value))) {
+    throw new Error(`${named} is not a list of numbers`);
+  }
+  return parsed as number[];
+}
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
@@ -224,7 +261,13 @@ CREATE TABLE IF NOT EXISTS day_puzzles (
 -- what they are all drawn from leaves the seed to do its job.
 CREATE TABLE IF NOT EXISTS day_rush (
   day        INTEGER PRIMARY KEY,
-  puzzle_ids TEXT NOT NULL
+  puzzle_ids TEXT NOT NULL,
+  -- The difficulty each id carried on the day it was pinned, in the same order.
+  -- rushSequence finishes by sorting on rushBand, which reads difficulty, so
+  -- freezing the members and reading their band from the live archive froze the
+  -- wrong half. Added by migration and nullable, so a row written before this
+  -- column falls back to the source and says so.
+  bands      TEXT
 );
 
 -- Puzzles players wrote, waiting for an officer. The queries are in
@@ -437,6 +480,16 @@ export class Store {
       // duration is the closest honest stand-in, and it keeps them from sorting
       // ahead of everybody at a displayed time of zero.
       "UPDATE runs SET total_ms = duration_ms WHERE total_ms = 0",
+    );
+    this.addMissingColumn(
+      "day_rush",
+      "bands",
+      "TEXT",
+      // Deliberately no backfill. The value wanted here is what the archive
+      // said on the day the row was written, and this process cannot know that
+      // — filling it from today's file would write a guess that looks like a
+      // record. Null means "not recorded", and `rushPoolFor` reads that as the
+      // instruction to fall back.
     );
     // Last, because it writes rows rather than shapes, and it must find every
     // table it touches already built.
@@ -1135,33 +1188,38 @@ export class Store {
    * holding a string or a null would not fail — it would reach `rushSequence`,
    * deal an undefined puzzle, and score a run against it.
    */
-  pinnedRushPool(day: number): number[] | null {
+  pinnedRushPool(day: number): PinnedRushPool | null {
     const row = this.db
-      .query<{ puzzle_ids: string }, [number]>("SELECT puzzle_ids FROM day_rush WHERE day = ?1")
+      .query<{ puzzle_ids: string; bands: string | null }, [number]>(
+        "SELECT puzzle_ids, bands FROM day_rush WHERE day = ?1",
+      )
       .get(day);
     if (!row) return null;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(row.puzzle_ids);
-    } catch (error) {
-      throw new Error(`Day ${day}'s pinned rush pool is not valid JSON`, { cause: error });
-    }
-    if (!Array.isArray(parsed) || !parsed.every((id) => Number.isInteger(id))) {
-      throw new Error(`Day ${day}'s pinned rush pool is not a list of puzzle ids`);
-    }
-    return parsed as number[];
+    const ids = numberList(row.puzzle_ids, `Day ${day}'s pinned rush pool`);
+    if (row.bands === null) return { ids, difficulties: null };
+    const difficulties = numberList(row.bands, `Day ${day}'s pinned rush bands`);
+    // A length mismatch means the two columns describe different pools, and
+    // there is no way to tell which is right. Falling back is the honest answer
+    // — the ids are still the membership, and the bands are refused whole
+    // rather than lined up against the wrong ids.
+    if (difficulties.length !== ids.length) return { ids, difficulties: null };
+    return { ids, difficulties };
   }
 
   /** Pins a day's rush pool, and answers with what is on file afterwards. */
-  pinRushPool(day: number, puzzleIds: readonly number[]): number[] {
-    if (puzzleIds.length === 0) throw new Error(`Refusing to pin day ${day} to an empty rush pool`);
+  pinRushPool(day: number, pool: readonly PinnedMember[]): PinnedRushPool {
+    if (pool.length === 0) throw new Error(`Refusing to pin day ${day} to an empty rush pool`);
     // Same race, same answer as {@link pinDay}: the first ticket of the day
     // decides the pool, and everybody else reads that decision back.
     this.db
-      .query<unknown, [number, string]>(
-        "INSERT OR IGNORE INTO day_rush (day, puzzle_ids) VALUES (?1, ?2)",
+      .query<unknown, [number, string, string]>(
+        "INSERT OR IGNORE INTO day_rush (day, puzzle_ids, bands) VALUES (?1, ?2, ?3)",
       )
-      .run(day, JSON.stringify(puzzleIds));
+      .run(
+        day,
+        JSON.stringify(pool.map((member) => member.id)),
+        JSON.stringify(pool.map((member) => member.difficulty)),
+      );
     const pinned = this.pinnedRushPool(day);
     if (!pinned) throw new Error(`Day ${day}'s rush pool was not on file immediately after pinning`);
     return pinned;

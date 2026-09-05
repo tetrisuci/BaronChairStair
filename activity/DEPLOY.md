@@ -174,7 +174,7 @@ If the title is the game's, the build is stale. Re-run `bun run build`, restart.
 **5. The review routes are switched on** (only if you set `REVIEW_SECRET`):
 
 ```sh
-curl -s -o /dev/null -w '%{http_code}\n' https://your-host/api/review/submissions
+curl -s -o /dev/null -w '%{http_code}\n' https://your-host/api/review/queue
 # 401 = on, and refusing you because you have no token. Correct.
 # 404 = REVIEW_SECRET is unset, or the service did not pick up the .env change.
 ```
@@ -277,8 +277,8 @@ Accept nothing until you are confident in the upgrade, and rollback stays free.
 
 ## Things that are wrong
 
-- **The service will not boot, and the error names a puzzle.** An accepted
-  puzzle failed validation at load. The message gives its id. Undo that
+- **The service will not boot, and the error names an accepted puzzle** (an id
+  of 100000 or more). It failed validation at load. The message gives its id. Undo that
   acceptance and restart:
 
   ```sh
@@ -292,3 +292,20 @@ Accept nothing until you are confident in the upgrade, and rollback stays free.
 - **`day_puzzles` is empty after a start that otherwise looked fine.** The
   backfill did not run. Do not accept anything and do not rebuild the puzzle
   data until you know why.
+- **The service will not boot, and the error names a *rush pool member*.** A
+  puzzle a pinned day was dealt has left `data/puzzles.json` — almost always
+  because `bun run puzzles` rebuilt the file from a sheet that no longer has it.
+  The pin refuses to re-derive rather than quietly deal a different puzzle, so
+  the failure is loud on purpose. Two exits, and the first is the right one
+  unless you know the day is finished with:
+
+  ```sh
+  # Preferred: put the puzzle back in the sheet and rebuild.
+  bun run puzzles
+
+  # Or, if that puzzle is genuinely gone for good, drop that day's pinned pool.
+  # The day's three are unaffected; only the rush stack is re-derived, and only
+  # for a day whose rush nobody can play any more anyway.
+  bun -e 'const {Database}=require("bun:sqlite");
+          new Database("data/daily.sqlite").run("DELETE FROM day_rush WHERE day = ?", [Number(process.argv[1])])' <the day from the error>
+  ```

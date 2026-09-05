@@ -720,8 +720,15 @@ export function createBuilder(callbacks: BuilderCallbacks, guest: boolean): Buil
       say(blocked);
       return;
     }
-    testedDraft = bench;
-    callbacks.onTest(toPuzzle(bench));
+    // Stamped after the hand-over, not before it. `App.startBuilderTest` opens
+    // by draining the outgoing run into `keepSolve`, so a stamp written first
+    // is the board that call then measures the *previous* run against — and a
+    // stroke still open when Test is pressed commits under the live run, which
+    // is how a log played on one board reached another. Nothing inside
+    // `onTest` can end the new run, so the later stamp is not a race.
+    const next = bench;
+    callbacks.onTest(toPuzzle(next));
+    testedDraft = next;
   }
 
   /**

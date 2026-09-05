@@ -205,9 +205,16 @@ function foldGoalText(text: string): string {
  *
  * Filtering at the input means the code always says what is on screen — but
  * only because the view writes the result back into the field on blur.
+ *
+ * Control characters go the way the title's do, and for the reason
+ * `sanitizeTitle` already gives: the submission route refuses them, so folding
+ * here turns a paste into a shrug instead of turning the author away at the end
+ * with a 400 they cannot see the cause of. It is not a browser-paste worry
+ * either — `TEXT_CODE_PAGE` covers 1–31 and 127, so a blueprint code round-trips
+ * a tab straight into this field through Load.
  */
 export function sanitizeGoal(text: string): string {
-  return foldGoalText(text).slice(0, MAX_GOAL);
+  return foldGoalText(text).replace(CONTROL_CHARACTERS, "").slice(0, MAX_GOAL);
 }
 
 /** C0 and DEL: typeable by nobody, pasteable by anybody. */

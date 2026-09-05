@@ -1122,11 +1122,6 @@ describe("the solve a test leaves behind", () => {
     expect(ui.builder.keptSolve()).toBe(kept);
   });
 
-  /*
-   * REVIEW — ADDED BY A REVIEWER, AND BOTH OF THESE FAIL ON PURPOSE.
-   * They are not fixed here; each one names its own smallest fix.
-   */
-
   test("a draft edited while the run is on it does not keep that run", () => {
     // The stash's whole guarantee is maintained in one place — `setBench` drops
     // a solve the moment the draft stops matching it — and that only holds
@@ -1453,5 +1448,40 @@ describe("the goal, against what a run managed", () => {
     );
     // Nothing to add when the run did only what was asked.
     expect(extraClears(quad, { clears: ["quad"], attack: 4 })).toBe("");
+  });
+});
+
+describe("the solve that gets submitted was played on the board being submitted", () => {
+  test("a run displaced by Play again is not pinned to the new draft", () => {
+    // The bypass the first guard left open. `startTest` stamped the draft it
+    // was about to hand over *before* calling `onTest` — and the app's
+    // `startBuilderTest` opens by draining the outgoing run into `keepSolve`.
+    // So on a second Test, the previous run's log was measured against a stamp
+    // that already named the board now on screen, and a draft that moved
+    // between the two runs was never noticed. Reachable with a stroke still
+    // open when Test is activated: a second finger, or Tab-and-Enter with the
+    // mouse button down.
+    const ui = mount();
+    ui.type(ui.pieces, "T");
+    ui.paint(ui.bottomRow(), 0);
+
+    // A run on the board as it stands, handed back the way the app hands it.
+    ui.press("Test");
+    const played = ui.tested[ui.tested.length - 1]!;
+    ui.builder.keepSolve({
+      snapshot: { piecesPlaced: 1 } as never,
+      events: [{ frame: 0, type: "keydown", data: { key: "hardDrop", subframe: 0 } }],
+      handling: {} as never,
+    });
+    expect(ui.builder.keptSolve()).not.toBeNull();
+
+    // The board moves, then Test is pressed again. The stash must not survive
+    // onto a board its log was never played on.
+    ui.builder.endTest();
+    ui.paint(ui.bottomRow(), 5);
+    expect(ui.builder.keptSolve()).toBeNull();
+    ui.press("Test");
+    expect(ui.tested[ui.tested.length - 1]!.board).not.toEqual(played.board);
+    expect(ui.builder.keptSolve()).toBeNull();
   });
 });
