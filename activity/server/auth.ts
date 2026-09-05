@@ -261,7 +261,15 @@ export async function readRushTicket(token: unknown): Promise<RushTicket> {
   }
   // A signature proves the server wrote it, not that it wrote something sane;
   // a ticket from an older build could be missing any of this.
+  //
+  // The null check first, because `JSON.parse("null")` succeeds and every
+  // `typeof ticket.x` below it then throws a TypeError — answered 500 with a
+  // stack where every other malformed ticket is a 400. `readSession` and
+  // `readReviewGrant` both check shape before anything else for the same
+  // reason; this was the one that did not.
   if (
+    ticket === null ||
+    typeof ticket !== "object" ||
     typeof ticket.playerId !== "string" ||
     !Number.isInteger(ticket.day) ||
     !Number.isInteger(ticket.seed) ||

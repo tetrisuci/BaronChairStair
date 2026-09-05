@@ -489,6 +489,26 @@ function toArchivePuzzle(submission: Submission): Puzzle {
  * is a kind that eventually has two formats; a handful of accepted rows read
  * once per process is not worth that.
  */
+/**
+ * Whether one accepted puzzle exists, without reading any of it.
+ *
+ * `readAcceptedPuzzles` is the wrong tool for an existence question: it selects
+ * every column of every accepted row and `JSON.parse`s five of them per row —
+ * `board`, `queue`, `solution`, `handling`, and `events`, which is the author's
+ * raw input log and is bounded only by the 512 KB body cap. All of that to
+ * answer yes or no on the 404 path of a correction.
+ */
+export function isAcceptedPuzzleId(db: Database, puzzleId: number): boolean {
+  return (
+    db
+      .query<{ one: number }, [number]>(
+        `SELECT 1 AS one FROM submissions
+          WHERE puzzle_id = ?1 AND status = 'accepted' LIMIT 1`,
+      )
+      .get(puzzleId) !== null
+  );
+}
+
 export function readAcceptedPuzzles(db: Database): Puzzle[] {
   return db
     .query<SubmissionRow, []>(

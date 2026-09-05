@@ -532,6 +532,7 @@ describe("the link", () => {
     globalThis.window = page as unknown as typeof globalThis.window;
     const grant = takeGrant();
     expect(page.location.search).toBe("");
+    expect(page.location.hash).toBe("");
     return grant;
   }
 
@@ -541,7 +542,16 @@ describe("the link", () => {
    * expires, for anybody. Leaving it in the address bar leaves it in a
    * screenshot of the queue and in the history of a shared laptop.
    */
-  test("is read out of ?t and taken out of the address bar", () => {
+  test("is read out of #t and taken out of the address bar", () => {
+    expect(at("https://local.test/review#t=a-signed-grant")).toBe("a-signed-grant");
+  });
+
+  /**
+   * Why the fragment: a browser never puts it in the request line, so the one
+   * copy of the token nobody can be careful with — the reverse proxy's access
+   * log — never gets written. `?t=` was in every one of them.
+   */
+  test("a link minted by an older build still works", () => {
     expect(at("https://local.test/review?t=a-signed-grant")).toBe("a-signed-grant");
   });
 

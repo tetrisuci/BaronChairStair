@@ -80,6 +80,7 @@ export interface ReviewDependencies {
     | "clearOverride"
     | "overrideHistory"
     | "acceptedPuzzles"
+    | "hasAcceptedPuzzle"
   >;
   /**
    * The archive, for the puzzles a correction is *about*.
@@ -90,7 +91,7 @@ export interface ReviewDependencies {
    * lands; the corrections themselves are read out of the store on every
    * request. Source plus the row on file is the only pair that is never behind.
    */
-  readonly archive: Pick<PuzzleArchive, "originals" | "original">;
+  readonly archive: Pick<PuzzleArchive, "originals" | "original" | "correctionsApplied">;
 }
 
 function requireReviewEnabled(secret: string): void {
@@ -358,11 +359,22 @@ function toReviewPuzzle(
   original: Puzzle,
   override: PuzzleOverride | undefined,
   history: readonly OverrideLogEntry[] = [],
+  /**
+   * Whether this server is serving its corrections at all.
+   *
+   * `correctedOrSource` refuses the whole set when the corrected archive
+   * empties a daily band, and that decision is invisible from a single
+   * override row — so a page built without it showed corrected values with
+   * `overridden: true` while every player was being served the source.
+   */
+  applied = true,
 ) {
-  const usable = override !== undefined && overrideProblem(override) === null;
+  const usable = applied && override !== undefined && overrideProblem(override) === null;
   return {
     ...toListing(usable ? withOverride(original, override) : original),
     overridden: override !== undefined,
+    /** On file, but not in force. The page has to say which. */
+    shelved: override !== undefined && !usable,
     original: {
       title: original.title,
       author: original.author,
@@ -398,7 +410,7 @@ function correctablePuzzle(
   // started is not in it — and answering that with "there is no puzzle N" is
   // false at exactly the moment an officer is most likely to want a
   // correction, having just watched the adjacent route mint the id.
-  if (store.acceptedPuzzles().some((accepted) => accepted.id === id)) {
+  if (store.hasAcceptedPuzzle(id)) {
     throw new HTTPException(409, {
       message:
         `Puzzle ${id} was accepted since this server started; it joins the archive at ` +
@@ -561,25 +573,34 @@ export function registerReviewRoutes(app: AppRouter, deps: ReviewDependencies): 
     const listed = new Set(archive.originals.map((puzzle) => puzzle.id));
     const orphans = [...overrides.values()]
       .filter((override) => !listed.has(override.puzzleId))
-      .map((override) => ({
-        id: override.puzzleId,
-        title: null,
-        author: null,
-        goal: null,
-        difficulty: null,
-        set: null,
-        orphaned: true as const,
-        overridden: true as const,
-        original: null,
-        updatedAt: override.updatedAt,
-        correctedBy: correctedBy(store.overrideHistory(override.puzzleId)),
-        history: store.overrideHistory(override.puzzleId),
-      }));
+      .map((override) => {
+        // Bound once: the same query ran twice per orphan, for `correctedBy`
+        // and for the row beside it.
+        const history = store.overrideHistory(override.puzzleId);
+        // Only what an orphan actually has. The nulled-out puzzle fields this
+        // used to carry were what the client's list tried to search and paint
+        // — `null.toLowerCase()` took the Archive tab down on the first
+        // keystroke — and `client/review/api.ts` now models this shape as its
+        // own type rather than as a `ReviewPuzzle` with holes in it.
+        return {
+          id: override.puzzleId,
+          orphaned: true as const,
+          overridden: true as const,
+          updatedAt: override.updatedAt,
+          correctedBy: correctedBy(history),
+          history,
+        };
+      });
     return c.json({
       reviewer: c.get("reviewer").subject,
       puzzles: [
         ...archive.originals.map((puzzle) =>
-          toReviewPuzzle(puzzle, overrides.get(puzzle.id), store.overrideHistory(puzzle.id)),
+          toReviewPuzzle(
+            puzzle,
+            overrides.get(puzzle.id),
+            store.overrideHistory(puzzle.id),
+            archive.correctionsApplied,
+          ),
         ),
         ...orphans,
       ],
@@ -628,7 +649,12 @@ export function registerReviewRoutes(app: AppRouter, deps: ReviewDependencies): 
     const override = store.setOverride(puzzle.id, changes, c.get("reviewer").subject);
     return c.json({
       ok: true,
-      puzzle: toReviewPuzzle(puzzle, override ?? undefined, store.overrideHistory(puzzle.id)),
+      puzzle: toReviewPuzzle(
+        puzzle,
+        override ?? undefined,
+        store.overrideHistory(puzzle.id),
+        archive.correctionsApplied,
+      ),
     });
   });
 
@@ -654,7 +680,9 @@ export function registerReviewRoutes(app: AppRouter, deps: ReviewDependencies): 
     return c.json({
       ok: true,
       reverted,
-      puzzle: puzzle ? toReviewPuzzle(puzzle, undefined, store.overrideHistory(id)) : null,
+      puzzle: puzzle
+        ? toReviewPuzzle(puzzle, undefined, store.overrideHistory(id), archive.correctionsApplied)
+        : null,
     });
   });
 }

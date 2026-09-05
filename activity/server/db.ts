@@ -19,6 +19,7 @@ import {
   acceptSubmission,
   countPendingSubmissions,
   insertSubmission,
+  isAcceptedPuzzleId,
   readAcceptedPuzzles,
   readPendingSubmissions,
   readSubmission,
@@ -64,8 +65,11 @@ function numberList(raw: string, named: string): number[] {
   } catch (error) {
     throw new Error(`${named} is not valid JSON`, { cause: error });
   }
-  if (!Array.isArray(parsed) || !parsed.every((value) => Number.isFinite(value))) {
-    throw new Error(`${named} is not a list of numbers`);
+  // `isInteger`, not `isFinite`: every list this reads is puzzle ids or
+  // difficulty bands, and a 1.5 that passed here would not fail until
+  // `resolve()` could not find a puzzle, which is a worse place to hear it.
+  if (!Array.isArray(parsed) || !parsed.every((value) => Number.isInteger(value))) {
+    throw new Error(`${named} is not a list of whole numbers`);
   }
   return parsed as number[];
 }
@@ -1057,7 +1061,6 @@ export class Store {
     return rows.map(toStoredRushRun);
   }
 
-  /** A player's best rush ever, for the sign-off after a run. */
   /**
    * The all-time rush board: each player's best run, best first.
    *
@@ -1102,6 +1105,7 @@ export class Store {
       }));
   }
 
+  /** A player's best rush ever, for the sign-off after a run. */
   bestRush(playerId: string): number {
     return (
       this.db
@@ -1288,6 +1292,11 @@ export class Store {
     return readAcceptedPuzzles(this.db);
   }
 
+  /** Whether an id names an accepted puzzle, without reading the puzzle. */
+  hasAcceptedPuzzle(puzzleId: number): boolean {
+    return isAcceptedPuzzleId(this.db, puzzleId);
+  }
+
   // ── Corrections to a puzzle's metadata ─────────────────────────────────────
   //
   // Thin for the same reason the block above is: the SQL and the row mapping
@@ -1323,12 +1332,12 @@ export class Store {
     return writeOverride(this.db, puzzleId, fields, updatedBy);
   }
 
-  /** Reverts a puzzle to its source. @returns whether there was one to revert. */
   /** Every correction ever made to one puzzle, oldest first. */
   overrideHistory(puzzleId: number): OverrideLogEntry[] {
     return overrideHistory(this.db, puzzleId);
   }
 
+  /** Reverts a puzzle to its source. @returns whether there was one to revert. */
   clearOverride(puzzleId: number, revertedBy: string): boolean {
     return deleteOverride(this.db, puzzleId, revertedBy);
   }

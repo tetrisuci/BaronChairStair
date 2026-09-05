@@ -72,6 +72,23 @@ const MAX_NOTE_LENGTH = 500;
  * into the field they claim to have come from, and this text is bound for a
  * review page and a log line.
  */
+/**
+ * Characters an author can put in a title that a reviewer cannot see.
+ *
+ * C0 and DEL, as before, plus the three families that render as nothing or as
+ * something else: the bidirectional overrides (U+202A-U+202E, U+2066-U+2069),
+ * which can make a title read right-to-left and display in an order the string
+ * does not have; the zero-width joiners and spaces (U+200B-U+200F, U+FEFF);
+ * and the line and paragraph separators (U+2028, U+2029).
+ *
+ * Not an escaping problem — the review tool sets every one of these with
+ * `textContent` and there is no `innerHTML` in that directory. It is a judgement
+ * problem: an officer accepts a puzzle by reading its title, and none of these
+ * let them read what they are accepting.
+ */
+const INVISIBLE =
+  /[\u0000-\u001f\u007f\u200b-\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069\ufeff]/;
+
 function readText(value: unknown, field: string, maxLength: number): string {
   if (typeof value !== "string" || !value.trim()) {
     throw new HTTPException(400, { message: `${field} is required` });
@@ -80,7 +97,7 @@ function readText(value: unknown, field: string, maxLength: number): string {
   if (text.length > maxLength) {
     throw new HTTPException(400, { message: `${field} is longer than ${maxLength} characters` });
   }
-  if (/[\u0000-\u001f\u007f]/.test(text)) {
+  if (INVISIBLE.test(text)) {
     throw new HTTPException(400, { message: `${field} holds characters that cannot be typed` });
   }
   return text;

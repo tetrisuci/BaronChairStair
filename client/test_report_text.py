@@ -18,7 +18,6 @@ is why the rules live in their own module.
 import unittest
 
 from report_text import (
-    defang,
     MAX_DESCRIPTION,
     MAX_NAME,
     MAX_TITLE,
@@ -147,10 +146,6 @@ class Caps(unittest.TestCase):
         self.assertLess(MAX_DESCRIPTION, 65_536)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class LineBreaks(unittest.TestCase):
     """The bug these caught: `\\n` is inside C0, so defanging flattened a report."""
 
@@ -173,3 +168,69 @@ class LineBreaks(unittest.TestCase):
         footer = body.split("---\n")[-1]
         self.assertNotIn("\n", footer.strip())
         self.assertIn("ada **staff**", footer)
+
+
+class Autolinks(unittest.TestCase):
+    """
+    All four forms GitHub turns into a cross-reference.
+
+    The two carrying a word character before the marker were the gap: every
+    lookbehind in the module rejects them, so `owner/repo#1` published verbatim
+    and posted a backlink into an unrelated public repository.
+    """
+
+    def test_a_bare_issue_number_is_defanged(self):
+        self.assertEqual(defang("#26"), "#<!---->26")
+
+    def test_a_cross_repository_reference_is_defanged(self):
+        self.assertEqual(defang("rails/rails#1"), "rails/rails#<!---->1")
+
+    def test_a_gh_reference_is_defanged(self):
+        self.assertEqual(defang("GH-1234"), "GH-<!---->1234")
+
+    def test_a_gh_reference_keeps_the_case_it_was_typed_in(self):
+        # The module's promise is that the text reads exactly as written; a
+        # bare replacement rewrote "gh-9" to "GH-9".
+        self.assertEqual(defang("gh-9"), "gh-<!---->9")
+
+    def test_a_mention_after_a_slash_is_defanged(self):
+        # The `/` exemption belongs to `#` (a URL fragment) and was letting
+        # `a/@everyone` through.
+        self.assertEqual(defang("a/@everyone"), "a/@<!---->everyone")
+
+    def test_an_email_address_is_left_alone(self):
+        self.assertEqual(defang("write to foo@bar.com"), "write to foo@bar.com")
+
+    def test_a_url_fragment_is_left_alone(self):
+        self.assertEqual(defang("example.com/#anchor"), "example.com/#anchor")
+
+    def test_an_ordinary_hyphenated_word_is_left_alone(self):
+        self.assertEqual(defang("high-5"), "high-5")
+
+
+class Refunds(unittest.TestCase):
+    """A report that was never filed must not cost the player a slot."""
+
+    def test_a_refunded_slot_can_be_used_again(self):
+        limiter = ReportLimiter(limit=1)
+        self.assertTrue(limiter.take(7))
+        self.assertFalse(limiter.take(7))
+        limiter.refund(7)
+        self.assertTrue(limiter.take(7))
+
+    def test_a_refund_gives_back_only_the_last_slot(self):
+        limiter = ReportLimiter(limit=3)
+        for _ in range(3):
+            limiter.take(7)
+        limiter.refund(7)
+        self.assertTrue(limiter.take(7))
+        self.assertFalse(limiter.take(7))
+
+    def test_refunding_a_player_who_never_filed_is_harmless(self):
+        limiter = ReportLimiter(limit=1)
+        limiter.refund(99)
+        self.assertTrue(limiter.take(99))
+
+
+if __name__ == "__main__":
+    unittest.main()

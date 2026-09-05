@@ -453,9 +453,61 @@ export function createCorrectionView(
           : "no correction on file",
       }),
     ),
+    // Only when it is true, so the ordinary case gains no furniture. The
+    // fields above show the *source* in this state — the server is serving
+    // those — so without this line the officer reads their correction as
+    // having silently vanished.
+    puzzle.shelved
+      ? el("p", {
+          class: "review__status review__status--bad",
+          text:
+            "This correction is on file but not in force — the server is serving the " +
+            "source. Either this row is malformed, or the corrected archive left a daily " +
+            "band with no puzzle in it and every correction was refused together. The " +
+            "service log names which.",
+        })
+      : null,
     ...rows.map((row) => row.element),
     el("p", { class: "review__note", text: UNEDITABLE_NOTE }),
     el("div", { class: "btnrow" }, save, revertAll),
     status,
+  );
+}
+
+/**
+ * The form half of an orphaned correction: an explanation and one button.
+ *
+ * A correction row whose puzzle has left `data/puzzles.json`. There is nothing
+ * to correct — no source to compare against and no live values to edit — so
+ * this is not `createCorrectionView` with the boxes hidden. It is the other
+ * thing an officer can do with one, said plainly.
+ *
+ * It matters more than tidiness: the archive merge is by id alone, so a
+ * correction left behind at #57 is inherited by whatever the club numbers 57
+ * next, and the officer would be looking at a title nobody typed.
+ */
+export function orphanPanel(id: number, flash: string | undefined, onDelete: () => void): HTMLElement {
+  const remove = el("button", {
+    class: "btn btn--small",
+    text: "Delete this correction",
+    attrs: { type: "button" },
+    on: { click: onDelete },
+  });
+  return panel(
+    `Puzzle #${id}`,
+    {},
+    el("p", {
+      class: "review__note",
+      text:
+        `There is no puzzle #${id} in the archive any more — almost always because ` +
+        "`bun run puzzles` rebuilt the file from a sheet that no longer has it. The " +
+        "correction is still on file, and the merge is by id, so whatever the club " +
+        `numbers ${id} next would inherit it.`,
+    }),
+    el("div", { class: "btnrow" }, remove),
+    el("p", {
+      class: `review__status${flash ? " review__status--good" : ""}`,
+      text: flash ?? "",
+    }),
   );
 }

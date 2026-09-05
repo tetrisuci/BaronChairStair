@@ -44,11 +44,29 @@ BODY_CONTROLS = re.compile(r"[\x00-\x09\x0b-\x1f\x7f]")
 #: Written by whichever machine the player is on, and never meaningful.
 LINE_ENDINGS = re.compile(r"\r\n?")
 
-#: The two things GitHub turns into an action rather than text. `@name` pings a
-#: person or a whole team with nothing to do with this club, and `#123` links an
-#: unrelated issue and posts a backlink into it. Both are how a report from a
-#: stranger becomes somebody else's notification.
-MENTION = re.compile(r"(?<![\w/])([@#])(?=[A-Za-z0-9_-])")
+#: The things GitHub turns into an action rather than text. `@name` pings a
+#: person or a whole team with nothing to do with this club, and an issue
+#: reference links an unrelated issue and posts a backlink into it. Both are how
+#: a report from a stranger becomes somebody else's notification.
+#:
+#: Separate patterns per character because the exemptions differ. A `#` after a
+#: word character or a slash is a URL fragment (`example.com/#anchor`), not a
+#: reference — but that same `/` exemption applied to `@` let `a/@everyone`
+#: through, and a slash does not stop GitHub reading a mention.
+MENTION = re.compile(r"(?<!\w)@(?=[A-Za-z0-9_-])")
+ISSUE_REF = re.compile(r"(?<![\w/])#(?=[A-Za-z0-9_-])")
+
+#: The other two of GitHub's four autolink forms, which the two above cannot
+#: reach: `owner/repo#123` and `GH-123` both carry a word character in front of
+#: the marker, so every lookbehind here rejects them. Left alone they are the
+#: worse half of the problem — a cross-repository reference posts the backlink
+#: into *somebody else's* repository, which is the failure this module exists to
+#: prevent, under the bot's identity, from one `/report`.
+CROSS_REPO = re.compile(r"([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)#(?=\d)")
+#: Captured rather than matched so the substitution can put the author's own
+#: capitalisation back. A bare "GH-" replacement rewrites "gh-9" to "GH-9",
+#: and this module's whole promise is that the text reads as it was typed.
+GH_REF = re.compile(r"\b(GH-)(?=\d)", re.IGNORECASE)
 
 
 def defang(text: str) -> str:
@@ -61,12 +79,21 @@ def defang(text: str) -> str:
     silently rewrite an email address or a handle somebody meant to quote, which
     is a worse lie than a mention that does not fire.
 
-    The lookbehind leaves `foo@bar` and a URL's `#fragment` alone: GitHub only
-    linkifies these at a word boundary, so neither needs defanging and both
-    would be disfigured by it.
+    The lookbehinds leave `foo@bar` and a URL's `#fragment` alone: GitHub does
+    not linkify those, so neither needs defanging and both would be disfigured
+    by it.
+
+    All four of GitHub's autolink forms are covered — `#26`, `GH-26`,
+    `owner/repo#26` and the organisation form, which shares a pattern with the
+    third. The two carrying a word character before the marker are matched
+    first: after they are commented the bare `#` rule cannot see them, and
+    running it first would not have found them anyway.
     """
-    normalised = BODY_CONTROLS.sub(" ", LINE_ENDINGS.sub("\n", text))
-    return MENTION.sub(r"\1<!---->", normalised.strip())
+    normalised = BODY_CONTROLS.sub(" ", LINE_ENDINGS.sub("\n", text)).strip()
+    marked = CROSS_REPO.sub(r"\1#<!---->", normalised)
+    marked = GH_REF.sub(r"\1<!---->", marked)
+    marked = MENTION.sub("@<!---->", marked)
+    return ISSUE_REF.sub("#<!---->", marked)
 
 
 def one_line(text: str) -> str:
@@ -143,6 +170,23 @@ class ReportLimiter:
             return False
         recent.append(moment)
         return True
+
+    def refund(self, user_id: int) -> None:
+        """
+        Gives back the most recent slot `take` counted.
+
+        For the report that was allowed and then could not be filed — an unset
+        token, a GitHub 5xx. Without this a club that has not finished setting
+        up lets a player burn all three attempts on "Reports aren't wired up
+        yet" and then locks them out for an hour with nothing filed, which is
+        the rate limit punishing them for the club's own misconfiguration.
+
+        Pops the last timestamp rather than clearing the list: a player who
+        filed two successfully and failed the third should be left holding two.
+        """
+        filed = self._filed.get(user_id)
+        if filed:
+            filed.pop()
 
     def opens_in(self, user_id: int, now: "float | None" = None) -> int:
         """Seconds until this player may file again. Zero when they may now."""

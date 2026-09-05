@@ -564,7 +564,7 @@ describe("writing down what a day dealt", () => {
 
     const store = new Store(path);
     try {
-      expect(() => store.pinnedRushPool(4)).toThrow("not a list of numbers");
+      expect(() => store.pinnedRushPool(4)).toThrow("not a list of whole numbers");
       expect(() => store.pinnedRushPool(5)).toThrow("not valid JSON");
     } finally {
       store.close();

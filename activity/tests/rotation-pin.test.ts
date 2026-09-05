@@ -254,11 +254,15 @@ describe("what a pinned day is worth to the routes that read it", () => {
 });
 
 /**
+ * The two defects the pin was built to close, kept as the proof it stays closed.
  *
- * They are here as the demonstration of two confirmed defects, not as a fix;
- * see the review report. Delete them only by making them pass.
+ * Both were real and both now pass: a backfill that contradicted a run already
+ * on file, and a rush pool that floated when the archive grew under it. They
+ * were written first as failing tests and the banner over them said so; the
+ * banner outlived the fix, telling a reader the recap could still name a puzzle
+ * nobody was dealt.
  */
-describe("what the pin still gets wrong about the day it ships on", () => {
+describe("what the pin gets right about the day it ships on", () => {
   /**
    * A database whose runs were filed before any of this existed, opened for the
    * first time by a build that has the backfill — after the club rebuilt

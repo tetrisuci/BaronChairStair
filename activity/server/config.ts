@@ -112,6 +112,32 @@ export const config = {
    * pulled this change.
    */
   reviewSecret: process.env.REVIEW_SECRET ?? "",
+  /**
+   * Whether a forwarding header may name the caller for rate-limiting.
+   *
+   * `callerKey`'s whole premise is that the address is "the only identity a
+   * caller cannot mint at will" — but a header is exactly that, mintable, and
+   * it was trusted unconditionally. Anything directly reachable could send a
+   * fresh `Cf-Connecting-Ip` per request and get a fresh bucket every time,
+   * which is no limit at all on the routes that run the engine.
+   *
+   * Off by default **in production**, because the failure it prevents is silent
+   * and the failure it causes is loud: with this unset behind a proxy every
+   * player shares one bucket and starts seeing 429s, which somebody notices
+   * within the hour. **Set it to `true` wherever cloudflared, nginx or Caddy
+   * sits in front** — `server/index.ts` warns at start-up when it is not.
+   *
+   * On everywhere else, because there is no proxy to lie to and nobody to lie:
+   * a dev server and the test suite reach Hono through `fetch` with no socket
+   * behind it, so there is no peer address to key on and every caller would
+   * share one bucket. The suite sets `Cf-Connecting-Ip` deliberately to hold
+   * two callers apart, which is the behaviour being tested.
+   *
+   * An explicit setting always wins, in both directions.
+   */
+  trustProxy: process.env.TRUST_PROXY?.trim()
+    ? process.env.TRUST_PROXY.trim() === "true"
+    : !isProduction,
   paths: {
     puzzles: resolve(import.meta.dir, "../data/puzzles.json"),
     database: process.env.DATABASE_PATH

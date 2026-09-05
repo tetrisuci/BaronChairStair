@@ -65,7 +65,7 @@ export const apiError: ErrorHandler<{ Variables: Variables }> = (error, c) => {
     return error.res ?? c.json({ error: error.message }, error.status);
   }
   if (error instanceof AuthError) {
-    return c.json({ error: error.message }, error.status as 401);
+    return c.json({ error: error.message }, error.status);
   }
   // A malformed run is a bad request, not a server fault; saying so keeps real
   // faults visible in the log instead of drowning in client bugs.

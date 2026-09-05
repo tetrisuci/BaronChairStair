@@ -28,7 +28,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { Window } from "happy-dom";
 import { ApiError } from "../client/src/api";
-import type { PuzzleChanges, ReviewPuzzle } from "../client/review/api";
+import type { ArchiveRow, OrphanedOverride, PuzzleChanges, ReviewPuzzle } from "../client/review/api";
 import { createArchiveView } from "../client/review/archive";
 import { createCorrectionView } from "../client/review/correction";
 import { ReviewPage, type ReviewCalls } from "../client/review/page";
@@ -70,6 +70,7 @@ const CLUB: ReviewPuzzle = {
   targetAttack: 4,
   community: false,
   overridden: false,
+  shelved: false,
   original: {
     title: "Tuck the T",
     author: "roland",
@@ -94,6 +95,7 @@ const CORRECTED: ReviewPuzzle = {
   targetAttack: 8,
   community: false,
   overridden: true,
+  shelved: false,
   original: {
     title: "Quad frm the well",
     author: "roland",
@@ -118,6 +120,7 @@ const PLAYER: ReviewPuzzle = {
   targetAttack: 4,
   community: true,
   overridden: false,
+  shelved: false,
   original: {
     title: "Notch",
     author: "petra",
@@ -168,7 +171,7 @@ function rowFor(root: Element, label: string): Element {
 
 // ── The list ─────────────────────────────────────────────────────────────────
 
-function driveList(puzzles: readonly ReviewPuzzle[] = ALL) {
+function driveList(puzzles: readonly ArchiveRow[] = ALL) {
   const opened: number[] = [];
   const refreshed: number[] = [];
   const view = createArchiveView(puzzles, {
@@ -177,6 +180,65 @@ function driveList(puzzles: readonly ReviewPuzzle[] = ALL) {
   });
   return { view, element: view.element, opened, refreshed };
 }
+
+/**
+ * A correction whose puzzle has left `data/puzzles.json`.
+ *
+ * The shape the route actually sends: an id, a history, and nothing else. It
+ * used to be sent as a `ReviewPuzzle` with every field nulled, which is what
+ * `matches()` then called `.toLowerCase()` on.
+ */
+const ORPHAN: OrphanedOverride = {
+  id: 57,
+  orphaned: true,
+  overridden: true,
+  updatedAt: 1_760_000_000_000,
+  correctedBy: { title: { by: "hannah", at: 1_760_000_000_000 } },
+  history: [
+    { field: "title", was: "old", became: "new", at: 1_760_000_000_000, by: "hannah" },
+  ],
+};
+
+describe("a correction whose puzzle has left the archive", () => {
+  /**
+   * The bug: the server lists orphans so an officer can delete one, and the
+   * list called `.toLowerCase()` on their null title. One keystroke in the
+   * search box threw, `paint()` died half way, and the tab stopped repainting.
+   */
+  test("searching does not throw, and finds it by number", () => {
+    const { element, view } = driveList([ORPHAN]);
+    const search = find<HTMLInputElement>(element, "input");
+
+    type(search, "tuck");
+    expect(element.querySelectorAll(".review__row").length).toBe(0);
+
+    type(search, "57");
+    expect(element.querySelectorAll(".review__row").length).toBe(1);
+    expect(view).toBeDefined();
+  });
+
+  /**
+   * It reads as the thing it is. Drawn through the ordinary row it said title
+   * `null`, "by null · club", "unrated" and "undefined pieces" — which reads as
+   * corrupted data rather than as a correction that outlived its puzzle.
+   */
+  test("the row says what it is rather than printing nulls", () => {
+    const { element } = driveList([ORPHAN]);
+    const row = find(element, ".review__row");
+    const words = row.textContent ?? "";
+
+    expect(words).toContain("#57");
+    expect(words).toContain("no longer in the archive");
+    expect(words).not.toContain("null");
+    expect(words).not.toContain("undefined");
+  });
+
+  test("it is still pressable, because deleting it is the point", () => {
+    const { element, opened } = driveList([ORPHAN]);
+    (find(element, ".review__row") as HTMLElement).click();
+    expect(opened).toEqual([57]);
+  });
+});
 
 describe("the archive list", () => {
   test("a row carries the number, title, author, rating, goal, length and source", () => {
@@ -604,6 +666,7 @@ function stubApi(): ReviewCalls {
         title: changes.title ?? CLUB.original.title,
         difficulty: changes.difficulty ?? CLUB.original.difficulty,
         overridden: true,
+        shelved: false,
       }),
     revert: () => Promise.resolve({ reverted: true, puzzle: CLUB }),
   };

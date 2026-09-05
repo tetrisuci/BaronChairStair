@@ -70,6 +70,15 @@ export interface Verdict {
  */
 export interface ReviewPuzzle extends ArchiveListing {
   readonly overridden: boolean;
+  /**
+   * A correction that is on file but not being served.
+   *
+   * Two ways in: this row is malformed, or the corrected archive emptied a
+   * daily band and the server refused every correction whole. Either way the
+   * values beside it are the source's, and a page that did not say so was
+   * showing an officer a fix that no player has.
+   */
+  readonly shelved: boolean;
   readonly original: {
     readonly title: string;
     readonly author: string;
@@ -93,16 +102,46 @@ export interface ReviewPuzzle extends ArchiveListing {
    */
   readonly correctedBy: Readonly<Record<string, { readonly by: string; readonly at: number }>>;
   /** Every move ever made to this puzzle's metadata, oldest first. */
-  readonly history: readonly {
-    readonly field: string;
-    readonly was: string | null;
-    readonly became: string | null;
-    readonly at: number;
-    readonly by: string;
-  }[];
-  /** True for a correction whose puzzle has left the archive. */
-  readonly orphaned?: boolean;
+  readonly history: readonly OverrideMove[];
+  /** Never set on a real row. The discriminant `OrphanedOverride` carries. */
+  readonly orphaned?: false;
 }
+
+/** One move in a puzzle's correction history. */
+export interface OverrideMove {
+  readonly field: string;
+  readonly was: string | null;
+  readonly became: string | null;
+  readonly at: number;
+  readonly by: string;
+}
+
+/**
+ * A correction whose puzzle is no longer in the archive.
+ *
+ * `bun run puzzles` rewrites the file from the club's sheet, so a puzzle can
+ * leave it while its correction row stays behind — and the merge is by id
+ * alone, so whatever the club numbers next would inherit that correction. The
+ * route lists these so an officer can reach one and delete it.
+ *
+ * A separate type rather than `ReviewPuzzle` with everything nullable, because
+ * this is what the server actually sends: no title, no author, no goal, no
+ * `pieces`, and no `original` to compare against. Writing that as one loose
+ * interface is what let `matches()` call `.toLowerCase()` on a null and take
+ * the Archive tab down on the first keystroke. As a union member, every
+ * consumer has to say what it does with one, and `tsc` checks that it did.
+ */
+export interface OrphanedOverride {
+  readonly id: number;
+  readonly orphaned: true;
+  readonly overridden: true;
+  readonly updatedAt: number | null;
+  readonly correctedBy: Readonly<Record<string, { readonly by: string; readonly at: number }>>;
+  readonly history: readonly OverrideMove[];
+}
+
+/** A row of the Archive tab: a puzzle, or a correction that outlived one. */
+export type ArchiveRow = ReviewPuzzle | OrphanedOverride;
 
 /**
  * A correction, field by field: absent leaves a field alone, `null` puts that
@@ -192,7 +231,7 @@ export class ReviewApi {
    * neither: it is twenty-odd kilobytes, and a page holding all of it filters
    * on every keystroke without a round trip. 139 rows today.
    */
-  puzzles(): Promise<{ reviewer: string; puzzles: readonly ReviewPuzzle[] }> {
+  puzzles(): Promise<{ reviewer: string; puzzles: readonly ArchiveRow[] }> {
     return this.request("/api/review/puzzles");
   }
 
@@ -210,8 +249,11 @@ export class ReviewApi {
    * `reverted` comes back because the route is idempotent — reverting a puzzle
    * that has no correction is a 200, not a 404 — and "there was nothing to
    * revert" is a different thing to tell an officer from "done".
+   *
+   * `puzzle` is null when the correction was an orphan — there is no puzzle to
+   * hand back, which is the case this route exists to let an officer reach.
    */
-  revert(id: number): Promise<{ reverted: boolean; puzzle: ReviewPuzzle }> {
+  revert(id: number): Promise<{ reverted: boolean; puzzle: ReviewPuzzle | null }> {
     return this.request(`/api/review/puzzles/${id}/override`, { method: "DELETE" });
   }
 

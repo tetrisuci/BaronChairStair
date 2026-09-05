@@ -23,7 +23,7 @@ import { el, replaceChildren } from "../src/ui/dom";
 import type { ReviewApi, Verdict } from "./api";
 import { createArchiveView } from "./archive";
 import { BoardPainter } from "./board-paint";
-import { createCorrectionView } from "./correction";
+import { createCorrectionView, orphanPanel } from "./correction";
 import { createDetailView } from "./detail";
 import { createQueueView } from "./queue";
 import { EXPIRED, isExpired, sentenceFor, stop } from "./refusal";
@@ -125,6 +125,14 @@ export class ReviewPage {
       // ever names a row it drew. A return rather than a throw all the same —
       // an empty column is a better answer than a dead page.
       if (!puzzle) return;
+      // An orphan has no source to correct against — `original` is null and
+      // there are no live values either — so the correction form cannot be
+      // built for one. It gets the only action there is instead: delete the
+      // row, which is what an officer who found it came here to do.
+      if (puzzle.orphaned) {
+        replaceChildren(form, orphanPanel(puzzle.id, flash, () => this.dropOrphan(puzzle.id)));
+        return;
+      }
       replaceChildren(
         form,
         createCorrectionView(
@@ -135,7 +143,20 @@ export class ReviewPage {
             // to the question that was asked — and only an expired token is
             // worth taking the whole page for.
             onSave: (changes) => this.escalate(this.api.correct(id, changes)),
-            onRevert: () => this.escalate(this.api.revert(id)),
+            onRevert: async () => {
+              const answer = await this.escalate(this.api.revert(id));
+              // The route hands back no puzzle when the id has left the
+              // archive, which can happen under an open form: `bun run
+              // puzzles` between the list being read and this button being
+              // pressed. The revert itself landed; there is just nothing to
+              // redraw the form from. `send` prints this beside the button.
+              if (!answer.puzzle) {
+                throw new Error(
+                  `Correction deleted, but puzzle #${id} has left the archive. Refresh the list.`,
+                );
+              }
+              return { reverted: answer.reverted, puzzle: answer.puzzle };
+            },
             onSaved: (saved, said) => {
               puzzles = puzzles.map((entry) => (entry.id === saved.id ? saved : entry));
               list.update(puzzles);
@@ -153,6 +174,18 @@ export class ReviewPage {
     });
 
     replaceChildren(this.body, el("div", { class: "review__archive" }, list.element, form));
+  }
+
+  /**
+   * Deletes an orphaned correction and re-reads the list.
+   *
+   * A whole re-read rather than splicing the row out: the row is gone from the
+   * server's answer entirely once the override is deleted, and `update` takes
+   * a list, not a removal. The archive is one request.
+   */
+  private async dropOrphan(id: number): Promise<void> {
+    await this.escalate(this.api.revert(id));
+    await this.showArchive();
   }
 
   /**
@@ -187,8 +220,15 @@ export class ReviewPage {
   }
 
   private async openOne(id: number): Promise<void> {
+    const mine = ++this.navigation;
+    this.painter = null;
     const submission = await this.guard(() => this.api.submission(id));
-    if (!submission) return;
+    // The third screen, and it was the one the generation counter missed. Open
+    // a queue row on a slow box and click Archive while the fetch is in
+    // flight: the archive paints and takes `aria-current`, then this lands on
+    // top of it, and nothing corrects the tab because this path never calls
+    // `select`. Same class of bug as the two above, one path over.
+    if (!submission || mine !== this.navigation) return;
 
     const painter = new BoardPainter();
     const view = createDetailView(submission, {
@@ -208,13 +248,22 @@ export class ReviewPage {
     this.painter = painter;
   }
 
-  /** A read that failed. Nothing is on screen to put the reason beside. */
+  /**
+   * A read that failed. Nothing is on screen to put the reason beside.
+   *
+   * Generation-checked like the screens are, and for the same reason: every
+   * caller bumps the counter before calling this, so a failure from a screen
+   * the officer has already left would otherwise paint its error over the one
+   * they are looking at. An expired token is exempt — that is the whole page
+   * regardless of which screen noticed it.
+   */
   private async guard<T>(work: () => Promise<T>): Promise<T | null> {
+    const mine = this.navigation;
     try {
       return await work();
     } catch (error) {
       if (isExpired(error)) stop(this.root, EXPIRED);
-      else {
+      else if (mine === this.navigation) {
         replaceChildren(
           this.body,
           el("p", { class: "review__status review__status--bad", text: sentenceFor(error) }),

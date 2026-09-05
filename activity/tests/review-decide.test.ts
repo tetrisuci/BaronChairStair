@@ -207,7 +207,7 @@ function reviewApp(store: Store, archive?: PuzzleArchive): AppRouter {
   registerReviewRoutes(app, {
     secret: SECRET,
     store,
-    archive: archive ?? { originals: [], original: () => undefined },
+    archive: archive ?? { originals: [], original: () => undefined, correctionsApplied: true },
   });
   return app;
 }

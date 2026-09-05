@@ -394,14 +394,6 @@ export class App {
 
   // ── Practice ───────────────────────────────────────────────────────────────
 
-  /** Picks a sheet from the archive at random and plays it unscored. */
-  /**
-   * Today's puzzle, while it is still the player's to file.
-   *
-   * Practising it before filing would be a free rehearsal for the one run that
-   * counts, so it is kept out of the shuffle and shown greyed in the explorer
-   * until the daily is on the board. Afterwards it is just another puzzle.
-   */
   /** The day's puzzles this player has opened, by id. */
   private startedToday(): ReadonlySet<number> {
     const day = this.daily?.day ?? 0;
@@ -417,7 +409,14 @@ export class App {
     return this.daily?.puzzles.find((entry) => entry.tier === this.dailyTier) ?? null;
   }
 
-  /** The puzzles practice will not open. The rule lives in `daily-lock.ts`. */
+  /**
+   * The puzzles practice will not open. The rule lives in `daily-lock.ts`.
+   *
+   * Today's puzzle, while it is still the player's to file: practising it
+   * before filing would be a free rehearsal for the one run that counts, so it
+   * is kept out of the shuffle and shown greyed in the explorer until the
+   * daily is on the board. Afterwards it is just another puzzle.
+   */
   private lockedPuzzleIds(): ReadonlySet<number> {
     return lockedPuzzleIds(this.daily?.puzzles ?? []);
   }
@@ -427,6 +426,7 @@ export class App {
     return this.archive;
   }
 
+  /** Picks a sheet from the archive at random and plays it unscored. */
   private async startPractice(): Promise<void> {
     try {
       const archive = await this.loadArchive();
@@ -455,7 +455,12 @@ export class App {
       const { puzzle, solution } = await this.connection.api.archivePuzzle(id);
       this.sheet = { puzzle, solution, scored: false };
       this.credits.update(puzzle);
-      if (this.mode === "explore") this.mode = "daily";
+      // Unconditional. Three things open a puzzle from the archive — the
+      // explorer's list, the random-practice button, and the "play it" link on
+      // the rush result card — and only the first two were ever in `explore`.
+      // From the rush card the mode stayed `rush`, so `activeRun` answered null
+      // and the board that had just been opened took no input at all.
+      this.mode = "daily";
       replaceChildren(this.hud.left, this.hud.panels.hold, this.hud.panels.progress);
       this.showPlayfield();
       this.startRun();

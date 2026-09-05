@@ -172,23 +172,6 @@ function merged<T>(change: T | undefined, current: T): T {
   return change === undefined ? current : change;
 }
 
-/**
- * Writes a correction, and answers with the row that is now on disk.
- *
- * Read, merge, write, in one transaction. The merge cannot be done in SQL: the
- * three states a PATCH can put a field in are "leave", "clear" and "set", and
- * `COALESCE` collapses the first two into each other. Doing it in the route
- * instead was the alternative, and it loses because two officers correcting
- * different fields of one puzzle in the same moment would each write the row
- * they had read, and the second would silently drop the first one's field.
- *
- * A merge that empties every column DELETEs the row rather than storing eight
- * NULLs. An all-null override is not a correction, and leaving one behind would
- * make "is this puzzle overridden" two questions — does a row exist, and does
- * it say anything — asked in every place that cares.
- *
- * @returns the correction now on file, or null when the merge cleared it out.
- */
 /** One entry of the record: a field, the two values either side of the move. */
 export interface OverrideLogEntry {
   readonly puzzleId: number;
@@ -248,6 +231,23 @@ export function overrideHistory(db: Database, puzzleId: number): OverrideLogEntr
     }));
 }
 
+/**
+ * Writes a correction, and answers with the row that is now on disk.
+ *
+ * Read, merge, write, in one transaction. The merge cannot be done in SQL: the
+ * three states a PATCH can put a field in are "leave", "clear" and "set", and
+ * `COALESCE` collapses the first two into each other. Doing it in the route
+ * instead was the alternative, and it loses because two officers correcting
+ * different fields of one puzzle in the same moment would each write the row
+ * they had read, and the second would silently drop the first one's field.
+ *
+ * A merge that empties every column DELETEs the row rather than storing eight
+ * NULLs. An all-null override is not a correction, and leaving one behind would
+ * make "is this puzzle overridden" two questions — does a row exist, and does
+ * it say anything — asked in every place that cares.
+ *
+ * @returns the correction now on file, or null when the merge cleared it out.
+ */
 export function writeOverride(
   db: Database,
   puzzleId: number,
@@ -307,19 +307,16 @@ export function writeOverride(
 }
 
 /**
- * Reverts a puzzle to its source.
+ * Takes a correction away, and writes down that somebody did.
  *
  * One DELETE, which is the whole argument for a table of nullable columns: a
  * revert needs no knowledge of what the source said, so it cannot get it wrong.
  *
- * @returns whether there was anything to revert, so a caller can say so.
- */
-/**
- * Takes a correction away, and writes down that somebody did.
- *
  * `revertedBy` is optional only because `writeOverride` calls this from inside
  * its own transaction, having already logged the moves itself — passing it
  * there would record every field twice. Every other caller names the officer.
+ *
+ * @returns whether there was anything to revert, so a caller can say so.
  */
 export function deleteOverride(db: Database, puzzleId: number, revertedBy?: string): boolean {
   return db.transaction(() => {

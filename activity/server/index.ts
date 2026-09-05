@@ -157,10 +157,10 @@ app.use("/api/rush/run", rateLimit({ max: 12, windowMs: MINUTE }, callerKey));
 // caller chose rather than one of today's three. Nobody writes five puzzles a
 // minute, so this only ever costs somebody who is not writing puzzles.
 app.use("/api/submissions", rateLimit({ max: 5, windowMs: MINUTE }, callerKey));
-// Ten a minute on the exchange, knowing it may be one global bucket: `callerKey`
-// reads an address, and without a proxy setting one of the headers it looks for
-// every caller in the world shares it. What actually stands between a stranger
-// and the review queue is 256 bits of HMAC, not this line.
+// Ten a minute on the exchange, knowing it may be one shared bucket: behind a
+// proxy with `TRUST_PROXY` unset, `callerKey` falls back to the socket's peer
+// address and every caller arrives as the proxy. What actually stands between a
+// stranger and the review queue is 256 bits of HMAC, not this line.
 app.use("/api/review/session", rateLimit({ max: 10, windowMs: MINUTE }, callerKey));
 // Accepting replays a stored solve, so it is an engine call like the two above
 // — behind a reviewer token rather than open, but a queue nobody clears at
@@ -239,7 +239,11 @@ function readTier(value: unknown): DailyTier {
  */
 function earnedSolution(run: StoredRun | undefined, puzzle: Puzzle) {
   if (!run?.solved || run.puzzleId !== puzzle.id) return null;
-  return puzzle.solution;
+  // `?? null`, because `solution` became optional when the answers moved into
+  // `data/solutions.json`. Undefined is dropped by `JSON.stringify` entirely,
+  // so a client reading a documented `solution: … | null` would get no key at
+  // all on a server running without that file.
+  return puzzle.solution ?? null;
 }
 
 app.get("/api/daily", requireSession, (c) => {
@@ -517,7 +521,9 @@ app.get("/api/archive/:id", requireSession, (c) => {
   if (!puzzle) throw new HTTPException(404, { message: "No such puzzle" });
   return c.json({
     puzzle: archive.prompt(puzzle),
-    solution: maySeeSolution(c.get("session"), puzzle.id) ? puzzle.solution : null,
+    // `?? null` for the same reason as `earnedSolution`: an absent
+    // `data/solutions.json` must read as "no solution", not as no field.
+    solution: maySeeSolution(c.get("session"), puzzle.id) ? (puzzle.solution ?? null) : null,
   });
 });
 
@@ -846,10 +852,17 @@ function timeToLastSolve(
  * `scope=server` narrows to the caller's guild; anything else is global. The
  * guild comes from the session and never from the query, so "server" cannot be
  * pointed at somebody else's.
+ *
+ * A session with no guild — the activity opened outside a server, and every
+ * guest session — cannot have a server scope, and asking for one used to be
+ * answered with `store.rushRecords(null)`, which means "across all servers".
+ * That is the global board returned under `scope: "server"`, so the client lit
+ * the "This server" tab over everybody's records. It answers `global` now, and
+ * says so, which is the tab the client then lights.
  */
 app.get("/api/rush/records", requireSession, (c) => {
   const session = c.get("session");
-  const server = c.req.query("scope") === "server";
+  const server = c.req.query("scope") === "server" && session.guildId !== null;
   return c.json({
     scope: server ? "server" : "global",
     entries: store.rushRecords(server ? session.guildId : null, LEADERBOARD_SIZE),
@@ -931,6 +944,18 @@ console.log(
     `listening on :${config.port}` +
     (config.allowGuestPlay ? " (guest play enabled)" : ""),
 );
+
+// Loud, because the failure it warns about is the quiet one. Behind a proxy
+// with this unset, every player shares one rate-limit bucket and starts
+// collecting 429s; the alternative default — trusting the header — is a bucket
+// per forged header, which is no limit at all and says nothing when abused.
+if (config.isProduction && !config.trustProxy) {
+  console.warn(
+    "[limits] TRUST_PROXY is not set, so rate limits are keyed on the socket's peer " +
+      "address. If cloudflared, nginx or Caddy is in front of this, every player counts " +
+      "as one caller — set TRUST_PROXY=true in activity/.env and restart.",
+  );
+}
 
 useArchive(archive.puzzles);
 // A lobby nobody joins, and a finished match nobody plays again, would

@@ -89,11 +89,46 @@ cd /path/to/BaronChairStair/activity
 git pull                 # or however this box gets code
 bun install
 bunx tsc --noEmit        # must be silent
-bun test                 # must be all pass, 0 fail
+bun test                 # 0 fail. Skips are normal — see below
 bun run build            # writes dist/, including dist/review/index.html
 ```
 
+**Skips are expected here.** `data/solutions.json` holds the answer keys and is
+not in git, so a box without it reports around 83 tests skipped rather than
+failed — the ones that need a reference solution to build a solving log. `0
+fail` is the thing to check. A number of skips that is suddenly zero means the
+answers are on this box; a *failure* is what stops a deploy.
+
 Then restart the service the way this box already starts it.
+
+### Rate limiting behind the proxy
+
+**If anything sits in front of this server — cloudflared, nginx, Caddy — put
+this in `activity/.env`:**
+
+```
+TRUST_PROXY=true
+```
+
+It decides whether the rate limiter believes `Cf-Connecting-Ip` and
+`X-Forwarded-For`. Those headers are how one player is told from another behind
+a proxy, but they are written by whoever is talking to us, so trusting them
+where nothing rewrites them lets a caller mint a fresh bucket per request and
+have no limit at all — including on `/api/submissions`, which replays a board
+through the engine.
+
+So it is off unless you say otherwise, and the failure that causes is the loud
+one: every player counts as one caller, they share one bucket, and somebody
+reports 429s within the hour. The server warns at start-up when it is unset in
+production:
+
+```
+[limits] TRUST_PROXY is not set, so rate limits are keyed on the socket's peer
+address. ...
+```
+
+If you see that line and there *is* a proxy in front, set it and restart. If
+there is no proxy, the warning is the correct state and you can ignore it.
 
 ### Turning the review tool on
 
@@ -199,6 +234,12 @@ by default, and the page trades it once for a two-hour session. Those two
 windows add up rather than overlap: a link spent in its last second still buys a
 full two hours, so the worst case is fifteen minutes plus two hours. **Send it
 in a DM, not a channel** — anywhere it can be seen is somewhere it can be used.
+
+The token rides in the URL *fragment* (`/review#t=…`), which a browser never
+sends to the server. That keeps it out of the one copy nobody can be careful
+with: the reverse proxy's access log. If you are shipping logs somewhere
+central, links minted by older builds used `?t=` and are in there — rotating
+`REVIEW_SECRET` retires them.
 
 The name you pass is recorded against every accept and reject. It is an
 attribution, not an authentication: nothing checks who ran the command. The

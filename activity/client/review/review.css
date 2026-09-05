@@ -320,6 +320,19 @@ body {
   border-color: var(--ink);
 }
 
+/*
+ * A correction whose puzzle has left the archive.
+ *
+ * Marked rather than styled away: it is a real row an officer has to be able to
+ * find and press, and the only thing that separates it from a puzzle is that
+ * there is no puzzle. Dashed, because every other border in this tool is solid
+ * and a dashed one reads as "this one is not like the others" without needing a
+ * colour nothing else here uses.
+ */
+.review__row--orphan {
+  border-style: dashed;
+}
+
 /* ── Correcting one ───────────────────────────────────────────────────────── */
 
 /*

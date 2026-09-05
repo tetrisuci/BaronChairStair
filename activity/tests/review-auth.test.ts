@@ -345,9 +345,10 @@ function reviewApp(secret: string): AppRouter {
       setOverride: unreached,
       clearOverride: unreached,
       acceptedPuzzles: () => [],
+      hasAcceptedPuzzle: () => false,
       overrideHistory: () => [],
     },
-    archive: { originals: [], original: () => undefined },
+    archive: { originals: [], original: () => undefined, correctionsApplied: true },
   });
   return app;
 }

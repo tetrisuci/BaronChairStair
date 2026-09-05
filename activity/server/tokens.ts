@@ -17,8 +17,18 @@
  * string prefix that both halves have to agree on.
  */
 
+/**
+ * The statuses an auth failure is actually answered with.
+ *
+ * A union rather than `number`, so `server/http.ts` can hand it to `c.json`
+ * without a cast. It carried `as 401` there, which was simply false — this is
+ * thrown with 400 for a token that is malformed and 500 for a server that has
+ * no secret configured, and the cast said neither could happen.
+ */
+export type AuthStatus = 400 | 401 | 500;
+
 export class AuthError extends Error {
-  constructor(message: string, readonly status: number = 401) {
+  constructor(message: string, readonly status: AuthStatus = 401) {
     super(message);
     this.name = "AuthError";
   }

@@ -50,6 +50,9 @@ function parseArgs(argv: readonly string[]): CliOptions {
     if (!value) throw new Error(`Missing value for ${flag}`);
     if (flag === "--archive") options.archive = value;
     else if (flag === "--out") options.out = value;
+    // `--solutions` had a field and a default but no branch, so the only way to
+    // set it was to edit this file — and passing it died on "Unknown flag".
+    else if (flag === "--solutions") options.solutions = value;
     else throw new Error(`Unknown flag ${flag}`);
   }
   return options;
@@ -186,6 +189,11 @@ function main(): void {
   }
 
   mkdirSync(dirname(options.out), { recursive: true });
+  // Both, not just the prompts. They default to the same directory, so this is
+  // invisible until somebody passes `--out` somewhere else — and then the
+  // prompts are written, the answers throw ENOENT, and the split this function
+  // exists to make has half happened.
+  mkdirSync(dirname(options.solutions), { recursive: true });
   // Two files, and only one of them is tracked. The answers are the whole game
   // — a puzzle whose solution sits beside it in a public repository is a puzzle
   // with a published answer key — so they go to their own file, which

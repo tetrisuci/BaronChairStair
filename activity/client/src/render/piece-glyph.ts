@@ -14,7 +14,6 @@ const SVG_NS = "http://www.w3.org/2000/svg";
 const UNIT = 10;
 /** Matches the playfield: each cell carries its own edge, so seams stay visible. */
 const EDGE = 1.2;
-/** One cell, in pixels, when a caller does not say otherwise. */
 /** The ruling on an empty cell, matching `.build__cell`'s single weight. */
 const RULE = 1;
 /** Shallow boards are padded up to this, so none of them draws as a sliver. */

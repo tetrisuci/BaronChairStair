@@ -87,8 +87,21 @@ export function createGoalControls(hooks: GoalControlHooks): GoalControls {
   /** The clears the rows on screen were built for, and the picker's options. */
   let rowShape = "";
   let pickShape = "";
-  /** Set when the last edit was too long to fit the comment. */
-  let refused = false;
+  /**
+   * The goal text a refusal was about, or null when there is nothing refused.
+   *
+   * A flag was not enough. `setGoal` is the counters' path and the only place
+   * that cleared it, but the goal *field* writes straight through `edit`, so
+   * typing in the box — the obvious way to fix a goal that is too long — left
+   * the flag standing. The refusal outranks the board's warnings in
+   * `builder.ts`, so it then hid "Add pieces to the queue" and "Row 4 is
+   * already full" for the rest of the session.
+   *
+   * Holding the text instead means any edit that moves it clears the refusal,
+   * whichever path made the edit, and `builder.ts`'s promise that it is
+   * "cleared by the next edit that fits" is true again.
+   */
+  let refusedAt: string | null = null;
   /** True while a test is playing; the prose case is decided per render. */
   let away = false;
   let prose = false;
@@ -131,11 +144,11 @@ export function createGoalControls(hooks: GoalControlHooks): GoalControls {
       // Refused, not ignored. Returning here without a redraw left the box
       // showing a number the goal and the code did not carry, and said
       // nothing — the author's edit was gone and the screen claimed it landed.
-      refused = true;
+      refusedAt = hooks.read();
       hooks.redraw();
       return;
     }
-    refused = false;
+    refusedAt = null;
     hooks.write(formatGoal(next));
   }
 
@@ -262,7 +275,7 @@ export function createGoalControls(hooks: GoalControlHooks): GoalControls {
     },
     setAttack,
     refusal: () =>
-      refused
+      refusedAt !== null && refusedAt === hooks.read()
         ? "That goal is longer than a blueprint comment holds, so the change was not made."
         : null,
   };

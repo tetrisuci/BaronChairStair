@@ -100,7 +100,9 @@ if (!secret) {
 }
 
 const token = await mintReviewGrant(secret, options.subject, options.minutes);
-const link = `${options.base}/review?t=${token}`;
+// A fragment rather than a query: a browser never sends it to the server, so
+// the token stays out of the reverse proxy's access log. See `takeGrant`.
+const link = `${options.base}/review#t=${token}`;
 
 console.log(`review link for "${options.subject}", good for ${options.minutes} minutes:\n`);
 console.log(`  ${link}\n`);

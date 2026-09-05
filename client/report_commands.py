@@ -64,6 +64,18 @@ def _config() -> "tuple[str, str]":
 
 limiter = ReportLimiter()
 
+# A second bucket, above the individual. Three an hour each is right for a
+# person and no bound at all on a raided server: a hundred accounts is three
+# hundred issues an hour, filed under the bot's identity, which is enough for
+# GitHub to act on the token and leaves an officer deleting them by hand. Keyed
+# on the guild, and on `None` in a DM — where every DM shares one bucket, which
+# is correct, since a DM report carries no server to answer for it.
+#
+# Deliberately not a global one: one raided server should not stop the others
+# reporting.
+GUILD_REPORTS_PER_WINDOW = 20
+guild_limiter = ReportLimiter(limit=GUILD_REPORTS_PER_WINDOW)
+
 
 class GitHubUnavailable(Exception):
     """The issue could not be filed. Carries a message meant for the player."""
@@ -117,7 +129,10 @@ async def open_issue(title: str, body: str) -> str:
 )
 @app_commands.describe(
     category="What kind of issue this is.",
-    description="What happened, and what you expected instead.",
+    description=(
+        "What happened, and what you expected instead. "
+        "Posted publicly under your display name."
+    ),
 )
 @app_commands.choices(category=CATEGORIES)
 async def report_command(
@@ -157,6 +172,18 @@ async def report_command(
         )
         return
 
+    # `or 0` so every DM shares one bucket. The alternative is `None` as a key,
+    # which works but quietly widens what the limiter says it takes.
+    room = interaction.guild_id or 0
+    if not guild_limiter.take(room):
+        limiter.refund(interaction.user.id)
+        await interaction.followup.send(
+            "This server has filed a lot of reports in the last hour, so the bot is "
+            "pausing for a bit. Nothing you did — tell an officer if it seems wrong.",
+            ephemeral=True,
+        )
+        return
+
     reporter = interaction.user.display_name
     try:
         url = await open_issue(
@@ -168,6 +195,11 @@ async def report_command(
             ),
         )
     except GitHubUnavailable as exc:
+        # Nothing was filed, so nothing is spent. Both buckets, in the order
+        # they were taken: a club that has not set `GITHUB_TOKEN` yet would
+        # otherwise let one player burn their hour on the error message.
+        limiter.refund(interaction.user.id)
+        guild_limiter.refund(room)
         await interaction.followup.send(str(exc), ephemeral=True)
         return
 

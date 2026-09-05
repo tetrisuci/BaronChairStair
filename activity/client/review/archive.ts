@@ -20,7 +20,7 @@
  */
 
 import { el, panel, replaceChildren } from "../src/ui/dom";
-import type { ReviewPuzzle } from "./api";
+import type { ArchiveRow, OrphanedOverride } from "./api";
 
 export interface ArchiveHandlers {
   onOpen(puzzleId: number): void;
@@ -36,7 +36,7 @@ export interface ArchiveView {
    * the title they just fixed is fixed. Handing the page a whole new view
    * instead would throw away the search they typed to find the row with.
    */
-  update(puzzles: readonly ReviewPuzzle[]): void;
+  update(puzzles: readonly ArchiveRow[]): void;
 }
 
 /**
@@ -49,11 +49,49 @@ export interface ArchiveView {
  * most likely to be the thing that is wrong, so matching against it would be
  * searching the text that is under suspicion.
  */
-function matches(puzzle: ReviewPuzzle, needle: string): boolean {
+function matches(puzzle: ArchiveRow, needle: string): boolean {
+  // An orphan has no title and no author to search — only its number, which is
+  // the only thing an officer could know about it anyway.
+  if (puzzle.orphaned) return String(puzzle.id).includes(needle);
   return (
     puzzle.title.toLowerCase().includes(needle) ||
     puzzle.author.toLowerCase().includes(needle) ||
     String(puzzle.id).includes(needle)
+  );
+}
+
+/**
+ * A correction whose puzzle has left the archive.
+ *
+ * Built separately rather than by null-coalescing the real row's fields,
+ * because there is nothing to coalesce *to*: a row reading title `null`, "by
+ * null · club", "unrated" and "undefined pieces" is what the shared path drew,
+ * and it reads as corrupted data rather than as the one thing it is. This says
+ * the thing, in the row's own shape, and the form beside it offers the only
+ * action there is.
+ */
+function orphanRow(
+  puzzle: OrphanedOverride,
+  open: boolean,
+  handlers: ArchiveHandlers,
+): HTMLElement {
+  return el(
+    "button",
+    {
+      class: `explore__item review__row review__row--orphan${open ? " review__row--open" : ""}`,
+      attrs: { type: "button", "aria-current": open ? "true" : null },
+      on: { click: () => handlers.onOpen(puzzle.id) },
+    },
+    el(
+      "span",
+      { class: "review__row-title" },
+      el("span", { class: "review__row-name", text: `#${puzzle.id} — no longer in the archive` }),
+      el("span", { class: "review__flag", text: "orphaned" }),
+    ),
+    el("span", {
+      class: "review__row-goal",
+      text: "A correction whose puzzle has left data/puzzles.json. Delete it here, or it will be inherited by whatever the club numbers next.",
+    }),
   );
 }
 
@@ -66,11 +104,8 @@ function matches(puzzle: ReviewPuzzle, needle: string): boolean {
  * the stacked grid is the one already written for a row carrying prose and
  * numbers at once.
  */
-function archiveRow(
-  puzzle: ReviewPuzzle,
-  open: boolean,
-  handlers: ArchiveHandlers,
-): HTMLElement {
+function archiveRow(puzzle: ArchiveRow, open: boolean, handlers: ArchiveHandlers): HTMLElement {
+  if (puzzle.orphaned) return orphanRow(puzzle, open, handlers);
   // "unrated" rather than d0: zero is not a rating, it is nobody having got
   // round to it, and `dailyTierOf` reads it as hard for exactly that reason.
   const rating = puzzle.difficulty > 0 ? `d${puzzle.difficulty}` : "unrated";
@@ -108,7 +143,7 @@ function archiveRow(
 }
 
 export function createArchiveView(
-  puzzles: readonly ReviewPuzzle[],
+  puzzles: readonly ArchiveRow[],
   handlers: ArchiveHandlers,
 ): ArchiveView {
   // Both reassigned, never written into: `update` is handed a fresh array and

@@ -50,8 +50,28 @@ import type { OverrideFields, PuzzleOverride } from "./puzzle-overrides";
 function withSolutions(puzzles: Puzzle[], archivePath: string): Puzzle[] {
   const beside = join(dirname(archivePath), "solutions.json");
   if (!existsSync(beside)) return puzzles;
+
+  // A corrupt file costs exactly what a missing one costs, and no more.
+  //
+  // This runs at module scope, so an unguarded `JSON.parse` here is the whole
+  // server refusing to boot for every player — over the one file the docblock
+  // above says everything works without. A `bun run puzzles` interrupted
+  // mid-write leaves a file that passes `existsSync` and throws on parse, and
+  // `{"solutions": null}` throws on `.map` a line later.
+  let listed: unknown;
+  try {
+    listed = (JSON.parse(readFileSync(beside, "utf8")) as { solutions?: unknown }).solutions;
+  } catch (error) {
+    console.warn(`[puzzle] ${beside} is not valid JSON; serving without solutions.`, error);
+    return puzzles;
+  }
+  if (!Array.isArray(listed)) {
+    console.warn(`[puzzle] ${beside} has no solutions array; serving without solutions.`);
+    return puzzles;
+  }
+
   const book = new Map<number, Pick<Puzzle, "solution" | "source">>(
-    (JSON.parse(readFileSync(beside, "utf8")).solutions as Puzzle[]).map((entry) => [
+    (listed as Puzzle[]).map((entry) => [
       entry.id,
       { solution: entry.solution, source: entry.source },
     ]),
@@ -272,15 +292,19 @@ function applyOverrides(
 function correctedOrSource(
   sources: readonly Puzzle[],
   overrides: readonly PuzzleOverride[],
-): Puzzle[] {
+): { puzzles: Puzzle[]; applied: boolean } {
   const corrected = applyOverrides(sources, overrides);
   const missing = DAILY_TIERS.filter((tier) => byTier(corrected)[tier].length === 0);
-  if (missing.length === 0) return corrected;
+  if (missing.length === 0) return { puzzles: corrected, applied: true };
   console.warn(
     `[puzzle] ignoring every correction: they leave no ${missing.join(" or ")} puzzle, ` +
       "and a day needs one of each. Revert one through the review tool and restart.",
   );
-  return [...sources];
+  // `applied` travels with the puzzles because the review tool has to say so.
+  // A console warning on the VPS is invisible to the officer holding the link,
+  // and the tool was reporting every correction as in force while players were
+  // being served the sources — promising something the server will not do.
+  return { puzzles: [...sources], applied: false };
 }
 
 export class PuzzleArchive {
@@ -300,6 +324,15 @@ export class PuzzleArchive {
     readonly puzzles: readonly Puzzle[],
     readonly originals: readonly Puzzle[],
     private readonly dayOptions: DayOptions,
+    /**
+     * Whether the corrections on file are the ones being served.
+     *
+     * False when `correctedOrSource` shelved the lot — a corrected set that
+     * empties a daily band is refused whole. Read by the review tool, which
+     * would otherwise show an officer their correction applied while every
+     * player got the source.
+     */
+    readonly correctionsApplied: boolean = true,
   ) {
     this.byId = new Map(puzzles.map((puzzle) => [puzzle.id, puzzle]));
     this.originalById = new Map(originals.map((puzzle) => [puzzle.id, puzzle]));
@@ -387,7 +420,8 @@ export class PuzzleArchive {
       assertValid(puzzle, `accepted puzzle ${puzzle?.id}`),
     );
     const sources = [...file, ...accepted];
-    return new PuzzleArchive(correctedOrSource(sources, overrides), sources, dayOptions);
+    const { puzzles, applied } = correctedOrSource(sources, overrides);
+    return new PuzzleArchive(puzzles, sources, dayOptions, applied);
   }
 
   get(id: number): Puzzle | undefined {

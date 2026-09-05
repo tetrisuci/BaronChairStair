@@ -391,6 +391,55 @@ describe("a correction outlives the file it corrects", () => {
 
 // ── A correction the archive cannot use ──────────────────────────────────────
 
+describe("a correction the archive refused to serve says so", () => {
+  /**
+   * The gap: `correctedOrSource` refuses *every* correction when the corrected
+   * archive leaves a daily band empty, and it said so only in a console warning
+   * on the VPS. The review tool went on reporting each correction as in force,
+   * with the corrected values beside it, while every player was served the
+   * source — a page promising something the server will not do.
+   */
+  test("the archive says whether its corrections are the ones being served", () => {
+    const source = open();
+    const easy = source.archive.puzzles.filter((puzzle) => dailyTierOf(puzzle) === "easy");
+    source.store.close();
+
+    // Rate every easy puzzle hard, which leaves the easy band with nothing in
+    // it — the one thing a day cannot be built from.
+    withStore((store) => {
+      for (const puzzle of easy) store.setOverride(puzzle.id, { difficulty: 10 }, "hannah");
+    });
+
+    const after = open();
+    try {
+      expect(after.archive.correctionsApplied).toBe(false);
+      // And the puzzles really are the sources, which is the thing the flag is
+      // reporting rather than a second opinion about it.
+      for (const puzzle of easy) {
+        expect(after.archive.get(puzzle.id)!.difficulty).toBe(puzzle.difficulty);
+      }
+    } finally {
+      after.store.close();
+    }
+  });
+
+  test("an archive serving its corrections says that too", () => {
+    const source = open();
+    const target = source.archive.puzzles[0]!;
+    source.store.close();
+
+    withStore((store) => store.setOverride(target.id, { title: "Tuck the T" }, "hannah"));
+
+    const after = open();
+    try {
+      expect(after.archive.correctionsApplied).toBe(true);
+      expect(after.archive.get(target.id)!.title).toBe("Tuck the T");
+    } finally {
+      after.store.close();
+    }
+  });
+});
+
 describe("a bad row cannot stop the server booting", () => {
   test("a correction nothing could have written is dropped, and the source served", () => {
     // The rules are on the write, where a bad correction is a 400 to the
