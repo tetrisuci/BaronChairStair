@@ -23,6 +23,10 @@ export interface BoardView {
   readonly flashRows: readonly number[];
   readonly flashStrength: number;
   readonly dimmed: boolean;
+  /** The drag target, while a pointer is aiming the piece. */
+  readonly aim:
+    | { readonly cells: readonly (readonly [number, number])[]; readonly legal: boolean }
+    | null;
 }
 
 const EDGE = 2;
@@ -43,6 +47,15 @@ const MIN_CELL = 9;
 const GHOST_FILL_ALPHA = 0.26;
 const GHOST_EDGE_ALPHA = 0.85;
 const GHOST_BORDER = 0.09;
+
+/**
+ * The drag target, drawn hollow so the falling piece and its ghost stay
+ * readable underneath. Dashed outline when nothing lands there — the same
+ * dashed language as the "you cannot go here" states everywhere else.
+ */
+const AIM_BORDER = 0.16;
+const AIM_DASH = [4, 3];
+const AIM_ILLEGAL_ALPHA = 0.55;
 
 /**
  * Block edge, in pixels, matching the club's own board at tetrisatuci.org/play.
@@ -87,6 +100,7 @@ export class BoardRenderer {
   private readonly ctx: CanvasRenderingContext2D;
   private cell = 24;
   private radius = 3;
+  private rows = 20;
 
   constructor(private readonly canvas: HTMLCanvasElement) {
     const ctx = canvas.getContext("2d");
@@ -108,6 +122,7 @@ export class BoardRenderer {
     const height = cell * visibleRows + EDGE * 2 + SHADOW;
 
     this.cell = cell;
+    this.rows = visibleRows;
     this.radius = Math.max(1, Math.round(cell * CARD_RADIUS_RATIO));
     this.canvas.width = Math.round(width * dpr);
     this.canvas.height = Math.round(height * dpr);
@@ -115,6 +130,22 @@ export class BoardRenderer {
     this.canvas.style.height = `${height}px`;
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     return { width, height };
+  }
+
+  /**
+   * Which board square a pointer sits on, in playfield coordinates.
+   *
+   * Returns null off the field. The row counts up from the floor, like every
+   * other square list here; the shadow offset is excluded so a press on the
+   * card's edge maps to the column it visually sits on.
+   */
+  spotAt(cssX: number, cssY: number): { column: number; row: number } | null {
+    const x = cssX - EDGE;
+    const y = cssY - EDGE;
+    const column = Math.floor(x / this.cell);
+    const row = this.rows - 1 - Math.floor(y / this.cell);
+    if (column < 0 || column >= BOARD_WIDTH || row < 0 || row >= this.rows) return null;
+    return { column, row };
   }
 
   /** Canvas y for the top edge of board row `y`, which counts up from the floor. */
@@ -140,6 +171,7 @@ export class BoardRenderer {
     this.drawCard(fieldWidth, fieldHeight);
     this.drawGrid(rows, fieldWidth, fieldHeight);
     this.drawGhost(view.ghost, rows, view.activeInk);
+    this.drawAim(view.aim, rows, view.activeInk);
     this.drawBlocks(collectBlocks(view, rows), rows);
     this.drawFlash(view.flashRows, rows, fieldWidth, view.flashStrength);
     ctx.globalAlpha = 1;
@@ -243,6 +275,37 @@ export class BoardRenderer {
     ctx.strokeStyle = ink;
     ctx.lineWidth = border;
     for (const [x, y] of cells) {
+      if (y >= rows || y < 0) continue;
+      ctx.strokeRect(
+        this.columnLeft(x) + border / 2,
+        this.rowTop(y, rows) + border / 2,
+        cell - border,
+        cell - border,
+      );
+    }
+    ctx.restore();
+  }
+
+  /**
+   * The drag target, hollow so the stack stays readable underneath.
+   *
+   * A reachable square is promised by a solid outline in the piece's ink; an
+   * unreachable one by the same outline, dashed and fainter. Solid says "let
+   * go here", dashed says "nothing will happen if you do". The ink is the
+   * falling piece's own, so the promise reads as "this piece goes here"; the
+   * fallback covers a piece the view is not showing.
+   */
+  private drawAim(aim: BoardView["aim"], rows: number, ink: string | null): void {
+    if (!aim || aim.cells.length === 0) return;
+    const { ctx, cell } = this;
+    const border = Math.max(2, Math.round(cell * AIM_BORDER));
+
+    ctx.save();
+    ctx.globalAlpha = aim.legal ? 0.9 : AIM_ILLEGAL_ALPHA;
+    ctx.strokeStyle = ink ?? PAPER.ink;
+    ctx.lineWidth = border;
+    if (!aim.legal) ctx.setLineDash(AIM_DASH);
+    for (const [x, y] of aim.cells) {
       if (y >= rows || y < 0) continue;
       ctx.strokeRect(
         this.columnLeft(x) + border / 2,

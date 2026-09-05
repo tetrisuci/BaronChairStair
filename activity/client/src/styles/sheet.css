@@ -156,6 +156,16 @@
   top: 50%;
   left: 50%;
   transform: translate(-50%, -50%);
+  /*
+   * The board is a pointer target first: taps rotate, drags place, a held
+   * finger holds. `touch-action: none` hands every contact to the game — the
+   * browser must not turn a drag into a page pan — and the rest keeps the
+   * selection and tap-highlight machinery out of the way of the gesture.
+   */
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
 /* ── Footer strip ─────────────────────────────────────────────────────────── */

@@ -23,6 +23,7 @@ import {
 } from "@shared/puzzle";
 import { createPuzzleEngine, readBoard, toLetter } from "@shared/tetris/engine";
 import type { Handling } from "@shared/tetris/handling";
+import { RoutePlanner, releaseTicks, ticksForRoute, type TargetCells } from "@shared/tetris/pathfinder";
 import { nameClear } from "@shared/tetris/replay";
 import type { GameKey, InputEvent } from "@shared/tetris/verify";
 import { MAX_EVENTS, MAX_FRAMES } from "@shared/tetris/verify";
@@ -68,6 +69,12 @@ export interface RunCallbacks {
 interface Checkpoint {
   readonly length: number;
   readonly frame: number;
+}
+
+/** A square on the board a gesture is pointing at. */
+export interface BoardSpot {
+  readonly column: number;
+  readonly row: number;
 }
 
 /** What undo took out of the log, and what it put back in to close the rest. */
@@ -142,6 +149,23 @@ export class PuzzleRun {
   private pendingFlash: number[] = [];
   private flashUntil = 0;
 
+  /**
+   * Route search for the piece in flight, thrown away on the lock — the board
+   * the search walked no longer exists once a piece lands in it.
+   */
+  private planner: RoutePlanner | null = null;
+  /** Where a finger or pointer is aiming the piece, and whether it can go. */
+  private aim: { cells: TargetCells; legal: boolean } | null = null;
+  /**
+   * True while the planner is trying routes against the real engine.
+   *
+   * A trial replay locks pieces, and every lock fires this run's listeners —
+   * which would count the trial's piece against the puzzle, move the undo
+   * boundary and maybe even end the attempt. Trials are invisible fictions:
+   * the snapshot is restored afterwards and nothing they did happened.
+   */
+  private trialing = false;
+
   readonly visibleRows: number;
   private readonly budget: number;
 
@@ -180,10 +204,18 @@ export class PuzzleRun {
 
   private build(): void {
     ({ engine: this.engine, ledger: this.ledger } = createPuzzleEngine(this.setup, this.handling));
+    this.planner = null;
+    this.aim = null;
+    this.trialing = false;
     this.engine.events.on("falling.lock.pre", () => {
+      if (this.trialing) return;
       this.pendingFlash = this.rowsAboutToClear();
     });
     this.engine.events.on("falling.lock", (lock) => {
+      if (this.trialing) return;
+      // The board the planner walked is gone the moment a piece lands in it.
+      this.planner = null;
+      this.aim = null;
       const piece = toLetter(lock.mino);
       // A piece the ledger cannot account for is the engine's padding, not the
       // puzzle's. It never counts and it always ends the run.
@@ -245,6 +277,7 @@ export class PuzzleRun {
     this.events = [];
     this.pending = [];
     this.held.clear();
+    this.aim = null;
     this.attack = 0;
     this.piecesPlaced = 0;
     this.clears = [];
@@ -366,6 +399,8 @@ export class PuzzleRun {
 
   dispose(): void {
     this.stopLoop();
+    this.planner = null;
+    this.aim = null;
     this.engine.events.removeAllListeners();
   }
 
@@ -395,6 +430,12 @@ export class PuzzleRun {
     if (down === this.held.has(key)) return;
     if (down) this.held.add(key);
     else this.held.delete(key);
+    // The piece is about to move under keys, so any drag target computed for
+    // the piece as it stood is a lie about a piece that no longer exists. The
+    // planner goes with it: it walked the board from a starting square that is
+    // being abandoned. A drag still in progress re-aims on its next move.
+    this.aim = null;
+    this.planner = null;
 
     if (this.phase === "ready") this.begin();
     // The log is what gets scored, so once it is full the attempt is over —
@@ -425,7 +466,150 @@ export class PuzzleRun {
     this.pending.push(event);
   }
 
+  // ── Pointer play ───────────────────────────────────────────────────────
+
+  /** True while a drag is aiming the piece somewhere. */
+  get isAiming(): boolean {
+    return this.aim !== null;
+  }
+
+  /** A key press as one event pair: down and up inside the same frame. */
+  tap(key: GameKey): void {
+    this.input(key, true);
+    this.input(key, false);
+  }
+
+  /**
+   * Where the piece would go if the pointer let go here.
+   *
+   * The engine is only ever asked through the planner, whose trials are
+   * bracketed by `trialing`, so a preview can never move the real attempt.
+   * Full spin support falls out of the planner: a square reachable only by a
+   * kick is reachable, and the route replayed ends in the rotation that took
+   * it there, so the engine credits the spin a player pressing keys would
+   * have earned.
+   */
+  aimAt(spot: BoardSpot): void {
+    if (this.phase !== "ready" && this.phase !== "playing") return;
+    this.flushPending();
+    // Flushing can itself end the attempt: the guard above ticked the log past
+    // its frame ceiling, which finishes the run just as the loop would have.
+    if (this.phase !== "ready" && this.phase !== "playing") return;
+    if (!this.planner) this.planner = new RoutePlanner(this.engine);
+    const target = this.planner.targetAt(spot.column, spot.row, this.aim?.cells ?? null);
+    this.aim = { cells: target, legal: this.searchPlacement(target) !== null };
+    // The hollow is the contract — paint it now rather than whenever the next
+    // frame happens to run, so a fast release cannot commit a square whose
+    // preview was never shown.
+    this.renderOnce();
+  }
+
+  /**
+   * Drops the aimed piece exactly where the player can see it.
+   *
+   * The aim is the contract: the route committed is the one the preview
+   * showed, found against the same board the attempt is on. A drag whose aim
+   * was never accepted — one cut short by a lock, an undo or a restart —
+   * commits nothing rather than guessing.
+   *
+   * The commit plays the route exactly as the trial did, as the timed batches
+   * {@link ticksForRoute} builds: releases first, then the route's own ticks,
+   * each ticked through the engine here and now. The events go in the log
+   * with the same grouping, so the server replays the identical frames.
+   * Playing it through `input` instead would retime it — a same-frame tap
+   * holds nothing, so a mid-route soft drop would fall nowhere and every kick
+   * after it would fire from the wrong height.
+   */
+  placeAt(): boolean {
+    if (this.phase !== "ready" && this.phase !== "playing") return false;
+    this.flushPending();
+    // Flushing can itself end the attempt: the guard above ticked the log past
+    // its frame ceiling, which finishes the run just as the loop would have.
+    if (this.phase !== "ready" && this.phase !== "playing") return false;
+    const aim = this.aim;
+    this.aim = null;
+    if (!aim || !aim.legal) return false;
+
+    const placement = this.searchPlacement(aim.cells);
+    if (!placement) return false;
+
+    this.firstInputFrame ??= this.engine.frame;
+    if (this.phase === "ready") this.begin();
+    // The batches the route plays as: the releases first, then the route's
+    // own ticks starting on the frame after. Built up front so the log and
+    // the engine below stay on the same frames.
+    const releases = releaseTicks(this.engine, this.engine.frame);
+    const batches = [
+      releases,
+      ...ticksForRoute(placement.route, this.engine.frame + (releases.length > 0 ? 1 : 0)),
+    ].filter((batch) => batch.length > 0);
+    const additions = batches.reduce((total, batch) => total + batch.length, 0);
+    // One rule from `input`, kept: a full log ends the attempt rather than
+    // letting the player drive moves the server will never see.
+    if (this.events.length + additions > MAX_EVENTS) {
+      this.finish(meetsTarget(this.attack, this.puzzle.targetAttack) ? "solved" : "failed");
+      return true;
+    }
+    // Playing on after an undo is the player choosing this line over the one
+    // they took back, so there is no longer a forward to redo into.
+    this.undone = [];
+    for (const batch of batches) {
+      this.events.push(...batch);
+      this.engine.tick(batch as never);
+      // The hard drop ends the route, but a swallowed one (safe lock) or a
+      // frame ceiling can end the attempt first — never drive the next piece
+      // with the rest of this one.
+      if (this.phase !== "playing" && this.phase !== "ready") break;
+    }
+    this.renderOnce();
+    return true;
+  }
+
+  /** Stops showing where the piece would land. */
+  clearAim(): void {
+    if (this.aim === null) return;
+    this.aim = null;
+    this.renderOnce();
+  }
+
+  /**
+   * The planner's answer, with the run's own listeners told to look away.
+   *
+   * Finding a placement trial-locks pieces on the real engine, and every one
+   * of those locks would otherwise be counted against the puzzle — the
+   * ledger spent, the undo boundary moved, the attempt even ended, all for
+   * routes that are thrown away the moment they are scored.
+   */
+  private searchPlacement(cells: TargetCells) {
+    this.trialing = true;
+    try {
+      return (this.planner ?? new RoutePlanner(this.engine)).placementAt(cells);
+    } finally {
+      this.trialing = false;
+    }
+  }
+
   // ── Clock ──────────────────────────────────────────────────────────────────
+
+  /**
+   * Feeds the engine everything recorded but not yet ticked.
+   *
+   * Planning must see the piece as the log now describes it: a rotation tapped
+   * a moment ago sits in `pending` until the frame loop drains it, and an aim
+   * computed before that would plan against the un-rotated piece. Every
+   * pending event is stamped with the frame it was recorded on — the current
+   * one, since only a tick advances the counter — so flushing here ticks
+   * exactly the batch the loop would have ticked now, and the server replays
+   * identical frames either way.
+   */
+  private flushPending(): void {
+    if (this.pending.length === 0) return;
+    const batch = this.pending;
+    this.pending = [];
+    this.engine.tick(batch as never);
+    // The same guard the frame loop applies after its own ticks.
+    if (this.engine.frame > MAX_FRAMES) this.finish("failed");
+  }
 
   private begin(): void {
     this.phase = "playing";
@@ -548,6 +732,7 @@ export class PuzzleRun {
       flashRows: this.flashRows,
       flashStrength: Math.max(0, (this.flashUntil - now) / FLASH_MS),
       dimmed: this.phase === "failed",
+      aim: stillPlaying ? this.aim : null,
     };
   }
 
