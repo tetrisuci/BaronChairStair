@@ -374,6 +374,45 @@ describe("the front door", () => {
     ).toBe("Today is filed. Two of three solved.");
   });
 
+  /**
+   * The streak has to survive being extended.
+   *
+   * Every case above passes streak 0, which is the one value that prints
+   * nothing — so the sentences that name it were shipped with no coverage at
+   * all. The masthead used to carry the number and this line only gave it a
+   * purpose; with the masthead gone, these sentences are the only place a
+   * player sees it, and a wrong one is worse than none.
+   */
+  test("names the streak in every state, not only before the day starts", () => {
+    const solvedOne = [entry("easy", 2, solvedRun), entry("medium", 6, null), entry("hard", 11, null)];
+    const missedOne = [entry("easy", 2, missedRun), entry("medium", 6, null), entry("hard", 11, null)];
+    const allDone = [entry("easy", 2, solvedRun), entry("medium", 6, solvedRun), entry("hard", 11, solvedRun)];
+
+    // Solved something: it is safe, and saying so is the point of the number.
+    expect(note(home(solvedOne, { streak: 6 }))).toBe(
+      "One solved, two left to play. Your 6-day streak is safe.",
+    );
+    expect(note(home(allDone, { streak: 6 }))).toBe("All three done. Back tomorrow. Your 6-day streak is safe.");
+
+    // Nothing solved yet and chances left: still riding on them.
+    expect(note(home(missedOne, { streak: 6 }))).toBe(
+      "Two left to play. Your 6-day streak needs one of them.",
+    );
+
+    // No streak, no sentence about one — in every branch.
+    expect(note(home(solvedOne))).toBe("One solved, two left to play.");
+    expect(note(home(missedOne))).toBe("Two left to play.");
+    expect(note(home(allDone))).toBe("All three done. Back tomorrow.");
+  });
+
+  test("a day filed with nothing solved says so, rather than counting to zero", () => {
+    const noneSolved = [entry("easy", 2, missedRun), entry("medium", 6, missedRun), entry("hard", 11, missedRun)];
+    expect(note(home(noneSolved))).toBe("Today is filed, with none solved.");
+    // No streak claim either way: there is nothing safe and nothing left to
+    // save it with.
+    expect(note(home(noneSolved, { streak: 6 }))).toBe("Today is filed, with none solved.");
+  });
+
   test("a sheet opens its own tier, not the one it sits at", () => {
     const picked: string[] = [];
     const made = home(unplayed(), { onPick: (tier) => picked.push(tier) });

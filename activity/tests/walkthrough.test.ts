@@ -16,7 +16,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { Window } from "happy-dom";
 import { BOARD_HEIGHT, type RowCode, type SolutionStep } from "../shared/puzzle";
 import { SolutionPlayer } from "../client/src/game/solution-player";
-import { createWalkthroughPanel } from "../client/src/ui/results";
+import { createVerdictBadge, createWalkthroughPanel } from "../client/src/ui/results";
 
 let window: Window;
 const saved = { document: globalThis.document };
@@ -78,5 +78,55 @@ describe("stepping the solution", () => {
     expect(player.position).toBe(0);
     next?.click();
     expect(player.position).toBe(1);
+  });
+});
+
+describe("the badge the flag is for", () => {
+  /**
+   * The tests above pin what the panel *reports*. This pins what the report is
+   * used for — `if (stepped) this.badge.hide()` in `app.ts` — by wiring a real
+   * badge to the same callback the app wires.
+   *
+   * Without this, deleting that line leaves the whole suite green: the flag
+   * would still be reported correctly and nothing would notice that the badge
+   * it exists to move never moved. Which is the reported bug, back again.
+   */
+  function wired() {
+    const player = new SolutionPlayer({ board: BOARD }, STEPS, BOARD_HEIGHT);
+    const badge = createVerdictBadge();
+    const panel = createWalkthroughPanel();
+    // The same expression app.ts uses, deliberately duplicated rather than
+    // imported: `App` boots a whole page on construction and cannot be built
+    // here, so this is the closest honest stand-in.
+    panel.bind(player, (stepped) => {
+      if (stepped) badge.hide();
+    });
+    return { panel, badge };
+  }
+
+  test("a landed result survives the panel being built", () => {
+    const { badge } = wired();
+    badge.show(true, "12 / 12 attack");
+    expect(badge.element.hidden).toBe(false);
+  });
+
+  test("and goes the moment the player steps the solution", () => {
+    const { panel, badge } = wired();
+    badge.show(true, "12 / 12 attack");
+    expect(badge.element.hidden).toBe(false);
+
+    const [, next] = buttons(panel);
+    next?.click();
+
+    expect(badge.element.hidden).toBe(true);
+  });
+
+  test("every control clears it, not only the next one", () => {
+    for (const index of [0, 1, 2]) {
+      const { panel, badge } = wired();
+      badge.show(true, "12 / 12 attack");
+      buttons(panel)[index]?.click();
+      expect(badge.element.hidden).toBe(true);
+    }
   });
 });

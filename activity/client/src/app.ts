@@ -1247,6 +1247,16 @@ export class App {
       if (this.daily) {
         this.daily = {
           ...this.daily,
+          // The run that just landed is what moves these, and the response is
+          // the only place the new values exist — `api.daily()` runs once, at
+          // boot. They used to be spent immediately on the masthead tallies, so
+          // nothing needed to keep them; with those gone and the front page
+          // naming the streak in its own sentence, not carrying them here left
+          // that sentence printing the number from before the solve. A player
+          // extending a 6-day streak was told it was 6, and a player starting
+          // one today was told to start one.
+          streak: response.streak,
+          totalSolved: response.totalSolved,
           puzzles: this.daily.puzzles.map((entry) =>
             entry.tier === response.tier
               ? { ...entry, run: response.run, solution: response.solution }
