@@ -120,7 +120,6 @@
 }
 
 @media (max-width: 560px) {
-  .masthead__meta .tally:nth-child(n + 3) { display: none; }
   .rail > * { min-width: 118px; }
   .credits__title { font-size: 13px; }
 

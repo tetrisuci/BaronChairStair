@@ -71,33 +71,6 @@
   flex-wrap: wrap;
 }
 
-/* A count that reads at a glance: big mono number, small mono caption. */
-.tally {
-  display: flex;
-  align-items: baseline;
-  gap: 5px;
-  padding: 4px 9px;
-  border: var(--edge) solid var(--ink);
-  border-radius: var(--radius-sm);
-  background: var(--cream);
-  box-shadow: 3px 3px 0 var(--ink);
-}
-
-.tally__value {
-  font-family: var(--mono);
-  font-weight: 500;
-  font-size: 14px;
-  font-variant-numeric: tabular-nums;
-}
-
-.tally__key {
-  font-family: var(--mono);
-  font-size: 9px;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--ink-soft);
-}
-
 /* ── Play area ────────────────────────────────────────────────────────────── */
 
 .deck {
