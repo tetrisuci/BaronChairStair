@@ -8,6 +8,10 @@ Everything here runs from `activity/`, not the repository root. The two are
 different projects with different `package.json` files, and running the wrong
 one is the commonest way this goes sideways.
 
+**This file covers the activity only.** The Discord bot — including `/report`,
+which needs its own two GitHub keys before it does anything — is deployed
+separately: see [`../DEPLOY.md`](../DEPLOY.md), which indexes both halves.
+
 ---
 
 ## What is new
@@ -69,15 +73,39 @@ Find out how the service is currently run — `systemctl status`, `pm2 list`, a
 do not guess.
 
 **Back up the database first.** It is in WAL mode, so copying the `.sqlite` file
-on its own loses recent writes. Use SQLite's own backup, which takes a
-consistent snapshot:
+on its own does not lose *some* recent writes — on this project it loses very
+nearly everything. Measured on a working checkout: `data/daily.sqlite` was 4 KB
+while `data/daily.sqlite-wal` beside it was 997 KB, so a `cp` of the main file
+produced a database in which `day_puzzles` did not exist at all, while
+`VACUUM INTO` of the same database gave all 741 rows. The `-wal` file is where
+your data is until something checkpoints it.
+
+Use SQLite's own backup, which takes a consistent snapshot. Note the connection
+is deliberately *not* opened read-only: `VACUUM INTO` creates the output file,
+and SQLite refuses that on a read-only connection with
+`SQLITE_CANTOPEN: unable to open database file`.
 
 ```sh
-# Adjust the path if DATABASE_PATH is set in .env.
-bun -e 'const {Database}=require("bun:sqlite");
-        new Database("data/daily.sqlite").exec("VACUUM INTO \"data/daily.sqlite.bak\"")'
-ls -la data/
+bun -e 'import {Database} from "bun:sqlite";
+        import {resolve} from "node:path";
+        const p = resolve(process.env.DATABASE_PATH ?? "data/daily.sqlite");
+        const out = `${p}.bak-${new Date().toISOString().slice(0, 10)}`;
+        new Database(p).exec(`VACUUM INTO "${out}"`);
+        console.log("backed up ->", out);'
+ls -la data/*.bak-*
 ```
+
+**It must print a path, and that file must exist.** No output means it failed.
+
+**Every `bun -e` in this file uses `import`, and none of them may be changed to
+`require`.** With `require`, Bun swallows an uncaught exception in a `-e`
+script: the process prints nothing and exits `0`. Measured — opening a database
+that does not exist, and deleting from a table that does not exist, both exit
+`0` in silence under `require`, and both print `SQLiteError: …` under `import`.
+Every command here is one whose failure you must see: this backup, the check
+that the backfill ran, and the two recovery commands at the end that write to
+the database. A silent backup is the worst of them, because the next step
+assumes it worked.
 
 ---
 
@@ -177,16 +205,29 @@ is one you can act on.
 **2. The backfill ran.** This is the ordering rule, checked.
 
 ```sh
-bun -e 'const {Database}=require("bun:sqlite");
-        const db=new Database("data/daily.sqlite",{readonly:true});
+bun -e 'import {Database} from "bun:sqlite";
+        import {resolve} from "node:path";
+        const p = resolve(process.env.DATABASE_PATH ?? "data/daily.sqlite");
+        const db = new Database(p, {readonly: true});
+        console.log("db:         ", p);
         console.log("day_puzzles:", db.query("SELECT count(*) c FROM day_puzzles").get().c);
-        console.log("day_rush:   ", db.query("SELECT count(*) c FROM day_rush").get().c);'
+        console.log("day_rush:   ", db.query("SELECT count(*) c FROM day_rush").get().c);
+        console.log("runs:       ", db.query("SELECT count(*) c FROM runs").get().c);'
 ```
 
 Expect `day_puzzles` to be roughly three times the current day number, and
 `day_rush` to be at least 1. **If `day_puzzles` is 0 the server has not started
 successfully** — fix that before doing anything else, and before rebuilding the
 puzzle data.
+
+Check the other two lines as well. `db:` is the file actually being read, and
+`runs:` must match the history this server really has — a `runs` of 0 on a
+server that has been live means you are looking at a fresh empty database, not
+at yours. That happens when `DATABASE_PATH` is set to a *relative* path and the
+service does not run from `activity/`: the path resolves against the working
+directory, and the store creates a new database rather than refusing. Nothing
+else reports it. Stop and fix the path before restarting again, because the
+backfill will pin history into the blank file.
 
 **3. The game still works.**
 
@@ -289,10 +330,14 @@ The new tables are additive and the old code ignores them, so a rollback is
 ordinary:
 
 ```sh
+cd /path/to/BaronChairStair/activity
 git checkout <the commit you noted>
 bun install && bun run build
-# restart
 ```
+
+**Then restart the service.** `bun run build` rewrites `dist/` in place, so between
+that command and the restart the box is serving the old server against the rolled-back
+client. Do not stop after the build.
 
 One thing to know: if you have already accepted a submission, the old code will
 not load it — it reads puzzles only from `data/puzzles.json` — so the archive
@@ -323,10 +368,13 @@ Accept nothing until you are confident in the upgrade, and rollback stays free.
   acceptance and restart:
 
   ```sh
-  bun -e 'const {Database}=require("bun:sqlite");
-          new Database("data/daily.sqlite").run(
+  bun -e 'import {Database} from "bun:sqlite";
+          import {resolve} from "node:path";
+          const p = resolve(process.env.DATABASE_PATH ?? "data/daily.sqlite");
+          const done = new Database(p).run(
             "UPDATE submissions SET status = ?, puzzle_id = NULL WHERE puzzle_id = ?",
-            ["pending", Number(process.argv[1])])' <the id from the error>
+            ["pending", Number(process.argv[1])]);
+          console.log("rows changed:", done.changes);' <the id from the error>
   ```
 
   Then report it, because the accept route is meant to make that impossible.
@@ -347,6 +395,9 @@ Accept nothing until you are confident in the upgrade, and rollback stays free.
   # Or, if that puzzle is genuinely gone for good, drop that day's pinned pool.
   # The day's three are unaffected; only the rush stack is re-derived, and only
   # for a day whose rush nobody can play any more anyway.
-  bun -e 'const {Database}=require("bun:sqlite");
-          new Database("data/daily.sqlite").run("DELETE FROM day_rush WHERE day = ?", [Number(process.argv[1])])' <the day from the error>
+  bun -e 'import {Database} from "bun:sqlite";
+          import {resolve} from "node:path";
+          const p = resolve(process.env.DATABASE_PATH ?? "data/daily.sqlite");
+          const done = new Database(p).run("DELETE FROM day_rush WHERE day = ?", [Number(process.argv[1])]);
+          console.log("rows changed:", done.changes);' <the day from the error>
   ```
