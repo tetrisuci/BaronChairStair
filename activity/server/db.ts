@@ -305,6 +305,10 @@ CREATE TABLE IF NOT EXISTS submissions (
   handling           TEXT NOT NULL,
   pieces_placed      INTEGER NOT NULL,
   clears             TEXT NOT NULL,
+  -- JSON ClearRequirement[], or NULL. Frozen at submit from the author's own
+  -- goal, gated on their own solve — see server/submissions.ts. Nullable
+  -- because most goals name nothing a count can hold.
+  required_clears    TEXT,
   status             TEXT NOT NULL DEFAULT 'pending',
   reviewer_note      TEXT,
   reviewed_at        INTEGER,
@@ -484,6 +488,15 @@ export class Store {
       // duration is the closest honest stand-in, and it keeps them from sorting
       // ahead of everybody at a displayed time of zero.
       "UPDATE runs SET total_ms = duration_ms WHERE total_ms = 0",
+    );
+    this.addMissingColumn(
+      "submissions",
+      "required_clears",
+      "TEXT",
+      // Deliberately no backfill. A row written before this column existed was
+      // accepted under attack-only scoring, and inventing a requirement for it
+      // now would hold later players to a bar its author never cleared. NULL is
+      // the honest answer: nothing was decided.
     );
     this.addMissingColumn(
       "day_rush",

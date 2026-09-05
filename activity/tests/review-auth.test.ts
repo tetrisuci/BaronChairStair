@@ -301,6 +301,7 @@ const WAITING: Submission = {
   queue: ["T"],
   hold: null,
   targetAttack: 4,
+  requiredClears: null,
   solution: [{ piece: "T", cells: [[4, 0]], clear: "tsd", attack: 4 }],
   events: [{ frame: 0, type: "keydown", data: { key: "hardDrop", subframe: 0 } }],
   handling: DEFAULT_HANDLING,
