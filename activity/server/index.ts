@@ -13,7 +13,6 @@ import { HTTPException } from "hono/http-exception";
 import {
   decodeBoard,
   ENGINE_ROWS,
-  meetsTarget,
   pieceBudget,
   type Puzzle,
   toListing,
@@ -42,6 +41,7 @@ import {
   verifyGuild,
 } from "./auth";
 import { config } from "./config";
+import { solvedUnderPolicy } from "./solve-verdict";
 import { Store, type StoredRun } from "./db";
 import { DaySchedule, pastDaysOf } from "./schedule";
 import {
@@ -287,7 +287,7 @@ app.post("/api/daily/run", requireSession, async (c) => {
   const verified = verifyRun(setup, handling, events);
 
   const { run, isFirst } = store.recordRun(day, tier, puzzle.id, session.player, session.guildId, {
-    solved: meetsTarget(verified.attack, puzzle.targetAttack),
+    solved: solvedUnderPolicy(verified.attack, verified.clears, puzzle, "daily"),
     attack: verified.attack,
     targetAttack: puzzle.targetAttack,
     durationMs: verified.durationMs,
@@ -738,7 +738,10 @@ app.post("/api/rush/run", requireSession, async (c) => {
       handling,
       segment.events,
     );
-    return { solved: meetsTarget(verified.attack, puzzle.targetAttack), durationMs: verified.durationMs };
+    return {
+      solved: solvedUnderPolicy(verified.attack, verified.clears, puzzle, "rush"),
+      durationMs: verified.durationMs,
+    };
   });
 
   // A puzzle is left behind by solving it or by skipping it — a dead board just

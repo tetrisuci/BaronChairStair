@@ -135,6 +135,18 @@ export const config = {
    *
    * An explicit setting always wins, in both directions.
    */
+  /**
+   * How strictly a solve is judged: `off`, `log` or `on`.
+   *
+   * See `server/solve-verdict.ts`. `log` is the default because the failure it
+   * prevents is somebody losing a five-minute rush to a stale client, and the
+   * failure it causes is a feature quietly not being enforced yet.
+   */
+  goalEnforcement: (["off", "log", "on"] as const).includes(
+    process.env.GOAL_ENFORCEMENT?.trim() as "off" | "log" | "on",
+  )
+    ? (process.env.GOAL_ENFORCEMENT!.trim() as "off" | "log" | "on")
+    : ("log" as const),
   trustProxy: process.env.TRUST_PROXY?.trim()
     ? process.env.TRUST_PROXY.trim() === "true"
     : !isProduction,
