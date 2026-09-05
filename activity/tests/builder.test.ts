@@ -807,6 +807,7 @@ describe("testing the draft", () => {
     flashRows: [],
     flashStrength: 0,
     dimmed: false,
+    aim: null,
     ...patch,
   });
 

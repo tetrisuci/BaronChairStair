@@ -16,6 +16,7 @@ import type { ArchiveListing } from "@shared/puzzle";
 import { filterArchive } from "@shared/archive-filter";
 import { ApiError } from "./api";
 import { InputRouter } from "./game/input";
+import { attachPointerPlay } from "./game/pointer";
 import { type LocalAction, keyName } from "@shared/keybinds";
 import { RushSession, type RushSummary } from "./game/rush";
 import { PuzzleRun, type RunSnapshot } from "./game/runner";
@@ -91,6 +92,8 @@ export class App {
   private readonly settingsDialog;
   private readonly verdict;
   private readonly walkthrough = createWalkthroughPanel();
+  /** Undoes the pointer attachment; nothing else ever needs it. */
+  private readonly detachPointerPlay: () => void;
 
   private readonly rushPanel = createRushPanel(() => this.rush?.giveUp());
   private readonly rushBoard = createRushBoard();
@@ -284,6 +287,25 @@ export class App {
     });
 
     this.settings.subscribe((next) => this.input.setKeybinds(next.keybinds));
+
+    // Tap to rotate, drag to place, long-press to hold — on a finger or a
+    // mouse, through the one run the player is looking at.
+    this.detachPointerPlay = attachPointerPlay(this.canvas, {
+      spotAt: (x, y) => this.renderer.spotAt(x, y),
+      aim: (spot) => this.activeRun?.aimAt(spot),
+      commit: (spot) => {
+        const run = this.activeRun;
+        if (!run) return;
+        run.aimAt(spot);
+        if (!run.placeAt()) this.toast("No way to place the piece there");
+      },
+      unaim: () => this.activeRun?.clearAim(),
+      rotate: () => this.activeRun?.tap("rotateCW"),
+      hold: () => this.runHold(),
+    });
+
+    // The hold bay is a label, not a control; hold lives on the long-press
+    // gesture and, on a keyboard, wherever the player has bound it.
   }
 
   // ── Boot ───────────────────────────────────────────────────────────────────
@@ -292,6 +314,7 @@ export class App {
     this.mount();
     this.input.attach();
     window.addEventListener("resize", this.relayout);
+    window.addEventListener("beforeunload", () => this.dispose());
     new ResizeObserver(this.relayout).observe(this.stage);
     this.startCountdown();
 
@@ -559,6 +582,17 @@ export class App {
   private showPlayfield(): void {
     this.showColumns(this.hud.left, this.stage, this.hud.right);
     this.relayout();
+  }
+
+  /** Swaps the falling piece into hold, wherever a run is live. */
+  private runHold(): void {
+    this.activeRun?.tap("hold");
+  }
+
+  /** One place that updates the undo/redo affordances after a placement. */
+  private syncHistory(): void {
+    const run = this.activeRun;
+    this.hud.setHistory(run?.canUndo ?? false, run?.canRedo ?? false);
   }
 
   /**
@@ -1181,7 +1215,7 @@ export class App {
       },
       onFinish: (snapshot, events) => void this.finishRun(snapshot, events),
       // A placement is the only thing that changes what there is to undo.
-      onLock: () => this.hud.setHistory(this.run?.canUndo ?? false, this.run?.canRedo ?? false),
+      onLock: () => this.syncHistory(),
     },
     carriedResets,
     this.sheetOpenedAt);
@@ -1493,6 +1527,12 @@ export class App {
 
   private openSettings(): void {
     this.settingsDialog.open(this.settings.value.handling, this.settings.value.keybinds);
+  }
+
+  /** Frees the pointer capture and the last active run's frame loop. */
+  dispose(): void {
+    this.detachPointerPlay();
+    this.disposeActiveMode();
   }
 
   private readonly relayout = (): void => {

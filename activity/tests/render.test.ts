@@ -604,6 +604,21 @@ describe("a board drawn as a picture", () => {
   });
 });
 
+describe("the playfield field keeps gestures usable", () => {
+  test("the field keeps the browser's hands off pointer gestures", () => {
+    // The whole mobile feature turns on this one declaration: without it a
+    // drag pans the page and the piece never follows the finger. happy-dom
+    // cascades real stylesheets, so the contract is checkable here.
+    const style = window.document.createElement("style");
+    style.textContent = readFileSync("client/src/styles/sheet.css", "utf8");
+    window.document.head.append(style);
+    const field = window.document.createElement("div");
+    field.className = "field";
+    window.document.body.append(field);
+    expect(window.getComputedStyle(field as never).touchAction).toBe("none");
+  });
+});
+
 describe("rush attached to the day's board", () => {
   const row = (id: string, solved: number, totalMs: number) =>
     ({ player: { id, username: id, avatarUrl: null }, solved, totalMs, marks: {} }) as never;

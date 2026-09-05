@@ -707,6 +707,25 @@ Defaults: arrows to move and soft drop, space to hard drop, `Z`/`X` to rotate,
 `A` for 180, `C` to hold, `R` to restart, `S` to skip in a rush, `Esc` for
 settings.
 
+### Pointing and touching
+
+The board speaks the same language to a mouse and a finger — tap to rotate
+clockwise, **drag the piece to a square and let go to place it there**, press
+and hold to swap into hold. A drag is not a teleport: letting go commits the
+keys that put the piece on the square you saw, so the server replays a dragged
+placement exactly like a typed one, and a square reachable only by a kick is
+placed with the kick that reaches it — the spin credit follows the route, not
+the finger.
+
+Spins work the same way: tap first to set the rotation — twice for a TSD —
+then drag to the slot, and the engine credits what the route earned. While a
+drag is under way the piece shows where it would land: a solid outline on a
+square it can reach, dashed where nothing lands.
+
+The same actions have buttons: undo and redo sit in the Progress panel, and
+hold has its key. Pointers and keys share one log, so an undo takes back a
+dragged placement exactly like a pressed one.
+
 ## Look and feel
 
 The palette, the type, and the shapes come from

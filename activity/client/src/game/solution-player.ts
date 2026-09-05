@@ -95,6 +95,7 @@ export class SolutionPlayer {
       flashRows: [],
       flashStrength: 0,
       dimmed: false,
+      aim: null,
     };
   }
 }
