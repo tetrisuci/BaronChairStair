@@ -11,7 +11,7 @@ import type { LockRes } from "@haelp/teto/engine";
 import type { BoardCell, ClearName, Mino as Letter } from "../puzzle";
 import type { Handling } from "./handling";
 import { createPuzzleEngine, type PuzzleSetup, readBoard, toLetter } from "./engine";
-import { findPaths, type MoveKey, type TargetCells } from "./pathfinder";
+import { RoutePlanner, ticksForRoute, type TargetCells } from "./pathfinder";
 
 export interface PlacementRequest {
   readonly piece: Letter;
@@ -92,38 +92,30 @@ export function replayPlacements(
       );
     }
 
-    const routes = findPaths(engine, placement.cells);
-    if (routes.length === 0) {
+    // Routes differ in which kick lands the piece, and the kick decides whether
+    // a spin scores full or mini. One definition of "placed here, at the
+    // strongest attack" lives in the planner, so the build pipeline and a
+    // dragged placement can never pick different routes for the same ask.
+    // The replay ticks the route as the timed batches the planner trialed —
+    // the shape the run's log takes — because any other replay would play
+    // different physics: a pressed soft drop falls at once while a tapped one
+    // only holds its frame, and a held one only its tick.
+    const planner = new RoutePlanner(engine);
+    const committed = planner.placementAt(placement.cells);
+    if (!committed) {
       throw new ReplayError(`no route to ${describe(placement.cells)}`, index);
     }
 
-    // Routes differ in which kick lands the piece, and the kick decides whether
-    // a spin scores full or mini. Try them all and keep the author's best line.
-    const before = engine.snapshot();
-    let bestRoute: { keys: MoveKey[]; lock: LockRes; attack: number } | null = null;
-    for (const keys of routes) {
-      engine.fromSnapshot(before);
-      lastLock = null;
-      for (const key of keys) engine.press(key);
-      engine.press("hardDrop");
-      if (!lastLock) continue;
-      const attack = sum((lastLock as LockRes).garbage);
-      if (!bestRoute || attack > bestRoute.attack) {
-        bestRoute = { keys, lock: lastLock as LockRes, attack };
-      }
+    for (const batch of ticksForRoute(committed.route, engine.frame)) {
+      engine.tick(batch as never);
     }
-    if (!bestRoute) throw new ReplayError("hard drop did not lock a piece", index);
+    if (!lastLock) throw new ReplayError("hard drop did not lock a piece", index);
 
-    engine.fromSnapshot(before);
-    for (const key of bestRoute.keys) engine.press(key);
-    engine.press("hardDrop");
-
-    const lock = bestRoute.lock;
     steps.push({
       piece: placement.piece,
       cells: placement.cells,
-      clear: nameClear(lock, engine.board.perfectClear),
-      attack: sum(lock.garbage),
+      clear: nameClear(lastLock as LockRes, engine.board.perfectClear),
+      attack: sum((lastLock as LockRes).garbage),
       board: readBoard(engine),
     });
   });
