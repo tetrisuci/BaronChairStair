@@ -33,6 +33,19 @@
   .stage { min-height: 230px; }
 
   /*
+   * The builder's board asks for more of the middle row than a board being
+   * watched does. 230px of a 1:2 field is 115px across — ten columns of eleven
+   * pixels, which is a target for a pointer and not for a finger, on the layout
+   * most likely to be getting one. The deck already scrolls here, so the extra
+   * is paid for in scrolling rather than in a clipped board.
+   *
+   * Keyed off the board rather than a class on the deck: every screen that
+   * mounts has to remember to undo whatever the last one did, and this is one
+   * fewer thing to remember.
+   */
+  .deck:has(.build__board) { grid-template-rows: auto minmax(360px, 1fr) auto; }
+
+  /*
    * Panels wrap onto more lines rather than the rail becoming a scroller:
    * `overflow-x: auto` forces the cross axis to clip too, which is what was
    * cutting result cards off halfway.
@@ -84,12 +97,45 @@
 
   .spec__col + .spec__col { border-left: none; border-top: 1px dotted var(--ink-line); }
   .board-list { max-height: 130px; }
+
+  /*
+   * The front door stacks.
+   *
+   * DOM order is daystrip, sheets, ways, board — so it falls out with no
+   * `order:`, and the modes stay above the leaderboard. What you came for
+   * should not be below what you came to look at.
+   */
+  .home { grid-template-columns: minmax(0, 1fr); }
+
+  /*
+   * Nothing stretches here. The screen scrolls once the column is taller than
+   * the window, and an elastic in a scroller is an elastic with nothing to
+   * pull against — it would only stop the sheets from reaching their own size.
+   */
+  .home__today,
+  .today__sheet--hero { flex: none; }
+
+  /* Height-capped rather than width-capped: the column is the whole screen now. */
+  .today__thumb { max-height: 120px; }
 }
 
 @media (max-width: 560px) {
   .masthead__meta .tally:nth-child(n + 3) { display: none; }
   .rail > * { min-width: 118px; }
   .credits__title { font-size: 13px; }
+
+  /*
+   * Two columns on the sheet, not three: the chip drops under the body rather
+   * than taking a third of a phone's width for eleven characters.
+   */
+  .today__sheet { grid-template-columns: 68px minmax(0, 1fr); }
+  .today__sheet-side { grid-column: 2; justify-items: start; }
+  /* The same instinct as `.credits__by` above: the byline is the first thing
+     worth losing, and a board picture needs room this width does not have. */
+  .today__thumb,
+  .home .explore__by { display: none; }
+  .today__sheet .build__strip { --glyph-cell: 8px; }
+  .home__ways-grid { grid-template-columns: minmax(0, 1fr); }
 }
 
 /*
@@ -126,4 +172,14 @@
    * panel alone is taller than the strip of deck you can see at once.
    */
   .queue { max-height: 40vh; }
+
+  /*
+   * `align-items: start` leaves the middle row sized by what is in it, and a
+   * percentage height against that resolves to nothing — so here the board is
+   * whatever this floor says and nothing else. The deck is scrolling by now,
+   * which is what pays for a board taller than the window: the same 360 the
+   * narrow layout asks for, so a window that is both short and narrow gets one
+   * board and not two disagreeing answers.
+   */
+  .build__grid { min-height: 360px; }
 }

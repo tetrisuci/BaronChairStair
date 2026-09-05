@@ -6,6 +6,7 @@
   "description": "Daily modern-Tetris puzzle, playable as a Discord Activity.",
   "scripts": {
     "puzzles": "bun run tools/build-puzzles.ts",
+    "review-link": "bun run tools/review-link.ts",
     "dev": "bun run --hot server/index.ts",
     "dev:client": "vite",
     "build": "vite build",
@@ -15,7 +16,7 @@
   },
   "dependencies": {
     "@discord/embedded-app-sdk": "^2.1.0",
-    "@haelp/teto": "^4.2.6",
+    "@haelp/teto": "4.2.7",
     "hono": "^4.6.0"
   },
   "devDependencies": {

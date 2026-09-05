@@ -37,11 +37,21 @@ export class SolutionPlayer {
   private boards: BoardCell[][][];
 
   constructor(
-    private readonly puzzle: PuzzlePrompt,
+    /**
+     * Only the starting board is read, and the type now says so.
+     *
+     * It was the whole `PuzzlePrompt` while the reveal at the end of a run was
+     * the only caller and one was always to hand. The review page steps a
+     * *submission*, which has no id, no rating and no archive target — and
+     * inventing those to satisfy a parameter this class never looks at would
+     * put a puzzle-shaped object that is not a puzzle into the one place a
+     * reviewer decides whether it should become one.
+     */
+    prompt: Pick<PuzzlePrompt, "board">,
     private readonly steps: readonly SolutionStep[],
     readonly visibleRows: number,
   ) {
-    let board = decodeBoard(puzzle.board, ENGINE_ROWS);
+    let board = decodeBoard(prompt.board, ENGINE_ROWS);
     this.boards = [board];
     for (const step of steps) {
       board = lockCells(board, step.cells, step.piece);

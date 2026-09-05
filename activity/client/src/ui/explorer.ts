@@ -179,11 +179,23 @@ export function createExplorer(callbacks: ExplorerCallbacks): Explorer {
         class: `explore__item${locked ? " explore__item--locked" : ""}`,
         attrs: locked ? { disabled: true } : {},
         title: locked
-          ? "Today's puzzle. Play it on the daily first."
+          ? "One of today's three. Solve it on the daily and it opens here."
           : `${entry.goal} · ${entry.targetAttack} attack`,
       },
       el("span", { class: "explore__id", text: `#${entry.id}` }),
-      el("span", { class: "explore__title", text: entry.title || "untitled" }),
+      el(
+        "span",
+        { class: "explore__title" },
+        entry.title || "untitled",
+        // The reason, on the row rather than in a `title` attribute. A greyed
+        // line with a tooltip is a line that looks broken: the attribute needs
+        // a hover nobody thinks to try, and a browser will not show one on a
+        // disabled button at all — so the only thing the player was told was
+        // that this puzzle is different, never why.
+        locked
+          ? el("span", { class: "explore__locked", text: "today's — solve it on the daily" })
+          : null,
+      ),
       el("span", { class: "explore__meta", text: `${rating} · ${entry.pieces}p` }),
     );
     if (!locked) line.addEventListener("click", () => callbacks.onPlay(entry.id));

@@ -1,0 +1,427 @@
+/*
+ * The front door: the day's three, the other four ways in, and the day's board.
+ *
+ * Its own file rather than another heading in panels.css, which was already at
+ * the length where a reader stops scrolling and starts grepping. Loaded after
+ * panels.css and before narrow.css, but nothing here depends on that: every
+ * rule that refines one of the shared classes — `.explore__item`,
+ * `.explore__goal`, `.explore__meta`, `.board-list` — wins on specificity
+ * rather than on which stylesheet happened to load last, which is what lets it
+ * move at all. See `ui/home.ts` for what the screen is answering.
+ */
+
+/* ── The front door ───────────────────────────────────────────────────────── */
+
+/*
+ * Two columns: the day on the left, the day's board on the right.
+ *
+ * Exactly as tall as the screen, no more and no less — `.screen--full` above
+ * caps the row, and this stretches into it. Which means the two columns
+ * disagree about what to do with a window too small for them, and both answers
+ * are right: the left one overflows into `.screen`'s scroll region, because
+ * every sheet on it is something you might want to press; the right one shrinks
+ * and scrolls inside itself, because a leaderboard is a list and lists scroll.
+ */
+.home {
+  display: grid;
+  /*
+   * The rail is a share of the window rather than a fixed 312 that shrinks only
+   * when it is forced to. Discord does not promise 1280: at 900 a fixed rail
+   * left the day 536px, and the sheets started wrapping their own bylines while
+   * a leaderboard nobody asked to read kept the same width it has on a desk.
+   * The floor is a board that is still a board — rank, a readable name, three
+   * marks and a score — and the ceiling is where a wider window stops helping
+   * it and the day should have the rest.
+   */
+  grid-template-columns: minmax(0, 1fr) clamp(264px, 30%, 312px);
+  gap: var(--gutter);
+}
+
+.home__main {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+/*
+ * The caption for the three sheets under it, which have none of their own.
+ * On the ruled ground rather than in a card: a card here would be a heading
+ * inside a box on top of a stack of boxes.
+ */
+.home__day { display: grid; gap: 3px; }
+.home__day-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+
+/*
+ * Not `.rush__headline`, which is the same size and the right weight and lives
+ * in rush. Reaching across for a `rush__` class outside rush is how a language
+ * drifts into a pile of one-off classes that happen to look alike.
+ */
+.home__day-title { margin: 0; font-size: clamp(24px, 3vw, 34px); }
+.home__day-number { font-size: 13px; color: var(--ink-soft); }
+/*
+ * Two classes, one element, same specificity — and overlays.css's
+ * `.note { font-size: 11px }` loads after this file, so it won on source order
+ * and this declaration did nothing. The parent qualifies it rather than an
+ * `!important`: this file's header says nothing in it depends on load order,
+ * and that should stay true rather than be defended by force.
+ */
+.home__day .home__day-note { font-size: 12px; }
+
+/*
+ * The three sheets, and the receipt that replaces the hero once the day is
+ * over. This is the elastic: it takes what the daystrip and the ways panel
+ * leave, and hands it to the hero inside it.
+ */
+.home__today {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex: 1 1 auto;
+}
+
+/*
+ * A panel's construction that presses like a `.btn` — the combination the rest
+ * of the interface already implies and had not yet named.
+ */
+.today__sheet {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+  /* Only the hero stretches. Without this the compact sheets shrink first and
+     squash their own text when the column runs short. */
+  flex: none;
+  padding: 10px 12px 11px;
+  border: var(--edge) solid var(--ink);
+  border-radius: var(--radius);
+  background: var(--cream);
+  box-shadow: var(--drop) var(--drop) 0 var(--ink);
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  transition: transform 70ms ease, box-shadow 70ms ease, background-color 90ms ease;
+}
+
+.today__sheet:hover { background: var(--sun); }
+
+/*
+ * The press travels the whole shadow, rather than `.btn`'s literal 3px.
+ *
+ * This card carries `--drop`, which is 4 and drops to 3 under narrow.css, so a
+ * copied literal would leave a sliver of shadow showing under a pressed sheet
+ * on one layout and none on the other. A press that does not travel its own
+ * shadow reads as a foreign control on a page whose premise is that everything
+ * is the same object.
+ */
+.today__sheet:active {
+  transform: translate(var(--drop), var(--drop));
+  box-shadow: 0 0 0 var(--ink);
+}
+
+.today__sheet-tier { display: grid; gap: 5px; justify-items: start; }
+.today__tier { font-size: 13px; }
+
+.today__sheet-body { display: grid; gap: 4px; min-width: 0; }
+.today__sheet-name { min-width: 0; }
+.today__title { font-size: 15px; }
+.today__sheet--hero .today__title { font-size: 20px; }
+
+.today__sheet-side { display: grid; gap: 8px; justify-items: end; }
+
+/*
+ * Two lines, then an ellipsis.
+ *
+ * The one idiom the codebase did not already have, and it is not optional:
+ * goals reach 115 characters and two of them carry newlines, so single-line
+ * truncation would hide the field this screen was rebuilt to promote. Scoped
+ * to the sheet so it cannot reach the explorer's rows, which are one line by
+ * design.
+ */
+.today__sheet .explore__goal,
+.today__sheet .goal__text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+}
+
+/* The sheet's meta has a column to wrap in; the explorer's rows do not. */
+.today__sheet .explore__meta { white-space: normal; }
+
+/*
+ * The queue strip's size, set here rather than passed to `pieceGlyph`.
+ *
+ * That option writes `--glyph-cell` inline on the glyph itself, which no
+ * ancestor rule can then override. `pieceGlyph` now writes it only when a
+ * caller passes one — the default is the `var(--glyph-cell, 11px)` fallback in
+ * panels.css, which a container can reach — so setting it here is what lets
+ * narrow.css shrink these at a breakpoint. Anything still passing `cell:`
+ * opts out of that, which is the hud and the builder, deliberately.
+ */
+.today__sheet .build__strip { --glyph-cell: 9px; }
+
+/*
+ * The state of the day on this puzzle: solved, filed and missed, in progress,
+ * or untouched. Four backgrounds and one element — the green is the ground the
+ * day board's own solved mark uses, so the two agree without either knowing
+ * about the other.
+ */
+.today__chip {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  padding: 3px 7px;
+  border: 1px solid var(--ink);
+  border-radius: var(--radius-sm);
+}
+.today__chip--solved { background: var(--good); }
+.today__chip--filed { background: transparent; }
+.today__chip--open { background: var(--sun); }
+/* Quietest of the four: a readout, not a verdict on a puzzle you are being
+   invited to press. */
+.today__chip--new { background: var(--cream-shade); color: var(--ink-soft); }
+
+/*
+ * The first sheet still worth playing.
+ *
+ * Its distinction is size, the board picture and the bigger type — deliberately
+ * not a sun ground, which is a tinted card on a tinted ruled ground at the top
+ * of the page, and deliberately not `--drop-lg`, which belongs to the overlays.
+ * Three sheets at one shadow weight is what makes the size difference read as
+ * size rather than as a different kind of object.
+ */
+.today__sheet--hero {
+  flex: 1 1 auto;
+  /*
+   * A window with no slack to give must still leave this recognisably the big
+   * one. 152 rather than a rounder number: it is what a 900-wide Discord window
+   * has left over once the daystrip, two compact sheets and the ways panel have
+   * been paid for, and a floor that does not fit is a floor that makes the
+   * front page scroll on the most ordinary window there is.
+   */
+  min-height: 152px;
+}
+
+/*
+ * The chip stays pinned top-right, as it is on every other sheet; the picture
+ * takes the rest of the column and is capped by it. Stretching the side is what
+ * gives `max-height: 100%` on the thumbnail something to be a percentage of.
+ */
+.today__sheet--hero .today__sheet-side {
+  align-self: stretch;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
+}
+
+/*
+ * On a hero taller than its own contents, the middle is centred and the corners
+ * stay put.
+ *
+ * The hero takes the column's slack, and how much that is depends on a thing
+ * nobody chose: how deep today's board happens to be. Boards run from one row
+ * to fourteen, and a three-row one cannot fill two hundred pixels of height at
+ * any width that is not absurd. Left top-aligned, the surplus all lands under
+ * the last line and reads as a card that failed to finish; centred, the same
+ * pixels read as a poster's margins. The tier word and the chip are anchors and
+ * do not move — they are in the same place on all three sheets.
+ */
+.today__sheet--hero .today__sheet-body,
+.today__sheet--hero .today__thumb {
+  align-self: center;
+}
+
+/*
+ * The board, at the depth the board actually has.
+ *
+ * Width-led rather than height-led, which is the opposite of the playfield in
+ * sheet.css and for the opposite reason. That board is always ten by twenty;
+ * these run from one row deep to fourteen, so a box told to fill the hero's
+ * height letterboxes a three-row board inside two hundred pixels of cream and
+ * a plum border — an empty box, which is the complaint this whole screen
+ * exists to answer. Fixed width, height from the ratio, and `max-height` to
+ * stop the deepest boards from setting the hero's height themselves: an SVG
+ * with a viewBox carries its own ratio, so both constraints stay proportional.
+ */
+.today__thumb {
+  /*
+   * A share of the window, floored at the 210 that was here before.
+   *
+   * Still width-led for the reason above — height-led letterboxes a three-row
+   * board — but a fixed 210 meant a wider window spent all of its extra room on
+   * cream, and the picture of the puzzle you are about to play is the one thing
+   * on this card worth more space. The ceiling is where a bigger picture stops
+   * telling you anything the smaller one did not.
+   */
+  width: clamp(210px, 20vw, 300px);
+  height: auto;
+  max-height: 100%;
+  border: var(--edge) solid var(--ink);
+  border-radius: var(--radius-sm);
+  background: var(--cream);
+}
+
+/*
+ * Done work gets quieter as the day goes on, and the height it gives up goes
+ * to the hero — so the page visibly changes shape between morning and lunch.
+ * Still pressable: a solved tier opens its filed run and its walkthrough.
+ */
+.today__sheet--filed {
+  padding: 8px 12px;
+  background: var(--cream-shade);
+}
+
+/*
+ * A shade tighter than a `.panel`, top and bottom.
+ *
+ * This is the last thing in the column and the only one whose height is pure
+ * overhead — four one-line rows in a box. Every pixel it gives back is a pixel
+ * of the hero, which is the object this screen exists to make big.
+ */
+.home__ways { flex: none; padding: 9px 12px 10px; }
+.home__ways .explore__item { padding: 5px 8px; }
+.home__done { flex: none; }
+.home__done-stats { display: grid; }
+
+/*
+ * Two columns wherever two fit, which at 264 is every window the two-column
+ * layout itself survives. Four rows stacked is 75px taller, and at a 900px
+ * Discord window that is the difference between the front door fitting and
+ * the front door scrolling.
+ */
+.home__ways-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(264px, 1fr));
+  gap: 6px;
+}
+
+/*
+ * 68px because EXPLORE does not fit `.explore__item`'s 46px column, which was
+ * sized for a puzzle number — and not a pixel more, because what is left is
+ * the sentence. The name is display type rather than `.explore__id` for the
+ * same reason the row exists at all: mono 11px in --ink-faint is the right
+ * weight for an id and much too quiet for the name of a mode.
+ *
+ * Every one of the four sentences fits this on one line at 1280, which is what
+ * the tightened gap buys. A wrapped sentence beside the Rush count read as one
+ * run-on line — "five minutes, as many / as you can  No runs yet" — and two
+ * lines for one row and one for the other three is a ragged panel besides.
+ */
+.home__ways .explore__item {
+  grid-template-columns: 68px minmax(0, 1fr);
+  gap: 3px 8px;
+  align-items: baseline;
+}
+
+/*
+ * The Rush count sits under its sentence rather than beside it.
+ *
+ * Beside it, the sentence had to give up the width the count wanted and wrapped
+ * into it — "five minutes, as many / as you can   4 runs · best 7" reads as one
+ * run-on line. Worse, the column was as wide as whatever the count happened to
+ * say, so the row that reads "No runs yet" before the leaderboard lands would
+ * re-wrap the moment it did: a layout shift fired by an async fetch, on the
+ * screen whose whole leaderboard argument is that nothing here does that.
+ *
+ * Its own line costs nothing — the row was two lines either way — and the
+ * reserved height is what keeps it two lines before the response arrives.
+ */
+.home__ways .explore__meta {
+  grid-column: 2;
+  min-height: 15px;
+}
+
+.home__ways-name {
+  font-family: var(--display);
+  font-weight: 800;
+  font-stretch: 108%;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+/*
+ * The whole of the leaderboard's four-state answer is this one declaration.
+ *
+ * Uncapped, the panel is a `flex: 0 1 auto` item in a column with a definite
+ * height: empty it is a caption and one sentence and the ground shows below
+ * it, full it shrinks to the column and `.board-list` scrolls inside itself.
+ * No JS, no `:has()`, no class toggling — and so nothing on the page moves
+ * when the fetch lands, which is the point. A rule that reflowed the layout
+ * once the board turned out to be empty would be a layout shift fired by an
+ * async response.
+ *
+ * Specificity, not source order: `.home__side .board-list` is (0,2,0) and beats
+ * narrow.css's `.board-list { max-height: 130px }` (0,1,0) from whichever file
+ * loads last. The media query is what hands that cap back below the
+ * breakpoint, where the screen is one column and forty rows of board would
+ * otherwise push the whole day off the top of the scroll.
+ */
+@media (min-width: 881px) {
+  .home__side .board-list { max-height: none; }
+
+  /*
+   * The board fills its column instead of floating at the top of it.
+   *
+   * Every other screen uses the yellow ground as a margin *around* a card. This
+   * was the one screen where it became a hole *inside* the composition: on the
+   * morning nobody has played — which is most mornings, and the state the
+   * design names as most common — a 76px card sat above roughly a thousand
+   * pixels of bare ruling, beside a left column that was full to the footer.
+   * It read as a card that had failed to load rather than as a board with
+   * nothing on it yet.
+   *
+   * Stretching the panel rather than moving the board under the day, because
+   * the board arrives from a fetch: anything that reflows when it lands would
+   * move the three sheets under the player's cursor. This way the column is the
+   * same shape empty and full — the list simply grows downward inside it, and
+   * `.board-list`'s own `overflow-y` is what scrolls when there are more names
+   * than room.
+   */
+  .home__side > .panel { flex: 1 1 auto; }
+  /*
+   * `align-content: start` is the half of this that is not optional. The list
+   * is a grid, so filling the panel made its implicit rows share the surplus —
+   * five names spread over eight hundred pixels, each row a hand's width from
+   * its own score. The list fills the column; the rows keep the height their
+   * content asks for and the ground below them stays inside the card.
+   */
+  .home__side > .panel > .board-list { flex: 1 1 auto; min-height: 0; align-content: start; }
+}
+
+/*
+ * In a squeezed rail, the score takes its own line rather than the name's.
+ *
+ * The row is rank | name | marks | score, and the score is the widest thing on
+ * it and refuses to wrap — deliberately, since "3/3 · 1:40.0" is one score and
+ * a grid column would happily break it in half. So the score won the fight for
+ * a 264px rail and the name lost: measured at 900px, rank 1 rendered
+ * `tetrisatuci` in 15 pixels — one letter and an ellipsis — while rank 4's
+ * `guest`, whose score is the two characters "0/3", got 115. The better a
+ * player did, the less of their name survived, which is the wrong way round on
+ * a leaderboard.
+ *
+ * Bounded to where the squeeze exists. `.home__side` is `clamp(264px, 30%,
+ * 312px)`, so it sits at its floor from the 881px breakpoint up to about 1040
+ * and reaches the 312 ceiling after that; past there the names already fit and
+ * a second line would only cost rows. Below 881 the screen is one column and
+ * the board is full width.
+ */
+@media (min-width: 881px) and (max-width: 1100px) {
+  .home__side .board-list__row--marks {
+    grid-template-columns: 20px minmax(0, 1fr) auto;
+  }
+  .home__side .board-list__score {
+    grid-column: 2 / -1;
+    text-align: right;
+    /* The row's 8px gap is a gutter between columns; as a gap between a name
+     * and its own score it reads as two rows rather than one. */
+    margin-top: -4px;
+  }
+  .home__side .board-list__row--marks { row-gap: 0; align-items: center; }
+}

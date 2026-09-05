@@ -43,6 +43,7 @@ function listing(patch: Partial<ArchiveListing>): ArchiveListing {
     set: null,
     pieces: 5,
     targetAttack: 4,
+    community: false,
     ...patch,
   };
 }

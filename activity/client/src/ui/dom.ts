@@ -62,6 +62,21 @@ export function panel(caption: string, options: { class?: string } = {}, ...chil
   );
 }
 
+/**
+ * Puts the model's own text back into a field once the caret has left it.
+ *
+ * A redraw cannot: it refuses to write into the focused field, which is the
+ * only reason a caret survives typing. So a dropped emoji, a letter a field
+ * does not take, or a number that was clamped stays visible while the model
+ * carries something else — right up until something ships the difference. On
+ * blur there is no caret to protect, and what is on screen becomes the truth.
+ */
+export function writeBackOnBlur(field: HTMLInputElement, read: () => string): void {
+  field.addEventListener("blur", () => {
+    field.value = read();
+  });
+}
+
 export function stat(key: string, value: string | number): HTMLElement {
   return el(
     "div",

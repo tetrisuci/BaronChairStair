@@ -15,6 +15,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import { archive as puzzles, hasSolutions, solutionOf } from "./archive";
 import { byTier, DAILY_TIERS, puzzleIndexForDay } from "../shared/daily";
 import { seededShuffle, shuffledIndices } from "../shared/rng";
 import {
@@ -39,7 +40,7 @@ import { DEFAULT_HANDLING } from "../shared/tetris/handling";
 import { findPaths } from "../shared/tetris/pathfinder";
 import { type GameKey, type InputEvent, verifyRun } from "../shared/tetris/verify";
 
-const puzzles: Puzzle[] = JSON.parse(readFileSync("data/puzzles.json", "utf8")).puzzles;
+// Merged with the untracked answers; see tests/archive.ts.
 const eligible = puzzles.filter(isRushEligible);
 
 /** One frame down, one frame up: long enough to register, short of DAS. */
@@ -401,7 +402,7 @@ function solutionLog(puzzle: Puzzle): { events: InputEvent[]; afterStep: number[
     frame += FRAMES_PER_INPUT;
   };
 
-  for (const step of puzzle.solution) {
+  for (const step of solutionOf(puzzle)) {
     if (toLetter(engine.falling.symbol) !== step.piece) {
       tap("hold");
       engine.hold(false, true);
@@ -421,15 +422,24 @@ function solutionLog(puzzle: Puzzle): { events: InputEvent[]; afterStep: number[
 
 /** Where a log is cut: half the solution, so pieces are always left over. */
 function halfway(puzzle: Puzzle): number {
-  return Math.max(1, Math.floor(puzzle.solution.length / 2));
+  return Math.max(1, Math.floor(solutionOf(puzzle).length / 2));
 }
 
 /** What the archive says the first `steps` placements are worth. */
 function attackThrough(puzzle: Puzzle, steps: number): number {
-  return puzzle.solution.slice(0, steps).reduce((total, step) => total + step.attack, 0);
+  return solutionOf(puzzle).slice(0, steps).reduce((total, step) => total + step.attack, 0);
 }
 
-describe("verifyRun on a log that stops mid-solution", () => {
+/*
+ * Guarded, like every other block that needs the club's reference answers:
+ * `data/solutions.json` is untracked — an answer key beside the puzzles is an
+ * answer key for everybody — so a fresh clone has boards and no solutions, and
+ * `solutionOf` throws rather than returning one. `tests/archive.ts` states the
+ * rule these blocks were missing: a test that builds a solving log skips, so
+ * somebody cloning this repo sees a suite that passes rather than one that
+ * looks broken by their own checkout.
+ */
+describe.skipIf(!hasSolutions)("verifyRun on a log that stops mid-solution", () => {
   // The idle bound stops the replay once the log is exhausted and nothing has
   // locked for a while, which is the difference between a skip costing two
   // milliseconds and costing fifteen. It must not be the difference between a

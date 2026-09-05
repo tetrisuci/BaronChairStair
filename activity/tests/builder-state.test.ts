@@ -1,0 +1,698 @@
+/**
+ * The builder's model, checked where it touches the format.
+ *
+ * Two of these are the ones that matter. The round trip is
+ * `blueprint-encode.test.ts`'s invariant applied to the builder's own shape: a
+ * board built here, written out, and read back has to be the same board. The
+ * archive check is the compatibility story — a code from bp.tali.software
+ * carries an active piece that *is* the first playable piece, and if `fromPage`
+ * folds it in differently from `tools/build-puzzles.ts` then loading a real
+ * puzzle quietly loses or duplicates its opening piece.
+ */
+
+import { describe, expect, test } from "bun:test";
+import { decodeBlueprint } from "../shared/blueprint/decode";
+import { encodeBlueprint } from "../shared/blueprint/encode";
+import {
+  MAX_GOAL_COUNT,
+  type BuilderSolve,
+  type BuilderState,
+  type GoalSpec,
+  cellIndex,
+  clampDifficulty,
+  CLEAR_NAMES,
+  DEFAULT_DIFFICULTY,
+  EMPTY_GOAL,
+  EMPTY_STATE,
+  formatGoal,
+  fromCode,
+  fromPage,
+  GOAL_LABELS,
+  goalFits,
+  hiddenCellCount,
+  lossFromPage,
+  MAX_GOAL,
+  MAX_QUEUE,
+  MAX_ROWS,
+  MAX_TITLE,
+  pageOf,
+  paintCells,
+  parseGoal,
+  parsePieces,
+  sanitizeGoal,
+  sanitizeTitle,
+  NO_TARGET,
+  submitBlocker,
+  summaryOf,
+  testBlocker,
+  toCode,
+  toPuzzle,
+  toSubmission,
+  unusedClears,
+  warningFor,
+  withGoalAttack,
+  withGoalEntry,
+} from "../client/src/ui/builder-state";
+import { MAX_DIFFICULTY, MIN_DIFFICULTY } from "../shared/archive-filter";
+import { DEFAULT_HANDLING } from "../shared/tetris/handling";
+import { archive, hasSolutions } from "./archive";
+
+const state = (patch: Partial<BuilderState> = {}): BuilderState => ({ ...EMPTY_STATE, ...patch });
+
+const cells = (entries: readonly (readonly [number, number, "g" | "I" | "T"])[]) =>
+  new Map(entries.map(([x, y, type]) => [cellIndex(x, y), type] as const));
+
+const fullRow = (y: number) =>
+  new Map(Array.from({ length: 10 }, (_, x) => [cellIndex(x, y), "g" as const]));
+
+describe("a board written out and read back", () => {
+  test("is the same board", () => {
+    const original = state({
+      cells: cells([
+        [0, 0, "g"],
+        [1, 0, "g"],
+        [9, 0, "I"],
+        [4, 3, "T"],
+      ]),
+      queue: ["T", "L", "J", "S"],
+      hold: "O",
+      goal: "Clear 2 TSDs",
+    });
+
+    const page = decodeBlueprint(toCode(original)).pages[0]!;
+    const again = fromPage(page);
+
+    expect([...again.cells].sort()).toEqual([...original.cells].sort());
+    expect(again.queue).toEqual(original.queue);
+    expect(again.hold).toBe("O");
+    expect(again.goal).toBe("Clear 2 TSDs");
+  });
+
+  test("survives having no hold, no goal and an empty board", () => {
+    const again = fromCode(toCode(state({ queue: ["I"] })));
+    expect(again).toEqual(state({ queue: ["I"] }));
+  });
+});
+
+describe.skipIf(!hasSolutions)("a code the club actually wrote", () => {
+  test("keeps its falling piece at the front of the queue", () => {
+    const sourced = archive.filter((puzzle) => Boolean(puzzle.source?.puzzle));
+    expect(sourced.length).toBeGreaterThan(100);
+    const wrong: number[] = [];
+    for (const puzzle of sourced) {
+      const loaded = fromCode(puzzle.source!.puzzle!);
+      const expected = puzzle.queue.slice(0, MAX_QUEUE);
+      if (loaded.queue.join("") !== expected.join("") || loaded.hold !== puzzle.hold) {
+        wrong.push(puzzle.id);
+      }
+    }
+    expect(wrong).toEqual([]);
+  });
+});
+
+describe("painting", () => {
+  test("sets, overwrites and erases without touching what it was given", () => {
+    const before = state({ cells: cells([[0, 0, "g"]]) });
+
+    const set = paintCells(before, [cellIndex(3, 1)], "T");
+    expect(set.cells.get(cellIndex(3, 1))).toBe("T");
+    expect(before.cells.size).toBe(1);
+
+    expect(paintCells(set, [cellIndex(3, 1)], "I").cells.get(cellIndex(3, 1))).toBe("I");
+    expect(paintCells(set, [cellIndex(3, 1)], "erase").cells.has(cellIndex(3, 1))).toBe(false);
+  });
+
+  test("hands back the same state when nothing moved", () => {
+    const before = state({ cells: cells([[0, 0, "g"]]) });
+    expect(paintCells(before, [cellIndex(0, 0)], "g")).toBe(before);
+    expect(paintCells(before, [cellIndex(5, 5)], "erase")).toBe(before);
+  });
+});
+
+
+describe("reading a queue somebody typed", () => {
+  test("keeps the piece letters and ignores everything else", () => {
+    expect(parsePieces("t, l j sZ x9").join("")).toBe("TLJSZ");
+    expect(parsePieces("")).toEqual([]);
+  });
+
+  test("stops at the cap", () => {
+    expect(parsePieces("T".repeat(100))).toHaveLength(MAX_QUEUE);
+  });
+});
+
+describe("the goal field", () => {
+  test("drops what the comment code page would mangle", () => {
+    // `writeText` reads `charCodeAt(0)` of each code point, so an astral
+    // character goes out as its lone high surrogate and comes back wrong.
+    expect(sanitizeGoal("🚀 spin")).toBe(" spin");
+    expect(sanitizeGoal("café")).toBe("caf");
+    expect(sanitizeGoal("→ left")).toBe(" left");
+  });
+
+  test("substitutes the punctuation a pasted goal actually carries", () => {
+    // Chat windows hand out curly quotes and em dashes, and the code page has
+    // ASCII for all of them. Dropping "’" turns "Don't" into "Dont".
+    expect(sanitizeGoal("Don’t waste the I")).toBe("Don't waste the I");
+    expect(sanitizeGoal("Set up a TSD — then PC")).toBe("Set up a TSD - then PC");
+    expect(sanitizeGoal("“stack flat”")).toBe('"stack flat"');
+    expect(sanitizeGoal("wait for it…")).toBe("wait for it...");
+  });
+
+  test("stops at the cap even when a substitution grew the text", () => {
+    // "…" costs three characters, so the cap has to be applied to the result
+    // rather than counted as it goes.
+    expect(sanitizeGoal("…".repeat(MAX_GOAL))).toHaveLength(MAX_GOAL);
+  });
+
+  test("leaves the encoder nothing it could mangle", () => {
+    const goal = sanitizeGoal("Clear 2 TSDs — fast! 🚀");
+    const page = decodeBlueprint(toCode(state({ queue: ["T"], goal }))).pages[0]!;
+    expect(page.comment).toBe(goal);
+  });
+});
+
+/**
+ * The goal's structured half.
+ *
+ * The whole design problem is that a blueprint code has one free-text comment
+ * and nothing else, so the counts have to survive as a sentence and be found
+ * again inside one. Two things are therefore load-bearing and both are pinned
+ * here: the sentence has to be one the club would have written by hand, and a
+ * sentence that is *not* one of ours has to come back untouched rather than be
+ * rounded into the nearest spec.
+ */
+describe("a goal written as counts", () => {
+  const spec = (clears: GoalSpec["clears"], attack = 0): GoalSpec => ({ clears, attack });
+
+  test("reads as a goal the archive would have written by hand", () => {
+    // Every one of these is a string that appears verbatim in data/puzzles.json,
+    // which is the bar: the player reads this on the sheet, not a format.
+    expect(formatGoal(spec([{ clear: "tsd", count: 1 }]))).toBe("Clear 1 TSD");
+    expect(
+      formatGoal(
+        spec([
+          { clear: "tsd", count: 2 },
+          { clear: "tst", count: 1 },
+        ]),
+      ),
+    ).toBe("Clear 2 TSDs and 1 TST");
+    // Three or more take the Oxford comma, as the archive's own do.
+    expect(
+      formatGoal(
+        spec([
+          { clear: "tss", count: 1 },
+          { clear: "tsd", count: 2 },
+          { clear: "tst", count: 1 },
+        ]),
+      ),
+    ).toBe("Clear 1 TSS, 2 TSDs, and 1 TST");
+    expect(formatGoal(EMPTY_GOAL)).toBe("");
+  });
+
+  test("comes back out of its own sentence as the same counts", () => {
+    const original = spec(
+      [
+        { clear: "tss", count: 1 },
+        { clear: "tsd", count: 2 },
+        { clear: "quad", count: 3 },
+      ],
+      18,
+    );
+    expect(parseGoal(formatGoal(original))).toEqual(original);
+  });
+
+  test("round trips every clear the vocabulary has", () => {
+    // A clear added to `ClearName` and forgotten here would serialise to a word
+    // the parser cannot read, and the counters would eat it on the way back.
+    for (const clear of CLEAR_NAMES) {
+      const one = spec([{ clear, count: 1 }]);
+      const many = spec([{ clear, count: 4 }], 7);
+      expect(parseGoal(formatGoal(one))).toEqual(one);
+      expect(parseGoal(formatGoal(many))).toEqual(many);
+    }
+  });
+
+  test("carries the attack, which is the number nothing else can derive", () => {
+    // A builder puzzle has no reference solution, so `targetAttack` cannot be
+    // computed the way the pipeline computes it. The author's own figure has to
+    // survive the only channel a code has.
+    const withAttack = spec([{ clear: "tsd", count: 3 }], 18);
+    const text = formatGoal(withAttack);
+    expect(text).toBe("Clear 3 TSDs for 18 attack");
+    expect(parseGoal(text)?.attack).toBe(18);
+
+    // And on its own, with nothing to clear.
+    expect(formatGoal(spec([], 20))).toBe("Send 20 attack");
+    expect(parseGoal("Send 20 attack")).toEqual(spec([], 20));
+
+    // Through the code itself, which is where it actually has to survive.
+    const again = fromCode(toCode(state({ queue: ["T"], goal: text })));
+    expect(again.goal).toBe(text);
+    expect(parseGoal(again.goal)).toEqual(withAttack);
+  });
+
+  test("never prints a count of zero", () => {
+    // "0 Quad" is not a goal, it is a control somebody turned back down.
+    const zeroed = withGoalEntry(
+      spec([
+        { clear: "tsd", count: 2 },
+        { clear: "quad", count: 3 },
+      ]),
+      "quad",
+      0,
+    );
+    expect(formatGoal(zeroed)).toBe("Clear 2 TSDs");
+    expect(zeroed.clears).toEqual([{ clear: "tsd", count: 2 }]);
+    // Even handed a spec that was built with one in it by some other route.
+    expect(
+      formatGoal(
+        spec([
+          { clear: "tsd", count: 2 },
+          { clear: "quad", count: 0 },
+        ]),
+      ),
+    ).toBe("Clear 2 TSDs");
+    // And an attack of zero is silence, not "for 0 attack".
+    expect(formatGoal(spec([{ clear: "tsd", count: 1 }], 0))).toBe("Clear 1 TSD");
+    expect(formatGoal(withGoalAttack(spec([], 12), 0))).toBe("");
+  });
+
+  test("reads the archive's own looser wording without rewriting it", () => {
+    // Tolerance is one-way: these parse, so the counters fill in, but nothing
+    // writes the text back unless the author moves a control.
+    expect(parseGoal("2 TSD + 1 TST")).toEqual(
+      spec([
+        { clear: "tsd", count: 2 },
+        { clear: "tst", count: 1 },
+      ]),
+    );
+    expect(parseGoal("3TSD")).toEqual(spec([{ clear: "tsd", count: 3 }]));
+    expect(parseGoal("2 TSS, 3 TSD")).toEqual(
+      spec([
+        { clear: "tss", count: 2 },
+        { clear: "tsd", count: 3 },
+      ]),
+    );
+    expect(parseGoal("Clear 1 TSD and 1 Tetris")).toEqual(
+      spec([
+        { clear: "tsd", count: 1 },
+        { clear: "quad", count: 1 },
+      ]),
+    );
+    expect(parseGoal("Perform 3 Spins")).toEqual(spec([{ clear: "spin", count: 3 }]));
+  });
+
+  test("refuses anything it cannot account for, whole", () => {
+    // Each of these is a real archived goal carrying something the counters
+    // have no room for. Half-reading them would drop the half that matters.
+    for (const prose of [
+      "3TSD not in one combo",
+      "3 B2B in one combo",
+      "Clear a TSD",
+      "Send 16 (no b2b table)",
+      "Clear 2 TSDs and 1 Quad (no hold)",
+      "TSD + TST",
+      "Clear a Quad while keeping season 2 B2B",
+      "Clear 4 TSDs and 2 Quads | Chain 5 attacks together",
+      // Not a total but an order, so the counters would say the wrong thing.
+      "2 TSDs and 2 TSDs",
+    ]) {
+      expect(parseGoal(prose)).toBeNull();
+    }
+    // Empty is not prose: it is a goal nobody has written yet.
+    expect(parseGoal("   ")).toEqual(EMPTY_GOAL);
+  });
+
+  test("leaves a prose comment exactly as it was written, through the code", () => {
+    // The rule the whole design turns on. Most codes in existence carry a goal
+    // that will never parse, and a builder that eats one on load is worse than
+    // one with no counters at all.
+    const prose = "3TSD not in one combo";
+    const again = fromCode(toCode(state({ queue: ["T"], goal: prose })));
+    expect(again.goal).toBe(prose);
+    expect(parseGoal(again.goal)).toBeNull();
+  });
+
+  test("offers only the clears the goal does not already name", () => {
+    expect(unusedClears(EMPTY_GOAL)).toEqual([...CLEAR_NAMES]);
+    expect(unusedClears(spec([{ clear: "tsd", count: 1 }]))).not.toContain("tsd");
+  });
+
+  test("knows when a sentence has run past what a comment can carry", () => {
+    const every = CLEAR_NAMES.reduce(
+      (built, clear) => withGoalEntry(built, clear, 99),
+      EMPTY_GOAL,
+    );
+    // Ten clears at two digits each is a sentence longer than the field holds,
+    // and the builder disables Add rather than truncating into unparseable text.
+    expect(formatGoal(every).length).toBeGreaterThan(MAX_GOAL);
+    expect(goalFits(every)).toBe(false);
+    expect(goalFits(spec([{ clear: "tsd", count: 2 }], 18))).toBe(true);
+  });
+
+  test("names every clear, so a new one cannot go unlabelled", () => {
+    for (const clear of CLEAR_NAMES) expect(GOAL_LABELS[clear]).not.toBe("");
+    expect(CLEAR_NAMES).toHaveLength(10);
+  });
+});
+
+describe("what a load cannot keep", () => {
+  const oversized = encodeBlueprint({
+    cells: [{ x: 0, y: 0, type: "g" }],
+    previews: Array.from({ length: MAX_QUEUE + 20 }, () => "T" as const),
+    hold: null,
+    comment: "x".repeat(MAX_GOAL + 80),
+  });
+
+  test("is counted and said, not swallowed", () => {
+    // The code box is refilled from the trimmed board, so Copy would hand back
+    // a shorter puzzle than the one pasted in. Silence there loses somebody's
+    // queue between two presses.
+    const page = pageOf(oversized);
+    expect(fromPage(page).queue).toHaveLength(MAX_QUEUE);
+    expect(fromPage(page).goal).toHaveLength(MAX_GOAL);
+
+    const loss = lossFromPage(page);
+    expect(loss).toContain("20 pieces");
+    expect(loss).toContain("80 characters");
+  });
+
+  test("says nothing about a code that fits", () => {
+    expect(lossFromPage(pageOf(toCode(state({ queue: ["T"], goal: "Clear 1 TSD" }))))).toBeNull();
+  });
+
+  test("does not count characters the code page was never going to carry", () => {
+    // 130 arrows are over the cap by raw length and under it by what the field
+    // can hold, because none of them survive the fold. Measuring the raw string
+    // would raise an alarm about a cap that never bit.
+    const arrows = encodeBlueprint({
+      cells: [],
+      previews: ["T"],
+      hold: null,
+      comment: "→".repeat(MAX_GOAL + 10),
+    });
+    expect(lossFromPage(pageOf(arrows))).toBeNull();
+  });
+});
+
+describe("cells above the drawn board", () => {
+  const tall = state({
+    queue: ["T"],
+    cells: cells([
+      [0, 0, "g"],
+      [3, 25, "g"],
+    ]),
+  });
+  const taller = state({
+    queue: ["T"],
+    cells: cells([
+      [0, 25, "g"],
+      [3, 25, "g"],
+    ]),
+  });
+
+  test("are counted", () => {
+    expect(hiddenCellCount(tall)).toBe(1);
+    expect(hiddenCellCount(state({ cells: cells([[0, 19, "g"]]) }))).toBe(0);
+  });
+
+  test("are named before anything else, because the board is not showing itself", () => {
+    const note = warningFor(tall);
+    expect(note).toContain("1 cell");
+    expect(note).toContain(`above row ${MAX_ROWS}`);
+    expect(note).toContain("Clear board");
+    expect(warningFor(taller)).toContain("2 cells");
+  });
+
+  test("survive the trip back out to a code", () => {
+    // Naming them is the fix, not dropping them: a code loaded and copied back
+    // still has to be the same puzzle.
+    const again = fromCode(toCode(tall));
+    expect([...again.cells].sort()).toEqual([...tall.cells].sort());
+  });
+});
+
+describe("the one warning", () => {
+  test("names the queue first, then a full row, then the board, then the goal", () => {
+    expect(warningFor(EMPTY_STATE)).toContain("queue");
+    expect(warningFor(state({ queue: ["T"], cells: fullRow(0) }))).toContain("Row 1");
+    expect(warningFor(state({ queue: ["T"] }))).toContain("empty board");
+    expect(warningFor(state({ queue: ["T"], cells: cells([[0, 0, "g"]]) }))).toContain("goal");
+  });
+
+  test("says nothing about a finished puzzle", () => {
+    expect(
+      warningFor(state({ queue: ["T"], cells: cells([[0, 0, "g"]]), goal: "Clear 1 TSD" })),
+    ).toBeNull();
+  });
+});
+
+describe("the summary line", () => {
+  test("counts what is there and says whether a hold is", () => {
+    expect(summaryOf(state({ cells: cells([[0, 0, "g"]]), queue: ["T", "L"] }))).toBe(
+      "1 cells · 2 pieces · no hold",
+    );
+    expect(summaryOf(state({ hold: "O" }))).toBe("0 cells · 0 pieces · hold O");
+  });
+});
+
+describe("a count typed wrong", () => {
+  test("a stray minus keeps the clear instead of deleting it", () => {
+    // Zero means "take this clear out"; a negative means a typo. Folding them
+    // together deleted the row on `-4` while `150` was politely clamped — the
+    // same control behaving two different ways at its two ends.
+    const spec = withGoalEntry(withGoalEntry(EMPTY_GOAL, "tsd", 2), "tst", 1);
+    expect(withGoalEntry(spec, "tsd", -4).clears.map((entry) => entry.clear)).toEqual([
+      "tsd",
+      "tst",
+    ]);
+    expect(withGoalEntry(spec, "tsd", -4).clears[0]!.count).toBe(1);
+    // Zero still means what it meant.
+    expect(withGoalEntry(spec, "tsd", 0).clears.map((entry) => entry.clear)).toEqual(["tst"]);
+    // And an overshoot is still clamped, not refused.
+    expect(withGoalEntry(spec, "tsd", 150).clears[0]!.count).toBe(MAX_GOAL_COUNT);
+  });
+});
+
+describe("the draft as something to play", () => {
+  test("keeps the floor on the floor and renames the author's garbage", () => {
+    // The model already counts up from the floor, which is the direction the
+    // engine reads a board in — so the conversion here has no flip in it, and a
+    // test that passed with one would be a builder that plays every stack
+    // upside down. The only change is `g` becoming `G`, the letter the rest of
+    // the app spells unclearable garbage with.
+    const draft = state({
+      cells: cells([
+        [0, 0, "g"],
+        [9, 0, "I"],
+        [3, 2, "T"],
+      ]),
+      queue: ["T"],
+    });
+
+    expect(toPuzzle(draft).board).toEqual(["G........I", "..........", "...T......"]);
+  });
+
+  test("keeps the rows the screen cannot draw", () => {
+    // Blueprint's field is forty rows and this screen paints twenty, so a code
+    // from anywhere else can carry cells above the board. They ship in the code
+    // and the engine plays on forty rows, so a test has to play the puzzle that
+    // would actually go out, not the twenty rows of it that were visible.
+    const draft = state({ cells: cells([[0, MAX_ROWS + 1, "g"]]), queue: ["T"] });
+
+    expect(toPuzzle(draft).board).toHaveLength(MAX_ROWS + 2);
+    expect(toPuzzle(draft).board[MAX_ROWS + 1]).toBe("G.........");
+  });
+
+  test("takes its target from the goal, and has none when the goal names no figure", () => {
+    // A shipped puzzle's target comes from its reference solution. A draft has
+    // no solution until somebody plays one, so the only figure to go on is the
+    // one the author wrote down — and at a target of zero `meetsTarget` is
+    // already true when the first piece lands, which would end every test
+    // having proved nothing.
+    expect(toPuzzle(state({ goal: "Clear 3 TSDs for 18 attack" })).targetAttack).toBe(18);
+    expect(toPuzzle(state({ goal: "Clear 2 TSDs" })).targetAttack).toBe(NO_TARGET);
+    expect(toPuzzle(state({ goal: "3TSD not in one combo" })).targetAttack).toBe(NO_TARGET);
+    expect(toPuzzle(state({ goal: "" })).targetAttack).toBe(NO_TARGET);
+  });
+
+  test("carries the queue and the hold across as they are", () => {
+    const draft = state({ queue: ["T", "L", "J"], hold: "O", goal: "Send 4 attack" });
+    const puzzle = toPuzzle(draft);
+
+    expect(puzzle.queue).toEqual(["T", "L", "J"]);
+    expect(puzzle.hold).toBe("O");
+    expect(puzzle.goal).toBe("Send 4 attack");
+  });
+
+  test("cannot be played without a queue", () => {
+    // The engine takes the first preview as the falling piece, so an empty
+    // queue opens on a board with nothing on it to move.
+    expect(testBlocker(state({ cells: cells([[0, 0, "g"]]) }))).toContain("queue");
+    expect(testBlocker(state({ queue: ["T"] }))).toBeNull();
+    // A hold with nothing behind it is not a queue: the piece in hold is only
+    // reachable by swapping the one that is falling.
+    expect(testBlocker(state({ hold: "O" }))).not.toBeNull();
+  });
+});
+
+describe("the title and the rating a code cannot carry", () => {
+  test("keeps the characters the review page and the route both take", () => {
+    // The route refuses a title with control characters or one past 60 rather
+    // than repairing it, on the grounds that the builder has already applied
+    // its limits — so this is that claim. Curly quotes are folded rather than
+    // dropped for the same reason the goal's are: deleting an apostrophe turns
+    // "Don't" into "Dont", which is a worse lie than a straighter quote.
+    expect(sanitizeTitle("Don’t Look Down")).toBe("Don't Look Down");
+    expect(sanitizeTitle("Well Named")).toBe("Well Named");
+    // Written as an escape, because a literal control character is invisible
+    // in the file arguing about it. It cannot be typed into the field, it can
+    // be pasted, and `readText` answers one with a 400 rather than trimming it.
+    expect(sanitizeTitle("A\u0007Name")).toBe("AName");
+    expect(sanitizeTitle("\u{1F680} Rocket")).toBe(" Rocket");
+    expect(sanitizeTitle("x".repeat(MAX_TITLE + 40))).toHaveLength(MAX_TITLE);
+  });
+
+  test("holds the rating to the one scale this repo enforces", () => {
+    // Twenty and not ten: the archive really contains a 20, so a control that
+    // stopped at ten could not describe a puzzle already on the list.
+    expect(clampDifficulty(MAX_DIFFICULTY)).toBe(MAX_DIFFICULTY);
+    expect(clampDifficulty(40)).toBe(MAX_DIFFICULTY);
+    expect(clampDifficulty(0)).toBe(MIN_DIFFICULTY);
+    expect(clampDifficulty(-3)).toBe(MIN_DIFFICULTY);
+    // A whole number, because every rating in the archive is one.
+    expect(clampDifficulty(7.6)).toBe(8);
+    // An empty box reads as NaN through `Number`, and a rating of nothing is
+    // not a rating of one — it is a control nobody moved.
+    expect(clampDifficulty(Number.NaN)).toBe(DEFAULT_DIFFICULTY);
+  });
+
+  test("a loaded code brings neither of them with it", () => {
+    // A blueprint page carries a board, a queue, a hold and one comment.
+    // Carrying the fields on screen across a load would put the last puzzle's
+    // name on a board that has just arrived from somewhere else.
+    const loaded = fromCode(
+      toCode(state({ queue: ["T"], goal: "Clear 1 TSD", title: "Kept", difficulty: 19 })),
+    );
+
+    expect(loaded.goal).toBe("Clear 1 TSD");
+    expect(loaded.title).toBe("");
+    expect(loaded.difficulty).toBe(DEFAULT_DIFFICULTY);
+  });
+});
+
+/**
+ * What stands between a draft and the review queue.
+ *
+ * Four of these are rules `POST /api/submissions` enforces as well, which is
+ * the point rather than an accident: the route refuses a body outside its
+ * bounds instead of repairing one, so a draft that fails only at the far end
+ * costs an author a run they have already made. These pin that the screen says
+ * it first, while the board is still theirs to fix.
+ */
+describe("the draft as something to send", () => {
+  const solve = (): BuilderSolve => ({
+    snapshot: {
+      phase: "solved",
+      attack: 4,
+      targetAttack: NO_TARGET,
+      piecesPlaced: 1,
+      pieceBudget: 1,
+      clears: ["single"],
+      elapsedMs: 900,
+      resets: 0,
+      hold: null,
+      upcoming: [],
+      holdLocked: false,
+    },
+    events: [{ frame: 0, type: "keydown", data: { key: "hardDrop", subframe: 0 } }],
+    handling: DEFAULT_HANDLING,
+  });
+
+  /** A draft with nothing left wrong with it, so a test can take one thing away. */
+  const finished = (patch: Partial<BuilderState> = {}) =>
+    state({
+      cells: cells([[0, 0, "g"]]),
+      queue: ["T"],
+      goal: "Clear 1 TSD",
+      title: "A Name",
+      ...patch,
+    });
+
+  test("is nothing at all once the draft is finished and somebody has played it", () => {
+    expect(submitBlocker(finished(), solve())).toBeNull();
+  });
+
+  test("names one thing at a time, in the order they are worth fixing", () => {
+    // The order is the decision, and it is cheap-fix-first on purpose: an
+    // author told to go and play their puzzle only to be asked for a title
+    // afterwards has been sent round twice. So the last refusal anybody ever
+    // sees is the expensive one, which is also the one this feature exists for.
+    expect(submitBlocker(state({ cells: cells([[0, MAX_ROWS, "g"]]) }), null)).toContain(
+      `above the ${MAX_ROWS} rows`,
+    );
+    expect(submitBlocker(EMPTY_STATE, null)).toContain("queue");
+    expect(submitBlocker(state({ queue: ["T"], cells: fullRow(0) }), null)).toContain("Row 1");
+
+    const unstated = finished({ goal: "", title: "" });
+    expect(submitBlocker(unstated, null)).toContain("goal");
+    expect(submitBlocker({ ...unstated, goal: "Clear 1 TSD" }, null)).toContain("title");
+    expect(submitBlocker(finished(), null)).toContain("Play it yourself");
+  });
+
+  test("refuses the two boards the route would refuse, before the run is spent", () => {
+    // A full row clears on the first lock wherever the piece lands, and that
+    // attack goes into the target every later player is scored against —
+    // `readBoardShape` answers it with a 400. Cells above the twenty on screen
+    // make a board a reviewer cannot see all of, and the same function refuses
+    // anything taller than the field. Both would come back *after* the author
+    // had played the puzzle, which is the whole of what this saves.
+    expect(submitBlocker(finished({ cells: fullRow(0) }), solve())).not.toBeNull();
+    expect(submitBlocker(finished({ cells: cells([[0, MAX_ROWS, "g"]]) }), solve())).not.toBeNull();
+  });
+
+  test("blocks a title of nothing but spaces, which is what the route trims to", () => {
+    // `readText` trims first and then asks whether anything is left, so a
+    // title of three spaces is an empty title with a longer body around it.
+    expect(submitBlocker(finished({ title: "   " }), solve())).toContain("title");
+  });
+
+  test("carries the draft and the run made on it, and nothing the server derives", () => {
+    const draft = finished({
+      cells: cells([
+        [0, 0, "g"],
+        [9, 0, "I"],
+      ]),
+      queue: ["T", "L"],
+      hold: "O",
+      title: "  A Name  ",
+      difficulty: 12,
+    });
+    const played = solve();
+
+    const body = toSubmission(draft, played);
+
+    // The same conversion a test plays, so the log beside it was recorded
+    // against exactly these rows — which is what makes the server's replay
+    // mean anything at all.
+    expect(body.board).toEqual(["G........I"]);
+    expect(body.queue).toEqual(["T", "L"]);
+    expect(body.hold).toBe("O");
+    expect(body.title).toBe("A Name");
+    expect(body.claimedDifficulty).toBe(12);
+    expect(body.events).toBe(played.events);
+    // From the solve and not from the settings: an author who opens the
+    // settings between the last piece and Submit would otherwise have their
+    // run replayed under controls they never played it with.
+    expect(body.handling).toBe(played.handling);
+    // None of these is the author's to name. `toPuzzle` would have supplied a
+    // `targetAttack` of `NO_TARGET` — `MAX_SAFE_INTEGER`, which `assertValid`
+    // checks only for being above zero and waves straight through as a puzzle
+    // nobody can ever solve.
+    expect(body).not.toHaveProperty("targetAttack");
+    expect(body).not.toHaveProperty("id");
+    expect(body).not.toHaveProperty("author");
+    expect(body).not.toHaveProperty("solution");
+  });
+});

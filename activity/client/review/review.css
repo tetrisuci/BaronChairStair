@@ -1,0 +1,373 @@
+/*
+ * The review tool's own rules — a page, not a game screen.
+ *
+ * It loads `tokens.css` and `panels.css` and stops there. Those two are the
+ * club's language: the yellow ground, the plum ink, the cream card with its
+ * hard offset shadow, `.btn`, `.stat`, `.label`. Everything below is layout
+ * this page needs and the activity does not, and there is no second palette,
+ * no second button and no second card in it.
+ *
+ * `sheet.css`, `overlays.css` and `narrow.css` are deliberately not loaded.
+ * They lay out a fixed-size playfield with a HUD either side of it and a
+ * settings sheet over the top — none of which exists here, and all of which
+ * would have to be undone. The half-dozen rules actually wanted from them
+ * (a note, a step readout) are cheaper to write than to fight.
+ */
+
+/*
+ * `tokens.css` sets `overflow: hidden` on the body, because the activity is a
+ * board that must never scroll away from the player. This is a document with a
+ * queue in it, and it must.
+ */
+body {
+  overflow: auto;
+  overscroll-behavior: auto;
+}
+
+.review {
+  max-width: 1040px;
+  margin: 0 auto;
+  padding: var(--sheet-pad);
+  display: grid;
+  gap: var(--gutter);
+  align-content: start;
+}
+
+/* ── Header ───────────────────────────────────────────────────────────────── */
+
+.review__head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.review__mark {
+  font-size: clamp(18px, 2.4vw, 26px);
+}
+
+.review__who { flex: 1 1 auto; }
+
+/* ── The queue ────────────────────────────────────────────────────────────── */
+
+.review__rows {
+  display: grid;
+  gap: 4px;
+}
+
+/*
+ * A queue row carries five facts and a goal, so it stacks where the archive's
+ * rows sit on one line. `.explore__item`'s own three-column grid is overridden
+ * rather than avoided: the border, the fill, the hover and the press are the
+ * behaviour every list in this codebase already has, and they are the half
+ * worth keeping.
+ */
+.review__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 10px;
+  padding: 8px 10px;
+}
+
+.review__row-title {
+  grid-column: 1;
+  font-weight: 600;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.review__row-by,
+.review__row-goal {
+  grid-column: 1;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-soft);
+  overflow-wrap: anywhere;
+}
+
+/* The three numbers, kept together on the right and out of the prose's way. */
+.review__row-meta {
+  grid-column: 2;
+  grid-row: 1 / -1;
+  align-self: center;
+  display: grid;
+  justify-items: end;
+  gap: 1px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* ── One submission ───────────────────────────────────────────────────────── */
+
+/*
+ * Board and solve on the left, everything the decision rests on down the right.
+ * One column below the breakpoint, board first: the board is what the reviewer
+ * is looking at, and on a phone-width window it should not be under three
+ * panels of prose.
+ */
+.review__detail {
+  display: grid;
+  gap: var(--gutter);
+  align-items: start;
+}
+
+@media (min-width: 780px) {
+  .review__detail { grid-template-columns: minmax(0, auto) minmax(280px, 1fr); }
+}
+
+/* A stack of panels one gutter apart: the whole screen, and each of its columns. */
+.review__stack {
+  display: grid;
+  gap: var(--gutter);
+  align-content: start;
+}
+
+.review__board {
+  display: flex;
+  justify-content: center;
+}
+
+.review__pieces {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.review__step {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.review__caption {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 26px;
+}
+
+/*
+ * The same badge the activity puts a clear in, so a TSD reads as a TSD here.
+ *
+ * `.review__flag` is the same badge on an archive row, saying that a puzzle has
+ * been corrected. One rule and two names rather than two rules: they are the
+ * same mark, and the day the mark changes it must change in both places.
+ */
+.review__clear,
+.review__flag {
+  padding: 2px 7px;
+  border-radius: var(--radius-sm);
+  background: var(--ink);
+  color: var(--sun);
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/*
+ * The gap the row has no whitespace for: the title and the badge are two
+ * adjacent spans built by `el`, with no text node between them to collapse.
+ */
+.review__flag { margin-left: 6px; }
+
+/* The list the goal is read against, so it is set in the goal's own weight. */
+.review__clears {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.review__note {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--ink-soft);
+}
+
+/* ── Deciding ─────────────────────────────────────────────────────────────── */
+
+.review__field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.review__tier {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.review__reason {
+  width: 100%;
+  min-height: 68px;
+  resize: vertical;
+  padding: 6px 8px;
+  border: var(--edge) solid var(--ink);
+  border-radius: var(--radius-sm);
+  background: var(--cream);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--ink);
+}
+
+.review__reason:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
+
+.review__status {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.4;
+  min-height: 1.4em;
+}
+
+.review__status--bad { color: var(--warn); }
+.review__status--good { color: var(--good-ink); }
+
+/* ── The two tabs ─────────────────────────────────────────────────────────── */
+
+.review__tabs {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/*
+ * The tab you are on is drawn held down — the `.btn:active` look, kept.
+ *
+ * Colour alone was the alternative and it loses for the reason the explorer's
+ * own toggle gave up on it: a filled button only reads as "current" to somebody
+ * already told what the fill means, and not at all to anyone who cannot
+ * separate the two fills. The shape says it too, and `aria-current` says it to
+ * a screen reader — see `ReviewPage.select`.
+ */
+.review__tab--on {
+  background: var(--sun);
+  transform: translate(2px, 2px);
+  box-shadow: 0 0 0 var(--ink);
+}
+
+/* ── The archive ──────────────────────────────────────────────────────────── */
+
+/*
+ * The list on the left, the puzzle being corrected on the right — the same
+ * split, at the same breakpoint, as one submission and its decision. One column
+ * below it, list first: the list is how you get to a form at all.
+ */
+.review__archive {
+  display: grid;
+  gap: var(--gutter);
+  align-items: start;
+}
+
+@media (min-width: 780px) {
+  .review__archive { grid-template-columns: minmax(0, 1fr) minmax(300px, 1fr); }
+}
+
+/*
+ * The rows scroll here, inside the card, and not by growing the page.
+ *
+ * 139 rows is three screens of document; without a ceiling the card would push
+ * the form off the bottom on a narrow window and push the buttons off it on a
+ * wide one, so the officer would scroll away from the thing they are editing to
+ * pick the thing they are editing. The ceiling is the smaller of a share of the
+ * window and a fixed height, so it is a list on a laptop and still a list on a
+ * tall monitor.
+ *
+ * Deliberately *no* `overscroll-behavior: contain`, which every scroller in the
+ * activity sets. Those sit inside a fixed viewport that never scrolls; this one
+ * sits in a document that does, and `contain` there swallows the wheel whenever
+ * the pointer is over the list — so reaching the last row would stop the page
+ * moving instead of carrying on down to the form. That is the trap
+ * `.explore__list--flow` exists to get out of, met from the other side.
+ */
+.review__list {
+  display: grid;
+  gap: 3px;
+  align-content: start;
+  /* Enough to be a list even on a short window. */
+  min-height: 140px;
+  max-height: min(56vh, 460px);
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--ink-line) transparent;
+}
+
+/* The title itself, so the corrected badge beside it is not part of the name. */
+.review__row-name { overflow-wrap: anywhere; }
+
+/*
+ * The row whose form is open, held in the hover state.
+ *
+ * It stays marked once the pointer has moved over to the form, which is the
+ * whole point: the form says `Puzzle #12` and this is the row that agrees.
+ */
+.review__row--open {
+  background: var(--sun);
+  border-color: var(--ink);
+}
+
+/*
+ * A correction whose puzzle has left the archive.
+ *
+ * Marked rather than styled away: it is a real row an officer has to be able to
+ * find and press, and the only thing that separates it from a puzzle is that
+ * there is no puzzle. Dashed, because every other border in this tool is solid
+ * and a dashed one reads as "this one is not like the others" without needing a
+ * colour nothing else here uses.
+ */
+.review__row--orphan {
+  border-style: dashed;
+}
+
+/* ── Correcting one ───────────────────────────────────────────────────────── */
+
+/*
+ * One field: its name, the box, and the way back to the source.
+ *
+ * Three columns, and the two things that explain a field — what its source says
+ * and what changing it costs — run under the box rather than beside it, where
+ * they would squeeze the box to nothing on a narrow window.
+ */
+.review__edit {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 4px 8px;
+}
+
+.review__edit > .review__was,
+.review__edit > .review__note {
+  grid-column: 2 / -1;
+}
+
+/* The box takes the row; the tier readout beside it takes what it needs. */
+.review__edit .build__field { flex: 1 1 150px; }
+
+.review__was {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-soft);
+  overflow-wrap: anywhere;
+}
+
+/* ── The one screen with nothing on it ────────────────────────────────────── */
+
+.review__stop {
+  max-width: 380px;
+  margin: 18vh auto 0;
+  text-align: center;
+}
