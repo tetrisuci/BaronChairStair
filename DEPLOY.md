@@ -105,8 +105,11 @@ that and abuse:
   post a backlink into an unrelated repository.
 - Control characters are stripped, as are the invisible ranges that let a title read as
   something other than what it says.
-- Replies are ephemeral, and the player is told their display name will be public
-  *before* they submit — it is in the command's own field description.
+- A filed report replies **in the channel**, so the club can see a bug is already
+  known; a refusal — too long, rate limited — replies privately, because "you
+  have filed three reports this hour" is not something to read out in front of
+  everybody. The player is told their display name will be public *before* they
+  submit, in the command's own field description.
 
 That layer has tests, and they need no install:
 

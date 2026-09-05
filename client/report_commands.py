@@ -13,6 +13,11 @@ repository.** Everything careful in here follows from that one sentence — the
 defanging, the caps, the per-player limit, and the fact that a player is told
 their name will be public before it is.
 
+The reply is public too. A filed report is club business — somebody else hitting
+the same bug should be able to see it is already known — so the confirmation and
+its link go to the channel. Refusals do not: a rate limit read out in front of
+everybody is a scolding, and it is nobody else's business.
+
 Not a subcommand of `/puzzle`. Discord will not let a command be both invocable
 and a group, and `/puzzle` is the one people type to announce the day; making it
 a group to fit this in would rename the command everybody already knows for the
@@ -139,12 +144,20 @@ async def report_command(
     category: app_commands.Choice[str],
     description: str,
 ) -> None:
-    # Ephemeral throughout. A report is between the player and the tracker, and
-    # a channel does not need one message per bug — but it also means the player
-    # is the only one who sees the link, which is why the reply carries it
-    # rather than only saying "done".
-    await interaction.response.defer(thinking=True, ephemeral=True)
-
+    # Two audiences, so two kinds of reply.
+    #
+    # The filed report is public: the channel gets the link, so somebody else
+    # hitting the same bug can see it is already known, and an officer can pick
+    # it up without being told. A refusal is not — "you have filed three reports
+    # in the last hour" read out in front of the channel is a scolding, and the
+    # length and rate checks are between the player and the bot.
+    #
+    # Which means the refusals must answer BEFORE any defer. Deferring
+    # ephemerally would make every later followup ephemeral including the one
+    # that should not be, and deferring publicly would post a visible "thinking"
+    # for a report that is about to be turned away. These checks are all local
+    # and instant, so they can answer directly; the deferral waits until there
+    # is a GitHub call to wait on.
     text = description.strip()
     # No minimum length. A short report is still a report — "puzzle 46 is
     # unsolvable" is eight characters of useful signal, and turning somebody
@@ -153,13 +166,13 @@ async def report_command(
     # Empty is still refused, because it is not a short report but the absence
     # of one: `issue_body("")` files an issue whose whole body is the footer.
     if not text:
-        await interaction.followup.send(
+        await interaction.response.send_message(
             "There was nothing in that report — say what happened and send it again.",
             ephemeral=True,
         )
         return
     if len(text) > MAX_DESCRIPTION:
-        await interaction.followup.send(
+        await interaction.response.send_message(
             f"That's longer than an issue can carry ({len(text)} characters against a "
             f"{MAX_DESCRIPTION} limit). Trim it, or add the long part as a reply on the "
             "issue afterwards.",
@@ -169,7 +182,7 @@ async def report_command(
 
     if not limiter.take(interaction.user.id):
         minutes = max(1, limiter.opens_in(interaction.user.id) // 60)
-        await interaction.followup.send(
+        await interaction.response.send_message(
             f"You've filed {REPORTS_PER_WINDOW} reports in the last hour, which is plenty. "
             f"Try again in about {minutes} minute{'s' if minutes != 1 else ''}, or add to "
             "one of the issues you already opened.",
@@ -182,12 +195,16 @@ async def report_command(
     room = interaction.guild_id or 0
     if not guild_limiter.take(room):
         limiter.refund(interaction.user.id)
-        await interaction.followup.send(
+        await interaction.response.send_message(
             "This server has filed a lot of reports in the last hour, so the bot is "
             "pausing for a bit. Nothing you did — tell an officer if it seems wrong.",
             ephemeral=True,
         )
         return
+
+    # Public from here. Everything below either files an issue or explains why
+    # the club's own setup stopped it, and both are worth the channel seeing.
+    await interaction.response.defer(thinking=True)
 
     reporter = interaction.user.display_name
     try:
@@ -205,12 +222,11 @@ async def report_command(
         # otherwise let one player burn their hour on the error message.
         limiter.refund(interaction.user.id)
         guild_limiter.refund(room)
-        await interaction.followup.send(str(exc), ephemeral=True)
+        await interaction.followup.send(str(exc))
         return
 
     await interaction.followup.send(
         f"Filed as **{category.value}** — {url}\n"
-        "It is on a public tracker under your Discord display name. "
-        "Reply on the issue if you have more to add.",
-        ephemeral=True,
+        f"Reported by {interaction.user.mention}, on a public tracker under their "
+        "Discord display name. Reply on the issue to add to it."
     )
