@@ -130,6 +130,40 @@
   overflow: hidden;
 }
 
+/*
+ * The stage is the touch surface, not just the board's frame.
+ *
+ * A drag anchors at the piece wherever it is, so a gesture can begin
+ * anywhere on the stage — on the card, beside it, a little below it — and
+ * the contact has to be the game's the moment it lands. Coarse pointers
+ * only: a desktop is unchanged, including a touch-capable one, whose mouse
+ * keeps the strict canvas mapping. `touch-action: none` hands those
+ * contacts to the game — the browser must not pan the deck with a drag that
+ * started on the board — while the rails keep their own scrolling. The same
+ * rules already sit on `.field`, which is not redundancy but the strict map:
+ * the canvas keeps claiming its own contacts wherever the stage around it
+ * does not.
+ *
+ * The padding keeps a press that lands just under the card on the stage
+ * instead of off it — a finger is wider than the square it names, and the
+ * floor seats are chosen against the card's bottom edge. It comes out of
+ * the board's own slack — the canvas centres in what is left, and a phone
+ * stage has side margins wider than this — so the board draws no smaller for
+ * it. Gated on height as well, because a stage already at its 200 floor would
+ * otherwise pay from the board itself, the one thing it may not do; a short
+ * landscape phone keeps the strict card-only mapping, where the bottom row is
+ * reached the way a mouse reaches it, by pressing on it.
+ */
+@media (pointer: coarse) and (min-height: 500px) {
+  .stage {
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-tap-highlight-color: transparent;
+    padding-bottom: 18px;
+  }
+}
+
 .field {
   position: absolute;
   top: 50%;

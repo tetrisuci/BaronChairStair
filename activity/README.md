@@ -801,9 +801,52 @@ then drag to the slot, and the engine credits what the route earned. While a
 drag is under way the piece shows where it would land: a solid outline on a
 square it can reach, dashed where nothing lands.
 
+A finger is wider than a square, so a touch **carries the piece**. A drag
+anchors at the piece — wherever it is, a seat a previous release left it on
+included — and never snaps to the finger: the finger's travel moves the
+piece, about one and a half squares per finger square on *both* axes, so the
+floor seats come to a finger parked anywhere and no column needs a precise
+stroke. The travel is amplified in whole squares measured from where the
+finger pressed, so no square on the way is skipped and a round trip — wander
+off and come back — lands the piece exactly where it was. The travel is
+virtual: a drag may leave the card without ending, and while the piece is
+carried past an edge the preview drops until the finger brings it back. Letting
+go is the only decision: on the board, a placeable seat commits and an
+obstructed one **parks** — the dashed preview stays, drawn over the stack it
+overlaps, nothing is spent, and the next drag starts from that seat; past the
+board's edge, the piece resets to falling. A placement can be finished a
+stroke at a time — move part way, release, press again wherever the finger
+lands, and carry on from where the piece waits. Tap to rotate and
+press-and-hold keep their meaning: only a drag carries, and a mouse keeps the
+1:1 mapping everywhere; a touch-capable laptop is a mouse for these purposes.
+
+Fingers also come in chords: a quick **tap of two fingers undoes the last
+placement** and a **tap of three redoes it**. The chord counts simultaneous
+fingers, not successive taps, and it stays out of the one-finger game's way —
+a drag or a hold voids any chord it was counted in, and fingers resting
+together do not read as a long-press. Four or more fingers is a palm, not a
+command.
+
 The same actions have buttons: undo and redo sit in the Progress panel, and
 hold has its key. Pointers and keys share one log, so an undo takes back a
 dragged placement exactly like a pressed one.
+
+Below tablet width the play screen is **one board with one column beside
+it**: hold, progress, goal and the queue stack into a slim strip on the
+right, and the board takes every row the two desktop rails would have
+occupied — a square window gets it too, because its spare width is exactly
+what the column spends. The queue is the one panel allowed to want more: it
+runs downward at a row per piece, fills every row the column can spare, and
+shows the puzzle's whole order — a seventy-piece queue included — scrolling
+only when the window cannot afford it all at once. On a phone the column is
+compressed to what a glance needs: panels lose their desktop padding, the
+attack meter lives inside the goal panel it is progress toward, and the undo
+and redo buttons leave the column entirely — the two- and three-finger taps
+and the keyboard keys are the same `stepHistory` path, and a row of buttons
+is a row of board. The cell is roughly three times the size it was when the
+panels sat above and below — the measure that matters at finger width. When
+the run ends, the verdict and the leaderboard want width, so the narrow
+screen falls back to the older banded layout for the read.
 
 ## Look and feel
 

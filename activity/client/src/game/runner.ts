@@ -176,6 +176,28 @@ export class PuzzleRun {
   /** Where a finger or pointer is aiming the piece, and whether it can go. */
   private aim: { cells: TargetCells; legal: boolean } | null = null;
   /**
+   * Where the last on-board release parked the piece: an aim it could not
+   * place. The preview keeps showing it — drawn dashed, on top of whatever
+   * it overlaps — so the player can see and correct the obstruction, and the
+   * next drag starts from this seat (the spec's "start from the current
+   * preview position"). Nothing was spent: the falling piece keeps falling
+   * underneath from its natural seat, and a lock clears the park with it.
+   * Cleared by keys, undo, redo, restart and lock alike.
+   */
+  private parked: { cells: TargetCells } | null = null;
+  /**
+   * The cells a live drag carries, captured at the grab.
+   *
+   * The drag's shift is applied to these — the piece's position when the
+   * drag took hold, a parked preview seat included — never to the falling
+   * piece as it stands now: the preview is exactly where the finger says,
+   * relative to where the drag started, and gravity keeps doing what it was
+   * doing underneath. Any invalidation (a key, a lock, an undo, a restart)
+   * nulls this, which turns the drag inert until its release: the finger's
+   * correspondence was with a piece that no longer exists.
+   */
+  private carryBase: { cells: TargetCells } | null = null;
+  /**
    * True while the planner is trying routes against the real engine.
    *
    * A trial replay locks pieces, and every lock fires this run's listeners —
@@ -225,6 +247,8 @@ export class PuzzleRun {
     ({ engine: this.engine, ledger: this.ledger } = createPuzzleEngine(this.setup, this.handling));
     this.planner = null;
     this.aim = null;
+    this.parked = null;
+    this.carryBase = null;
     this.trialing = false;
     this.engine.events.on("falling.lock.pre", () => {
       if (this.trialing) return;
@@ -239,6 +263,8 @@ export class PuzzleRun {
       // The board the planner walked is gone the moment a piece lands in it.
       this.planner = null;
       this.aim = null;
+      this.parked = null;
+      this.carryBase = null;
       const piece = toLetter(lock.mino);
       // A piece the ledger cannot account for is the engine's padding, not the
       // puzzle's. It never counts and it always ends the run.
@@ -336,6 +362,7 @@ export class PuzzleRun {
   /** Takes back the last placement. Returns false when there is none. */
   undo(): boolean {
     if (!this.canUndo) return false;
+    this.parked = null;
     const boundary = this.checkpoints[this.checkpoints.length - 2];
     const target = boundary?.length ?? 0;
     // A checkpoint is a prefix of the log, not a closed one: the lock that
@@ -365,6 +392,7 @@ export class PuzzleRun {
   /** Puts back the placement undo took, if nothing has been played since. */
   redo(): boolean {
     if (!this.canRedo) return false;
+    this.parked = null;
     const segment = this.undone.pop()!;
     // Undo's closers were never typed. Taking them back out before the player's
     // own events go back makes a redone log the one they played, byte for byte.
@@ -436,6 +464,8 @@ export class PuzzleRun {
     this.stopLoop();
     this.planner = null;
     this.aim = null;
+    this.parked = null;
+    this.carryBase = null;
     this.engine.events.removeAllListeners();
   }
 
@@ -490,6 +520,8 @@ export class PuzzleRun {
     // planner goes with it: it walked the board from a starting square that is
     // being abandoned. A drag still in progress re-aims on its next move.
     this.aim = null;
+    this.parked = null;
+    this.carryBase = null;
     this.planner = null;
 
     if (this.phase === "ready") this.begin();
@@ -648,6 +680,93 @@ export class PuzzleRun {
   clearAim(): void {
     if (this.aim === null) return;
     this.aim = null;
+    this.renderOnce();
+  }
+
+  // ── Drag carry ───────────────────────────────────────────────────────────
+
+  /**
+   * Takes hold of the piece where it is, without moving it.
+   *
+   * The carry model's anchor rule: a drag starts from the piece's current
+   * preview position — a seat the last release parked it on included — or
+   * from the falling piece itself when nothing is parked. The tracker
+   * measures the finger's travel and calls {@link carryAt} with the
+   * amplified shift; this captures the base the shift applies to and moves
+   * nothing.
+   */
+  grabBase(): void {
+    this.flushPending();
+    if (this.phase !== "ready" && this.phase !== "playing") return;
+    if (this.parked) {
+      this.carryBase = { cells: this.parked.cells };
+      return;
+    }
+    this.carryBase = {
+      cells: this.engine.falling.absoluteBlocks.map(([x, y]) => [x, y] as const),
+    };
+  }
+
+  /**
+   * The piece's position while a drag carries it: `shift` is the finger's
+   * travel from the grab point, already amplified in the tracker, measured
+   * in board squares with no clamping — the travel is fully virtual, so an
+   * excursion off the board and back lands the piece exactly where it was.
+   *
+   * On the board the preview shows the carried piece, legal or not; off it,
+   * the preview drops (that is the reset the spec asks for) while the drag
+   * stays live. The shift is applied to the base captured at the grab, so
+   * the preview is exactly where the finger says — the piece underneath
+   * keeps falling from its natural seat the whole time.
+   */
+  carryAt(shift: { column: number; row: number }): void {
+    this.flushPending();
+    if (!this.carryBase || (this.phase !== "ready" && this.phase !== "playing")) return;
+    this.parked = null;
+    const shifted = this.carryBase.cells.map(
+      ([x, y]) => [x + shift.column, y + shift.row] as const,
+    );
+    const onBoard =
+      shifted.every(([x]) => x >= 0 && x < BOARD_WIDTH) &&
+      shifted.every(([, y]) => y >= 0 && y < ENGINE_ROWS);
+    if (!onBoard) {
+      // Fully virtual: the preview simply vanishes — a carried park included,
+      // or a park would outlive its own drag's off-board release. Re-aiming
+      // happens on the next in-bounds move; the drag never lost the thread.
+      this.aim = null;
+      this.parked = null;
+      this.renderOnce();
+      return;
+    }
+    const target = shifted as TargetCells;
+    this.aim = { cells: target, legal: this.searchPlacement(target) !== null };
+    this.renderOnce();
+  }
+
+  /**
+   * The drag ended with the carried piece on the board.
+   *
+   * Three endings, exactly as previewed: a placeable seat commits; a
+   * seatless one *parks* the piece there — the dashed preview stays on top
+   * of whatever it overlaps, nothing is spent, no refusal is spoken, and the
+   * next drag starts from this seat; a released aim that is no longer live
+   * (a lock or an undo got there first) does nothing at all.
+   */
+  settleAt(): void {
+    const aim = this.aim;
+    this.carryBase = null;
+    if (!aim) {
+      // Released off-board, or the drag was invalidated under the finger:
+      // reset — the piece falls on as if untouched. The aim is already gone.
+      this.renderOnce();
+      return;
+    }
+    // `placeAt` consumes the live aim — the contract it commits — so the aim
+    // stays in place for it and the carry's state stands down around the call.
+    if (aim.legal && this.placeAt()) return;
+    // Not placeable (or the place was refused): park exactly what was shown.
+    this.aim = null;
+    this.parked = { cells: aim.cells };
     this.renderOnce();
   }
 
@@ -878,7 +997,7 @@ export class PuzzleRun {
       flashRows: this.flashRows,
       flashStrength: Math.max(0, (this.flashUntil - now) / FLASH_MS),
       dimmed: this.phase === "failed",
-      aim: stillPlaying ? this.aim : null,
+      aim: stillPlaying ? (this.aim ?? (this.parked ? { ...this.parked, legal: false } : null)) : null,
     };
   }
 

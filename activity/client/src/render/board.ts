@@ -117,6 +117,16 @@ export class BoardRenderer {
     this.ctx = ctx;
   }
 
+  /** The width of one board square in CSS pixels — gesture math's unit. */
+  get cellSize(): number {
+    return this.cell;
+  }
+
+  /** The card's border inset in CSS pixels — the field's offset inside the canvas. */
+  get edgeInset(): number {
+    return EDGE;
+  }
+
   /** Fits the field to the available box. Returns the pixel size it now takes. */
   layout(maxWidth: number, maxHeight: number, visibleRows: number): { width: number; height: number } {
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -180,8 +190,12 @@ export class BoardRenderer {
     this.drawCard(fieldWidth, fieldHeight);
     this.drawGrid(rows, fieldWidth, fieldHeight);
     this.drawGhost(view.ghost, rows, view.ghostInk ?? view.activeInk);
-    this.drawAim(view.aim, rows, view.activeInk);
+    // The aim paints over the blocks, deliberately: a parked preview sits on
+    // top of whatever it overlaps — that overlap is the information. A legal
+    // aim never shares a square with the stack, so the order is invisible to
+    // it, and the ghost and flash below it as always.
     this.drawBlocks(collectBlocks(view, rows), rows);
+    this.drawAim(view.aim, rows, view.activeInk);
     this.drawFlash(view.flashRows, rows, fieldWidth, view.flashStrength);
     ctx.globalAlpha = 1;
   }

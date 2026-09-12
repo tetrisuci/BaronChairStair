@@ -11,8 +11,9 @@ import { el, formatDuration, panel, replaceChildren, stat } from "./dom";
 export interface HudPanels {
   readonly hold: HTMLElement;
   readonly progress: HTMLElement;
+  // The attack meter is inside the goal panel — attack is progress toward
+  // the goal — so there is no separate panel to compose.
   readonly goal: HTMLElement;
-  readonly meter: HTMLElement;
   readonly queue: HTMLElement;
 }
 
@@ -29,8 +30,6 @@ export interface Hud {
   /** @param clears what the run actually made, so an unmet requirement still shows. */
   showFinal(attack: number, targetAttack: number, clears?: readonly ClearName[]): void;
 }
-
-const QUEUE_PREVIEW_LIMIT = 7;
 
 /** Names players actually say, for the "so far" line. */
 /** Pips drawn before a long requirement gives up and adds a "+". */
@@ -59,7 +58,11 @@ export function createHud(callbacks: HudCallbacks): Hud {
   const holdBay = el("div", { class: "bay" }, el("span", { class: "label", text: "empty" }));
   const holdPanel = panel("Hold", {}, holdBay);
 
-  const statsBody = el("div");
+  // `progress__stats` so a layout can trim the between-attempts stats without
+  // guessing — the duel and rush panels build their own `.stat` rows into this
+  // same rail, and an unscoped `nth-child` rule would hide those instead. The
+  // phone column hides the third onward; desktop keeps every row.
+  const statsBody = el("div", { class: "progress__stats" });
   // Beside the count of pieces placed, because that is the number they change.
   const undoButton = el("button", {
     class: "btn btn--small",
@@ -79,7 +82,12 @@ export function createHud(callbacks: HudCallbacks): Hud {
     "Progress",
     {},
     statsBody,
-    el("div", { class: "btnrow" }, undoButton, redoButton),
+    // `btnrow--history` so a layout can drop the row without guessing: the
+    // rush panel's own `.btnrow` (Hand it in) must survive any such rule.
+    // The phone column hides it — the two-finger/three-finger chords and the
+    // keyboard keys are the same `stepHistory` path — while desktop keeps
+    // the buttons.
+    el("div", { class: "btnrow btnrow--history" }, undoButton, redoButton),
   );
 
   const left = el("div", { class: "rail rail--left" }, holdPanel, progressPanel);
@@ -103,23 +111,37 @@ export function createHud(callbacks: HudCallbacks): Hud {
    * so the panel is exactly what it always was.
    */
   const goalProgress = el("div", { class: "goal__progress", attrs: { hidden: true } });
-  const goalPanel = panel("Goal", { class: "panel--tinted" }, goalText, goalProgress, goalSub);
 
   const meterValue = el("span", { class: "meter__value", text: "0" });
   const meterOf = el("span", { class: "meter__of", text: "of 0 sent" });
   const meterFill = el("div", { class: "meter__fill" });
+  /*
+   * The attack meter lives inside the goal panel, not beside it in a panel of
+   * its own. Attack is progress toward the goal — the bar fills toward the
+   * target the goal sentence names — so the panel captions were saying the
+   * same thing twice with a border between them. One panel reads as one
+   * number, one bar, one sentence; on the phone column it also buys back the
+   * two panels' padding and caption, which is rows of board.
+   */
   const meter = el(
     "div",
-    { class: "meter" },
+    { class: "goal__meter meter" },
     el("div", { class: "meter__numbers" }, meterValue, meterOf),
     el("div", { class: "meter__track" }, meterFill),
   );
-  const meterPanel = panel("Attack", {}, meter);
+  const goalPanel = panel(
+    "Goal",
+    { class: "panel--tinted" },
+    goalText,
+    goalProgress,
+    meter,
+    goalSub,
+  );
 
   const queueList = el("div", { class: "queue" });
   const queuePanel = panel("Next", {}, queueList);
 
-  const right = el("div", { class: "rail" }, goalPanel, meterPanel, queuePanel);
+  const right = el("div", { class: "rail rail--right" }, goalPanel, queuePanel);
 
   /** The clears this puzzle still owes, as a phrase. Empty when it owes none. */
   function owed(clears: readonly ClearName[]): string {
@@ -220,7 +242,11 @@ export function createHud(callbacks: HudCallbacks): Hud {
   }
 
   function renderQueue(upcoming: readonly Mino[], placed: number): void {
-    const rows = upcoming.slice(0, QUEUE_PREVIEW_LIMIT).map((piece, index) =>
+    // Every piece, not a preview: the queue panel scrolls on the desktop and
+    // flex-fills the phone column, so a long puzzle's whole order is reachable
+    // — a "+17 more" teaser made the length visible but never the pieces,
+    // which is the one thing a queue is for.
+    const rows = upcoming.map((piece, index) =>
       el(
         "div",
         { class: `queue__row${index === 0 ? " queue__row--current" : ""}` },
@@ -228,17 +254,6 @@ export function createHud(callbacks: HudCallbacks): Hud {
         pieceGlyph(piece, { cell: 9 }),
       ),
     );
-    const remaining = upcoming.length - rows.length;
-    if (remaining > 0) {
-      rows.push(
-        el(
-          "div",
-          { class: "queue__row" },
-          el("span", { class: "queue__index", text: "+" }),
-          el("span", { class: "label", text: String(remaining) }),
-        ),
-      );
-    }
     replaceChildren(queueList, ...rows);
   }
 
@@ -248,8 +263,8 @@ export function createHud(callbacks: HudCallbacks): Hud {
     panels: {
       hold: holdPanel,
       progress: progressPanel,
+      // The meter is inside the goal panel now — see its construction above.
       goal: goalPanel,
-      meter: meterPanel,
       queue: queuePanel,
     },
     setHistory(canUndo, canRedo) {

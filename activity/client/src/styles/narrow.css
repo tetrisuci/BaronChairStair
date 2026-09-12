@@ -117,11 +117,242 @@
 
   /* Height-capped rather than width-capped: the column is the whole screen now. */
   .today__thumb { max-height: 120px; }
+
+  /*
+   * ===============================================================
+   * THE PLAY COLUMN — shared by every width from here down.
+   * ===============================================================
+   *
+   * The board cell is `min(width/10, height/20, 34)`, so whenever the
+   * window is taller than twice its width minus the column, height binds
+   * and width sits idle. That is every phone (1:2+ aspect) AND a square
+   * window, which is why the 560 cut failed on one: a square screen had
+   * rows to spare and got the banded strips instead — the board stayed
+   * height-bound while the strips stacked rows on top of it. From 880px
+   * down, the play deck is one board with one info column beside it: the
+   * column spends width the board cannot use and buys back every row the
+   * rails occupied.
+   *
+   * `.deck--play` is app.ts's, on for exactly as long as the rails hold
+   * the game's HUD; a settled run (verdict beside its leaderboard) and
+   * the builder fall back to the banded rules — content wants width and
+   * the deck's own scroll, not chrome. The builder is excluded twice over
+   * via `:has(.build__board)`: a painting board is a pointer target too.
+   *
+   * Rows are the contract that keeps the stage full-height: row one is
+   * the left rail at its natural height, row two takes all the slack, the
+   * stage spans both. The 230 is `.stage`'s own floor, imported so the
+   * deck can *scroll* when column and floor no longer both fit — a short
+   * window gets a usable board below a reachable column, not an
+   * overflowing viewport. An all-`1fr` template would let the right
+   * rail's content size its own implicit row and grow the deck instead.
+   */
+  .deck.deck--play:not(:has(.build__board)) {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: auto minmax(230px, 1fr);
+    overflow-y: auto;
+    scrollbar-width: none;
+  }
+  .deck.deck--play:not(:has(.build__board))::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* The stage is the deck's second child (left rail, stage, right rail). */
+  .deck.deck--play:not(:has(.build__board)) > .rail--left {
+    grid-column: 2;
+    grid-row: 1;
+  }
+  .deck.deck--play:not(:has(.build__board)) > .stage {
+    grid-column: 1;
+    grid-row: 1 / 3;
+  }
+  .deck.deck--play:not(:has(.build__board)) > .rail--left + .stage + .rail:last-child {
+    grid-column: 2;
+    grid-row: 2;
+    /* The slack row is a ceiling, not a suggestion: if the goal wraps long,
+       the rail scrolls inside it rather than growing the deck. */
+    overflow-y: auto;
+    scrollbar-width: none;
+  }
+  .deck.deck--play:not(:has(.build__board)) > .rail--left + .stage + .rail:last-child::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* The column is as wide as its widest panel and no wider. */
+  .deck.deck--play:not(:has(.build__board)) > .rail {
+    flex-direction: column;
+    /* The banded layout's `flex-start` would leave every panel ragged on the
+       cross axis; a column of chrome reads as one column only stretched. */
+    align-items: stretch;
+    /* And its `flex-wrap: wrap` would be worse than ragged: in a *column*
+       container, wrapping drops the overflow into a second column to the
+       right — outside the 132px rail, where `overflow-x` clips it. That is
+       the "queue vanished on a square window" bug: the panel was laid out,
+       one column over. Shrink is how a column yields; wrap is never right
+       here. */
+    flex-wrap: nowrap;
+    width: 132px;
+    gap: 6px;
+    overflow: visible;
+    min-height: auto;
+  }
+  .deck.deck--play:not(:has(.build__board)) > .rail > * {
+    flex: none;
+    min-width: 0;
+  }
+
+  /*
+   * The queue is the one panel allowed to want more — but only when its
+   * content does: `flex: 0 1 auto` sizes the panel to the queue it holds
+   * (a three-piece queue gets a three-piece panel, no stretched emptiness
+   * below the last row) and shrinks it when the window cannot afford the
+   * whole order — down to its ~3-row floor, past which the queue itself
+   * scrolls. `min-height: 0` is what lets it shrink; without it a column
+   * flex item refuses to go below its content and the rail scrolls while
+   * the queue sits full-length inside it.
+   */
+  .deck.deck--play:not(:has(.build__board)) > .rail > .panel:has(.queue) {
+    flex: 0 1 auto;
+    /* No floor: content sizing already gives a short queue the panel its
+       rows need, and under pressure any floor above zero spills the panel
+       past the rail's bottom edge, where the credits strip paints over it —
+       the "queue cut off on a square window" bug. Yielding is the queue's
+       job; the queue inside scrolls once the panel is squeezed. */
+    min-height: 0;
+    overflow: hidden;
+  }
+  /*
+   * The history buttons leave with the column, not only with the phone:
+   * the actions live on the keyboard (desktop-square windows) and the
+   * two- and three-finger chords (touch), on the same `stepHistory` path
+   * the buttons drive — and in a 132px column one btnrow is height the
+   * board and the queue are bought with. Scoped to `btnrow--history`:
+   * the rush's Hand-it-in `.btnrow` shares the class and must survive.
+   */
+  .deck.deck--play:not(:has(.build__board)) .btnrow--history { display: none; }
+  .deck.deck--play:not(:has(.build__board)) .rail .queue {
+    /* Three things the column must override — the ≤880 strip rules above
+       are written for a horizontal strip and all three are wrong here:
+       `row` direction (the bunching this column exists to fix),
+       `align-items: center` (which shrink-wraps every row to its content
+       and centres it — the highlight stops spanning the panel and floats
+       as a chip with extra cream on both sides), and `overflow-y: hidden`
+       (a strip can only overflow sideways; with every piece rendered, the
+       column's queue scrolls down). Everything else about the queue —
+       index column to the left of the glyph, `3px 5px` row padding, the
+       desktop row rhythm — carries over untouched, because the column is
+       vertical at every width now. */
+    flex-direction: column;
+    align-items: stretch;
+    /* The strip rules also drop the glyph variable to 8px for the strip's
+       tighter rows; the desktop measure is the var's 11px fallback, which
+       is what sizes a row's min-height (28px — the rhythm the desktop
+       queue is read at). Glyphs themselves draw at their inline 9px. */
+    --glyph-cell: 11px;
+    /* No fixed cap and no fixed height: the queue is the flex child that
+       fills what is left of its panel after the caption, whatever the
+       window affords. */
+    max-height: none;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+  .deck.deck--play:not(:has(.build__board)) .rail .queue__row {
+    /* Same cascade fight, one level down: the strip rules above also
+       re-shaped the row itself (index stacked over the glyph, dotted
+       dividers). The column puts the desktop row back verbatim — index
+       in its 18px column to the left of the glyph, `3px 5px` padding,
+       no dividers, and `normal` justification so the index span stretches
+       its track and `text-align: right` seats the number beside the
+       piece, as the desktop draws it. */
+    grid-template-columns: 18px minmax(0, 1fr);
+    justify-items: normal;
+    gap: 8px;
+    padding: 3px 5px;
+    border-right: none;
+    border-bottom: none;
+  }
 }
 
+/*
+ * The phone economy.
+ *
+ * The ≤880 block above sets the play column's *shape* for every width that
+ * needs it — board plus one info column, the queue flex-filling the slack.
+ * This block is the phone's own *economy*: the compressions that only pay
+ * for themselves when the window is truly small (desktop paddings and
+ * figures become rows the board is bought with), plus the chrome a phone
+ * gives up entirely. All of it is undone by width: at ≥560px the desktop
+ * paddings and the full panel set come straight back.
+ */
 @media (max-width: 560px) {
+  /*
+   * The banded fallback, for the phone mounts that are content rather than
+   * chrome: a settled run (verdict beside its leaderboard) and any deck the
+   * builder has claimed. The play column is for the game's chrome; the rows
+   * here are the pre-column phone contract — rails take what they need, the
+   * stage takes the slack — and it is the ≤880 rules that fold the rails
+   * into strips underneath, as they did before the column existed.
+   */
+  .deck:not(.deck--play):not(:has(.build__board)) {
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    overflow-y: visible;
+  }
+
+  /*
+   * The banded floor, kept unguarded on purpose. The play column rules that
+   * override it all live inside `:has()` gates, and an engine that cannot
+   * parse `:has()` drops those whole — so this is what stands there: the
+   * old rails-take-what-they-need contract, minus the min-width it used to
+   * have. Where `:has()` works, the column's own `min-width: 0` on the same
+   * elements out-specifies this and wins the cascade; that is the only
+   * reason a flat rule may sit beside the gated ones.
+   */
   .rail > * { min-width: 118px; }
+
+  /*
+   * The column's padding economy. Desktop's 11/12px panel padding, 44px
+   * hold bay, 30px attack figure and dotted stat rules are right beside a
+   * 300px board and wrong beside a 130px one: at this size they are the
+   * rows the board is bought with.
+   */
+  .deck.deck--play:not(:has(.build__board)) .rail .panel {
+    padding: 7px 8px 8px;
+    gap: 5px;
+  }
+  .deck.deck--play:not(:has(.build__board)) .rail .panel__caption { font-size: 10px; }
+  .deck.deck--play:not(:has(.build__board)) .rail .bay { min-height: 36px; padding: 4px; }
+  .deck.deck--play:not(:has(.build__board)) .rail .meter__value { font-size: 18px; }
+  .deck.deck--play:not(:has(.build__board)) .rail .meter__track { height: 8px; }
+  .deck.deck--play:not(:has(.build__board)) .rail .stat { padding: 2px 0; border-bottom: none; }
+  .deck.deck--play:not(:has(.build__board)) .rail .stat__value { font-size: 11px; }
+  .deck.deck--play:not(:has(.build__board)) .rail .goal__text { font-size: 12px; }
+
+  /*
+   * Progress at phone size: the two numbers that matter mid-run — pieces and
+   * time. Restarts and the running clear tally are between-attempts reading,
+   * and they are the rows the board is bought with. Scoped to the Progress
+   * panel's own stats body — duel and rush build their own `.stat` rows into
+   * this same rail, and the verdict's rows mount here after a run; an
+   * unscoped `nth-child` rule would hide those instead.
+   */
+  .deck.deck--play:not(:has(.build__board)) .progress__stats .stat:nth-child(n + 3) { display: none; }
+
+  /*
+   * The undo/redo buttons leave the column entirely: the chords (two-finger
+   * undo, three-finger redo) and the keyboard keys drive the same
+   * `stepHistory` path, and one btnrow of buttons is roughly one row of
+   * queue. Scoped to `btnrow--history` — the rush's Hand-it-in `.btnrow`
+   * shares the class and must survive. Desktop keeps the buttons.
+   */
+  .deck.deck--play:not(:has(.build__board)) .btnrow--history { display: none; }
+
+  .credits { padding: 5px 8px; gap: 4px 10px; }
   .credits__title { font-size: 13px; }
+  .masthead { gap: 8px; }
+  .masthead__controls { gap: 5px; }
+  .masthead__controls .btn { padding: 5px 7px; font-size: 10px; }
 
   /*
    * Two columns on the sheet, not three: the chip drops under the body rather

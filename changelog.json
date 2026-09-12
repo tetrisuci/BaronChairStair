@@ -2,6 +2,14 @@
   "$comment": "The project's version and its player-facing release notes. Newest first; order in this list IS the version order. Read by client/changelog.py — the bot's /puzzle announcement. Adding a release means putting it at the top. Keep `changes` to things a player can see.",
   "releases": [
     {
+      "version": "beta 0.5",
+      "changes": [
+        "**Playing on a phone no longer hides the piece under your finger.** On a touch screen a drag carries the piece from where it is — it never jumps to your finger — and the piece travels farther than the finger, about one and a half squares per finger square in every direction, so the bottom rows come to your finger instead of the other way around. The travel is virtual: a drag may wander off the board and back out to exactly where it was. Letting go on the board buys exactly the seat shown — one that will not fit parks the piece there as a dashed preview drawn over the stack, and the next drag continues from that seat; past the edge the piece falls again. Finish a placement a stroke at a time.",
+        "**The play screen fits a phone.** The board was a ten-pixel sliver with its side panels taking two thirds of the width; on a narrow screen — a square one too — hold, goal and the queue fold into one slim column beside a full-height board: panels compacted, the attack meter folded into the goal it chases, and the queue one piece per row, filling the column and showing the puzzle's whole order instead of a teaser. The board takes the space back, roughly three times as large. The undo and redo buttons stay behind on desktop: the finger taps and the keyboard do that job now. Desktop layout is unchanged.",
+        "**Two-finger tap to undo, three to redo.** On a touch screen the undo and redo buttons now have gestures beside them: a quick tap of two fingers takes back the last placement, three puts it back. Drags and long-presses are untouched — the chord only fires on a genuine tap."
+      ]
+    },
+    {
       "version": "beta 0.4",
       "changes": [
         "**Officers can pull the puzzle spreadsheet into the archive from Discord**, with `/archive sync`. It reads the sheet and files every puzzle it can replay, and everything it writes stays unpublished until somebody reviews it — so it changes nothing a player is served. `/archive sync dry_run:True` reports what would change without writing. Anyone not on the officer list is turned away privately."

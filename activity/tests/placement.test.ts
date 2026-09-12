@@ -559,3 +559,191 @@ describe("drag to place", () => {
     run.dispose();
   });
 });
+
+// ── The carry's endings: place, park, reset ────────────────────────────────
+
+const STACKED: PuzzlePrompt = {
+  id: 2,
+  title: "stacked",
+  author: "test",
+  difficulty: 1,
+  goal: "place beside a stack",
+  set: null,
+  // One row of stack on the left; the right half is open floor.
+  board: ["GGGG......"],
+  queue: ["O", "O", "O", "O", "O", "O"],
+  hold: null,
+  targetAttack: 4,
+};
+
+function newStackedRun(): PuzzleRun {
+  return new PuzzleRun(STACKED, DEFAULT_HANDLING, {
+    onFrame: () => {},
+    onFinish: () => {},
+    onLock: () => {},
+  });
+}
+
+/** The run's on-board preview — the live aim, or the seat a release parked. */
+function previewOf(run: PuzzleRun) {
+  return run.view().aim;
+}
+
+/** The preview's bottom-leftmost corner, for shifts named by corner seat. */
+function cornerOf(cells: readonly (readonly [number, number])[]): { column: number; row: number } {
+  // Board rows grow upward from the floor at row 0, so the corner that
+  // "sits" on a named row is the piece's minimum row — its bottom.
+  let column = Infinity;
+  let row = Infinity;
+  for (const [x, y] of cells) {
+    if (x < column) column = x;
+    if (y < row) row = y;
+  }
+  return { column, row };
+}
+
+/** The carry shift that moves the current preview's corner to the given seat. */
+function shiftTo(run: PuzzleRun, column: number, row: number): { column: number; row: number } {
+  const preview = previewOf(run);
+  if (!preview) throw new Error("no preview to shift from");
+  const from = cornerOf(preview.cells);
+  return { column: column - from.column, row: row - from.row };
+}
+
+const sorted = (cells: readonly (readonly [number, number])[]) =>
+  [...cells].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+
+describe("the carry's endings", () => {
+  test("a grab previews the piece where it is and moves nothing", () => {
+    const run = newStackedRun();
+    run.grabBase();
+    // The grab itself shows nothing — the piece is where it was.
+    expect(previewOf(run)).toBeNull();
+    // The first carry of zero names the piece's own position: legal, at spawn.
+    run.carryAt({ column: 0, row: 0 });
+    // Shown where the piece is — floating at spawn, which no route can place,
+    // so the preview is the dashed illegal one: visible, and not a lie.
+    expect(previewOf(run)?.legal).toBe(false);
+    expect(run.snapshot().piecesPlaced).toBe(0);
+    expect(run.log()).toEqual([]);
+    run.dispose();
+  });
+
+  test("a release on a placeable seat commits exactly what was previewed", () => {
+    const run = newStackedRun();
+    run.grabBase();
+    // The first carry of zero names the piece's own position.
+    run.carryAt({ column: 0, row: 0 }); // the grab: preview at the piece
+    const shown = sorted(previewOf(run)!.cells);
+    run.carryAt(shiftTo(run, 8, 0)); // corner to open floor right of the stack
+    expect(previewOf(run)?.legal).toBe(true);
+    run.settleAt();
+    expect(previewOf(run)).toBeNull(); // committed: no preview left
+    pumpUntil(() => run.snapshot().piecesPlaced === 1);
+
+    // What locked is what was shown, shifted to the seat the finger named.
+    const committed = run.view().cells;
+    for (const [x, y] of shown) {
+      const dx = 8 - cornerOf(shown).column;
+      const dy = 0 - cornerOf(shown).row;
+      expect(committed[y + dy]![x + dx]).not.toBeNull();
+    }
+    run.dispose();
+  });
+
+  test("a release on an obstructed seat parks the piece exactly as previewed", () => {
+    const run = newStackedRun();
+    run.grabBase();
+    run.carryAt({ column: 0, row: 0 });
+    run.carryAt(shiftTo(run, 0, 0)); // corner onto the stack: shown, not placeable
+    const preview = previewOf(run)!;
+    expect(preview.legal).toBe(false);
+    const shown = sorted(preview.cells);
+    run.settleAt();
+    // The park is the preview, kept — the dashed ghost stays on the stack.
+    const parked = previewOf(run)!;
+    expect(parked.legal).toBe(false);
+    expect(sorted(parked.cells)).toEqual(shown);
+    expect(run.snapshot().piecesPlaced).toBe(0);
+    expect(run.log()).toEqual([]); // nothing was spent parking
+    run.dispose();
+  });
+
+  test("a release off the board resets, and the piece can still be placed after", () => {
+    const run = newStackedRun();
+    run.grabBase();
+    run.carryAt({ column: 0, row: 0 });
+    run.carryAt(shiftTo(run, 8, 0)); // a legal seat first...
+    expect(previewOf(run)).not.toBeNull();
+    run.carryAt({ column: -9, row: 0 }); // ...then carried past the left edge
+    // Off the board the preview drops — that is the reset — but the drag
+    // stays live, and the finger can come back before releasing.
+    expect(previewOf(run)).toBeNull();
+    run.settleAt(); // the finger let go while off-board
+    expect(previewOf(run)).toBeNull();
+    expect(run.snapshot().piecesPlaced).toBe(0);
+    expect(run.log()).toEqual([]);
+
+    // The piece is alive: a fresh drag places it as if nothing happened.
+    // (The zero carry shows the piece floating where it is — dashed, as
+    // always for a seat no route can reach — and the floor shift commits.)
+    run.grabBase();
+    run.carryAt({ column: 0, row: 0 });
+    expect(previewOf(run)).not.toBeNull();
+    run.carryAt(shiftTo(run, 8, 0));
+    expect(previewOf(run)?.legal).toBe(true);
+    run.settleAt();
+    pumpUntil(() => run.snapshot().piecesPlaced === 1);
+    run.dispose();
+  });
+
+  test("a re-drag after parking starts from the parked seat", () => {
+    const run = newStackedRun();
+    run.grabBase();
+    run.carryAt({ column: 0, row: 0 });
+    run.carryAt(shiftTo(run, 0, 0)); // park on the stack
+    run.settleAt();
+    const parked = sorted(previewOf(run)!.cells);
+
+    // The next drag anchors at the park: a zero carry shows the same seat.
+    run.grabBase();
+    run.carryAt({ column: 0, row: 0 });
+    expect(sorted(previewOf(run)!.cells)).toEqual(parked);
+    // Carried off the stack to open floor, it commits from there.
+    run.carryAt(shiftTo(run, 8, 0));
+    expect(previewOf(run)?.legal).toBe(true);
+    run.settleAt();
+    pumpUntil(() => run.snapshot().piecesPlaced === 1);
+    run.dispose();
+  });
+
+  test("releasing off-board from a park resets the park, and the piece falls on", () => {
+    const run = newStackedRun();
+    run.grabBase();
+    run.carryAt({ column: 0, row: 0 });
+    run.carryAt(shiftTo(run, 0, 0)); // park on the stack
+    run.settleAt();
+    expect(previewOf(run)).not.toBeNull(); // the dashed ghost stands
+
+    // The finger comes back, drags the parked ghost past the top edge and
+    // lets go there: the park must go with it — the reset is the same reset
+    // a falling piece gets, not a park that survives its own drag.
+    run.grabBase();
+    run.carryAt({ column: 0, row: 0 });
+    run.carryAt({ column: 0, row: 60 }); // every cell above the ceiling
+    expect(previewOf(run)).toBeNull(); // preview dropped, drag still live
+    run.settleAt();
+    expect(previewOf(run)).toBeNull(); // the park did not survive
+    expect(run.snapshot().piecesPlaced).toBe(0);
+    expect(run.log()).toEqual([]); // and nothing was spent by any of it
+
+    // The piece is untouched and placeable, as after any reset.
+    run.grabBase();
+    run.carryAt({ column: 0, row: 0 });
+    run.carryAt(shiftTo(run, 8, 0));
+    expect(previewOf(run)?.legal).toBe(true);
+    run.settleAt();
+    pumpUntil(() => run.snapshot().piecesPlaced === 1);
+    run.dispose();
+  });
+});
