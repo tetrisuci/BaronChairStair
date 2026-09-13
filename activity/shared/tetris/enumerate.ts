@@ -199,6 +199,10 @@ const ROWS_PER_CLEAR: Readonly<Record<ClearName, number>> = {
   tst: 3,
   tsmini: 1,
   spin: 1,
+  // Clears no rows, so it lends the bound nothing. Zero is the honest
+  // figure and the safe direction: this is a lower bound, and understating
+  // it can only keep a position alive that another check will settle.
+  "spin (no lines)": 0,
   "perfect clear": 1,
 };
 

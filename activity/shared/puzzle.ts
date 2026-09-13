@@ -52,6 +52,21 @@ export type ClearName =
   | "tst"
   | "tsmini"
   | "spin"
+  /**
+   * A spin that cleared no lines.
+   *
+   * Named rather than dropped because a goal may ask for one: puzzle 123
+   * "style" says "Perform 3 Spins" and its own answer spins three times, but
+   * one of those spins clears nothing, so only two were ever counted and the
+   * third could not be required. `nameClear` used to answer `null` for any
+   * lock with no lines, before it looked at the spin at all.
+   *
+   * Its own member rather than reusing `spin`, because the derivation has to
+   * tell them apart: a requirement read off an answer must not start demanding
+   * every incidental spin a route happened to make. See
+   * {@link requirementFromSolution}, which drops these unless the puzzle asks.
+   */
+  | "spin (no lines)"
   | "perfect clear";
 
 /**
@@ -270,6 +285,28 @@ export function clearShortfall(
 }
 
 /**
+ * Puzzles whose goal genuinely asks for a spin that clears no lines.
+ *
+ * Opt-in, and deliberately a short list rather than a rule. Once `nameClear`
+ * started naming these, *every* answer that happens to contain one would have
+ * derived a requirement for it — measured on the archive, 43 of 138 puzzles,
+ * each of them silently becoming stricter for a spin the maker never asked
+ * for and a player had never had to make. #30 "cave diver 1" would have gone
+ * from one quad to three spins and a quad.
+ *
+ * So the default is to ignore them, and a puzzle joins this set only when its
+ * own words ask. #123 "style" says "Perform 3 Spins" and its answer spins
+ * three times, one of them clearing nothing; without this it could only ever
+ * require two, which is the bug this exists for.
+ *
+ * A set here rather than a column on the puzzle because there is nowhere to
+ * author one: `data/puzzles.json` is rewritten wholesale by `bun run puzzles`,
+ * and `puzzle_overrides` is metadata only — title, author, goal, difficulty,
+ * set — by design. This is tracked, so it survives both.
+ */
+export const PUZZLES_REQUIRING_A_SPIN_WITHOUT_LINES: ReadonlySet<number> = new Set([123]);
+
+/**
  * The clears a puzzle demands, read off the answer its maker recorded.
  *
  * The club's rule: a maker names and describes their puzzle however they like,
@@ -295,10 +332,14 @@ export function clearShortfall(
  */
 export function requirementFromSolution(
   solution: readonly { readonly clear: ClearName | null }[],
+  puzzleId?: number,
 ): ClearRequirement[] {
+  const countSpinsWithoutLines =
+    puzzleId !== undefined && PUZZLES_REQUIRING_A_SPIN_WITHOUT_LINES.has(puzzleId);
   const counted = new Map<ClearName, number>();
   for (const step of solution) {
     if (step.clear === null) continue;
+    if (step.clear === "spin (no lines)" && !countSpinsWithoutLines) continue;
     counted.set(step.clear, (counted.get(step.clear) ?? 0) + 1);
   }
   return [...counted].map(([clear, count]) => ({ clear, count }));

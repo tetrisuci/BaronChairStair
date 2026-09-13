@@ -35,7 +35,7 @@ export interface Hud {
 /** Pips drawn before a long requirement gives up and adds a "+". */
 const MAX_PROGRESS_PIPS = 8;
 
-const CLEAR_LABELS: Readonly<Record<string, string>> = {
+const CLEAR_LABELS: Readonly<Record<ClearName, string>> = {
   single: "single",
   double: "double",
   triple: "triple",
@@ -45,6 +45,9 @@ const CLEAR_LABELS: Readonly<Record<string, string>> = {
   tst: "TST",
   tsmini: "T mini",
   spin: "spin",
+  // Not just "spin": the two would read alike in the clear list, and a goal
+  // asking for an empty one would look satisfied by an ordinary spin.
+  "spin (no lines)": "empty spin",
   "perfect clear": "PC",
 };
 

@@ -57,6 +57,9 @@ export const GOAL_LABELS: Readonly<Record<ClearName, string>> = {
   tst: "TST",
   tsmini: "T Mini",
   spin: "Spin",
+  // Ends in a plain noun on purpose: the sentence builder appends "s", so a
+  // parenthetical label would read "2 Spin (No Lines)s".
+  "spin (no lines)": "Empty Spin",
   "perfect clear": "Perfect Clear",
 };
 

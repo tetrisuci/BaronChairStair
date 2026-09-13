@@ -2,6 +2,12 @@
   "$comment": "The project's version and its player-facing release notes. Newest first; order in this list IS the version order. Read by client/changelog.py — the bot's /puzzle announcement. Adding a release means putting it at the top. Keep `changes` to things a player can see.",
   "releases": [
     {
+      "version": "beta 0.6",
+      "changes": [
+        "**A puzzle can ask for a spin that clears no lines.** #123 \u201cstyle\u201d says \u201cPerform 3 Spins\u201d and its own answer spins three times \u2014 but one of those spins clears nothing, and the game had no name for that, so only two of the three were ever counted. It is named now, and style asks for all three. No other puzzle changes: a spin that clears nothing counts toward a goal only where the goal actually asks for one."
+      ]
+    },
+    {
       "version": "beta 0.5",
       "changes": [
         "**Playing on a phone no longer hides the piece under your finger.** On a touch screen a drag carries the piece from where it is — it never jumps to your finger — and the piece travels farther than the finger, about one and a half squares per finger square in every direction, so the bottom rows come to your finger instead of the other way around. The travel is virtual: a drag may wander off the board and back out to exactly where it was. Letting go on the board buys exactly the seat shown — one that will not fit parks the piece there as a dashed preview drawn over the stack, and the next drag continues from that seat; past the edge the piece falls again. Finish a placement a stroke at a time.",

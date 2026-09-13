@@ -17,7 +17,8 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { requirementFromSolution } from "../shared/puzzle";
+import { PUZZLES_REQUIRING_A_SPIN_WITHOUT_LINES, requirementFromSolution } from "../shared/puzzle";
+import { nameClear } from "../shared/tetris/replay";
 import type { ClearName } from "../shared/puzzle";
 
 const clears = (...names: (ClearName | null)[]) => names.map((clear) => ({ clear }));
@@ -60,10 +61,53 @@ describe("requirementFromSolution", () => {
     expect(once.map((e) => e.clear)).toEqual(["tst", "tsd"]);
   });
 
+  test("ignores a spin that cleared nothing, unless the puzzle asks", () => {
+    // The whole reason the flag exists. Once `nameClear` started naming these,
+    // deriving them everywhere would have made 43 of the archive's 138 puzzles
+    // stricter overnight — each demanding an incidental spin its maker never
+    // asked for. Measured before the flag went in; 1 puzzle changes with it.
+    const made = clears("tsd", "spin (no lines)", "tsd");
+
+    expect(requirementFromSolution(made)).toEqual([{ clear: "tsd", count: 2 }]);
+    expect(requirementFromSolution(made, 999_999)).toEqual([{ clear: "tsd", count: 2 }]);
+  });
+
+  test("counts one for a puzzle whose goal asks for it", () => {
+    const [asked] = [...PUZZLES_REQUIRING_A_SPIN_WITHOUT_LINES];
+    const made = clears("spin", "spin (no lines)", "spin");
+
+    expect(requirementFromSolution(made, asked)).toEqual([
+      { clear: "spin", count: 2 },
+      { clear: "spin (no lines)", count: 1 },
+    ]);
+  });
+
+  test("#123 style is the puzzle that asks", () => {
+    // Its goal reads "Perform 3 Spins" and its own answer spins three times,
+    // one of them clearing nothing. Before this it could only require two.
+    expect(PUZZLES_REQUIRING_A_SPIN_WITHOUT_LINES.has(123)).toBe(true);
+  });
+
   test("the answer it was built from always satisfies it", () => {
     const made: ClearName[] = ["tsd", "tsmini", "tst", "quad"];
     const { clearShortfall } = require("../shared/puzzle");
 
     expect(clearShortfall(made, requirementFromSolution(clears(...made)))).toEqual([]);
+  });
+});
+
+describe("nameClear, on a lock that cleared no lines", () => {
+  const lock = (spin: string) =>
+    ({ lines: 0, spin, mino: 0, garbage: [] }) as unknown as Parameters<typeof nameClear>[0];
+
+  test("names a spin that cleared nothing", () => {
+    // It used to answer null before it looked at the spin at all, which is why
+    // a goal could never ask for one.
+    expect(nameClear(lock("mini"), false)).toBe("spin (no lines)");
+    expect(nameClear(lock("normal"), false)).toBe("spin (no lines)");
+  });
+
+  test("still says nothing for a placement that was not a spin", () => {
+    expect(nameClear(lock("none"), false)).toBeNull();
   });
 });

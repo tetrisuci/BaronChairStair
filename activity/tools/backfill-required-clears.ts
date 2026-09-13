@@ -99,7 +99,7 @@ function main(): void {
     if (!made) {
       return { id: puzzle.id, goal: puzzle.goal, outcome: "unanswered", required: [], disagreement: null };
     }
-    const required = requirementFromSolution(made.map((clear) => ({ clear })));
+    const required = requirementFromSolution(made.map((clear) => ({ clear })), puzzle.id);
     const disagreement = disagreementOf(puzzle.goal, made);
     if (required.length === 0) {
       return { id: puzzle.id, goal: puzzle.goal, outcome: "clearless", required: [], disagreement };

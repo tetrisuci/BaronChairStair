@@ -22,6 +22,7 @@ const CLEAR_MARKS: Readonly<Record<ClearName, string>> = {
   tst: "🟪",
   tsmini: "🟫",
   spin: "🟫",
+  "spin (no lines)": "🟫",
   "perfect clear": "⭐",
 };
 
