@@ -132,6 +132,32 @@ Report these and stop; do not act on them unasked.
   `sync_guilds.py --clear <SERVER_ID>` once the global ones land, or the picker shows
   every command twice.
 
+## A puzzle whose goal asks for a spin that clears no lines
+
+Rare, and opt-in. The engine names such a spin, but a puzzle only *requires* one
+if its id is in `PUZZLES_REQUIRING_A_SPIN_WITHOUT_LINES`
+(`activity/shared/puzzle.ts`). Everywhere else it is ignored on purpose — that
+constant's own docstring carries the measurement and the reasoning, and this is
+not the place to restate them.
+
+**When the owner names a puzzle, the whole edit is one id in that set.** Two
+things follow, and nothing will remind you of either:
+
+- **Re-derive the stored requirement: `bun run sync-archive`, in `activity/`.**
+  The rule lives in code, but every puzzle's `required_clears` is *stored* — in
+  `activity/data/daily.sqlite` and in the tracked archive — and neither row
+  changes until a sync recomputes it. The flag alone changes nothing a player
+  meets. That command is the safe, re-runnable one; it is not
+  `publish-archive` and not `bun run puzzles`.
+- **Write the release note.** A puzzle that starts asking for a third spin is a
+  change a player can see, so the rule under *A player-visible change needs a
+  release note* applies.
+
+**Do not try to put the flag anywhere else.** `data/puzzles.json` is rewritten
+wholesale by `bun run puzzles`, and `puzzle_overrides` carries metadata only —
+title, author, goal, difficulty, set — by design. A tracked set in code is the
+only home that survives both.
+
 ## Further reading
 
 - `README.md`, `activity/README.md` — what the commands *are*, as opposed to how to run them.
