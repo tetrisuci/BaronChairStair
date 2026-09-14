@@ -98,6 +98,37 @@ describe("the solutions gallery is gated", () => {
   });
 });
 
+describe("the maker's own answer is gated too", () => {
+  test("a puzzle this player has not solved does not come with its answer", async () => {
+    // The bug this pins. `maySeeSolution` returns true outright for anything
+    // that is not one of today's tiers, so this route used to hand the maker's
+    // answer to anyone signed in: open a puzzle from Explore, fail it, and the
+    // walkthrough mounted in the rail for a board nobody had solved. The
+    // gallery of other people's lines was already gated; the answer itself,
+    // which is the bigger reveal, was not.
+    const id = await anArchivePuzzle();
+    const body = await (await get(`/api/archive/${id}`)).json();
+    expect(body.solution).toBeNull();
+    // The prompt still arrives — the puzzle is playable, it is only the answer
+    // that is withheld.
+    expect(body.puzzle.id).toBe(id);
+  });
+
+  test("a failed clear earns nothing", async () => {
+    // The other half: the clear route hands back the answer on a solve, so a
+    // first-ever solver still gets their walkthrough. An empty log solves
+    // nothing, so it must come back with nothing.
+    const id = await anArchivePuzzle();
+    const filed = await post(`/api/puzzles/${id}/clear`, {
+      handling: DEFAULT_HANDLING,
+      events: [],
+    });
+    const body = await filed.json();
+    expect(body.solved).toBe(false);
+    expect(body.solution).toBeNull();
+  });
+});
+
 describe("filing a practice clear", () => {
   test("an empty log solves nothing and unlocks nothing", async () => {
     // The whole reason the route replays rather than believes: a client that

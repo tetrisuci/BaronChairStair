@@ -2,9 +2,15 @@
   "$comment": "The project's version and its player-facing release notes. Newest first; order in this list IS the version order. Read by client/changelog.py — the bot's /puzzle announcement. Adding a release means putting it at the top. Keep `changes` to things a player can see.",
   "releases": [
     {
+      "version": "beta 0.7",
+      "changes": [
+        "**A puzzle can ask for a spin that clears no lines.** #123 “style” says “Perform 3 Spins” and its own answer spins three times — but one of those spins clears nothing, and the game had no name for that, so only two of the three were ever counted. It is named now, and style asks for all three. No other puzzle changes: a spin that clears nothing counts toward a goal only where the goal actually asks for one."
+      ]
+    },
+    {
       "version": "beta 0.6",
       "changes": [
-        "**A puzzle can ask for a spin that clears no lines.** #123 \u201cstyle\u201d says \u201cPerform 3 Spins\u201d and its own answer spins three times \u2014 but one of those spins clears nothing, and the game had no name for that, so only two of the three were ever counted. It is named now, and style asks for all three. No other puzzle changes: a spin that clears nothing counts toward a goal only where the goal actually asks for one."
+        "**A puzzle keeps its answer until you solve it.** Opening one from Explore and failing it used to show the maker's solution anyway — the walkthrough appeared beside a board nobody had cracked. It now arrives the moment you solve the puzzle, and not before. Puzzles you solved earlier are unaffected: their answers are still there whenever you go back."
       ]
     },
     {

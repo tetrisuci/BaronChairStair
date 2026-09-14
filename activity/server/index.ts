@@ -904,7 +904,19 @@ app.post("/api/puzzles/:id/clear", requireSession, async (c) => {
     });
   }
   // The verdict goes back so the client can stop asking. It is not a score.
-  return c.json({ solved, attack: verified.attack, clears: verified.clears });
+  //
+  // And the answer, but only on a solve. The sheet was fetched when this player
+  // had not yet cleared the puzzle, so `/api/archive/:id` rightly withheld it;
+  // without handing it over here, solving a board for the first time would show
+  // no walkthrough at all — the reveal would arrive only on the *second* visit.
+  // Gated on the same `solved` the clear itself is, so a failure still learns
+  // nothing.
+  return c.json({
+    solved,
+    attack: verified.attack,
+    clears: verified.clears,
+    solution: solved ? (puzzle.solution ?? null) : null,
+  });
 });
 
 app.get("/api/puzzles/:id/solutions", requireSession, (c) => {
@@ -932,11 +944,25 @@ app.get("/api/puzzles/:id/solutions", requireSession, (c) => {
 app.get("/api/archive/:id", requireSession, (c) => {
   const puzzle = archive.get(Number.parseInt(c.req.param("id") ?? "", 10));
   if (!puzzle) throw new HTTPException(404, { message: "No such puzzle" });
+  const session = c.get("session");
+  // Both gates, the same pair the gallery route composes and for the same two
+  // reasons. `maySeeSolution` is about *today*: a puzzle being dealt as a tier
+  // stays shut until this player has filed it. `hasCleared` is about ever.
+  //
+  // The second one was missing here, and that was the whole bug: for any
+  // puzzle that is not one of today's, `maySeeSolution` returns true outright,
+  // so this route handed the maker's answer to anyone signed in. Open a puzzle
+  // from Explore, fail it, and `attachWalkthrough` mounted the answer in the
+  // rail — a puzzle nobody had solved, answered. The gallery of *other
+  // people's* lines was already gated this way; the maker's own answer, which
+  // is the bigger reveal, was not.
+  const earned =
+    maySeeSolution(session, puzzle.id) && store.hasCleared(session.player.id, puzzle.id);
   return c.json({
     puzzle: archive.prompt(puzzle, enforcingGoals()),
     // `?? null` for the same reason as `earnedSolution`: an absent
     // `data/solutions.json` must read as "no solution", not as no field.
-    solution: maySeeSolution(c.get("session"), puzzle.id) ? (puzzle.solution ?? null) : null,
+    solution: earned ? (puzzle.solution ?? null) : null,
   });
 });
 

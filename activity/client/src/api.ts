@@ -463,14 +463,25 @@ export class Api {
   clearPuzzle(
     id: number,
     body: { handling: Handling; events: readonly InputEvent[] },
-  ): Promise<{ solved: boolean }> {
+  ): Promise<{ solved: boolean; solution: readonly SolutionStep[] | null }> {
     return this.request(`/api/puzzles/${id}/clear`, {
       method: "POST",
       body: JSON.stringify(body),
     });
   }
 
-  archivePuzzle(id: number): Promise<{ puzzle: PuzzlePrompt; solution: readonly SolutionStep[] }> {
+  /**
+   * A puzzle to practise, and its answer only if this player has earned it.
+   *
+   * `solution` is nullable and always was — the server withholds it for a
+   * puzzle this player has not cleared, and on a box with no
+   * `data/solutions.json` there is no answer to send at all. The type said
+   * otherwise, which is how the answer ended up being treated as always
+   * present at the call sites.
+   */
+  archivePuzzle(
+    id: number,
+  ): Promise<{ puzzle: PuzzlePrompt; solution: readonly SolutionStep[] | null }> {
     return this.request(`/api/archive/${id}`);
   }
 

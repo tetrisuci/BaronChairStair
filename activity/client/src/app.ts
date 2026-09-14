@@ -1638,7 +1638,7 @@ export class App {
       // ever solve of a puzzle used to miss the Solutions button it had just
       // earned by one round trip.
       if (snapshot.phase === "solved") {
-        void this.fileClear(sheet.puzzle.id, events).then(() => {
+        void this.fileClear(sheet.puzzle, events).then(() => {
           if (this.sheet?.puzzle.id === sheet.puzzle.id) {
             this.presentVerdict(this.toShareFields(snapshot), null);
           }
@@ -1934,15 +1934,27 @@ export class App {
     }
   }
 
-  private async fileClear(puzzleId: number, events: readonly InputEvent[]): Promise<void> {
+  private async fileClear(
+    puzzle: PuzzlePrompt,
+    events: readonly InputEvent[],
+  ): Promise<void> {
     try {
-      const { solved } = await this.connection.api.clearPuzzle(puzzleId, {
+      const { solved, solution } = await this.connection.api.clearPuzzle(puzzle.id, {
         handling: this.run?.handling ?? this.settings.value.handling,
         events,
       });
       // Locally too, so the Solutions control opens without a round trip and
       // the Explore tick is there when they go back to the list.
-      if (solved) this.cleared = new Set([...this.cleared, puzzleId]);
+      if (solved) this.cleared = new Set([...this.cleared, puzzle.id]);
+      // The answer this solve just earned. The sheet was fetched before the
+      // puzzle was cleared, so it carries no solution and the reveal above it
+      // did nothing — without this, cracking a board for the first time would
+      // show no walkthrough and the second visit would. Guarded on the board
+      // still being the one on screen: this lands a round trip later, and by
+      // then the player may have moved on.
+      if (solution && this.sheet?.puzzle.id === puzzle.id) {
+        this.attachWalkthrough(puzzle, solution);
+      }
     } catch {
       // Nothing here is worth a message over a board played for fun.
     }
