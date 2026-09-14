@@ -16,14 +16,22 @@
  * mismatch refuses the whole run.
  */
 
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { archiveEntry, type ArchiveEntry } from "../server/archive-rows";
 import { PUZZLES_REQUIRING_A_SPIN_WITHOUT_LINES } from "../shared/puzzle";
-import type { SolutionStep } from "../shared/puzzle";
-import { driftBetween, rederive, renamesBetween } from "../tools/rederive-flagged-clears";
+import type { ClearRequirement, SolutionStep } from "../shared/puzzle";
+import {
+  driftBetween,
+  isStale,
+  plannedRewrite,
+  rederive,
+  renamesBetween,
+  type Staleness,
+} from "../tools/rederive-flagged-clears";
 
 const ARCHIVE = resolve(import.meta.dir, "../data/archive/puzzles.sqlite");
 
@@ -112,15 +120,18 @@ describe("rederive, against the committed archive", () => {
       });
     });
 
-    test(`#${id} derives a requirement that its own answer satisfies`, () => {
+    test(`#${id}'s derived requirement matches the one its archive row stores`, () => {
+      // Independent data on either side: the left is replayed from the blueprint,
+      // the right is the column a deploy box actually reads. An earlier version
+      // of this test counted the derived requirement against the same replay it
+      // came from, which held by construction and could not fail.
       withEntry(id, (entry) => {
-        const { required, solution } = rederive(entry);
-        const made = solution.flatMap((s) => (s.clear ? [s.clear] : []));
+        const { required } = rederive(entry);
+        const key = (list: readonly ClearRequirement[]) =>
+          JSON.stringify([...list].map((e) => [e.clear, e.count]).sort());
 
         expect(required.length).toBeGreaterThan(0);
-        for (const { clear, count } of required) {
-          expect(made.filter((name) => name === clear).length).toBeGreaterThanOrEqual(count);
-        }
+        expect(key(entry.puzzle.requiredClears ?? [])).toEqual(key(required));
       });
     });
   }
@@ -153,5 +164,69 @@ describe("rederive, against the committed archive", () => {
 
       expect(() => rederive(sourceless)).toThrow(/blueprint/);
     });
+  });
+});
+
+describe("isStale — what makes the tool write", () => {
+  const settled: Staleness = {
+    archiveAnswer: false,
+    archiveClears: false,
+    promptClears: false,
+    localAnswer: false,
+  };
+
+  test("a store disagreeing is enough, with nothing renamed at all", () => {
+    // The gate this replaced triggered only on a rename, so a flagged puzzle
+    // whose answer was already current — what a re-sync of the tracked archive
+    // leaves behind — was skipped with "Nothing to re-derive" while its
+    // requirement stayed stale. Each of these three used to write nothing.
+    expect(isStale({ ...settled, promptClears: true })).toBe(true);
+    expect(isStale({ ...settled, archiveClears: true })).toBe(true);
+    expect(isStale({ ...settled, localAnswer: true })).toBe(true);
+  });
+
+  test("a rename alone is still enough", () => {
+    expect(isStale({ ...settled, archiveAnswer: true })).toBe(true);
+  });
+
+  test("and agreement everywhere writes nothing", () => {
+    expect(isStale(settled)).toBe(false);
+  });
+});
+
+describe("plannedRewrite, the guard that refuses to reformat", () => {
+  const wrap = (rows: { id: number }[]) => ({ rows });
+  const scratch: string[] = [];
+  afterAll(() => {
+    for (const directory of scratch) rmSync(directory, { recursive: true, force: true });
+  });
+
+  function fileHolding(text: string): string {
+    const directory = mkdtempSync(join(tmpdir(), "planned-rewrite-"));
+    scratch.push(directory);
+    const path = join(directory, "rows.json");
+    writeFileSync(path, text);
+    return path;
+  }
+
+  test("returns the updated bytes, and writes nothing itself", () => {
+    // Computing the payload without writing it is what lets every refusal happen
+    // before the first byte lands, which is what makes the write ORDER hold.
+    const rows = [{ id: 1 }, { id: 2 }];
+    const path = fileHolding(`${JSON.stringify(wrap(rows), null, 1)}\n`);
+
+    const bytes = plannedRewrite(path, wrap, rows, [{ id: 1 }, { id: 3 }]);
+
+    expect(bytes).toContain('"id": 3');
+    expect(readFileSync(path, "utf8")).toContain('"id": 2');
+  });
+
+  test("refuses a file written in some other shape, and leaves it alone", () => {
+    const rows = [{ id: 1 }];
+    const compact = JSON.stringify(wrap(rows));
+    const path = fileHolding(compact);
+
+    expect(() => plannedRewrite(path, wrap, rows, [{ id: 9 }])).toThrow(/reformat/);
+    expect(readFileSync(path, "utf8")).toBe(compact);
   });
 });

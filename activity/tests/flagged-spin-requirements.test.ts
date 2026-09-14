@@ -18,9 +18,9 @@
  * and the puzzle is served on attack alone.
  */
 
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { copyFileSync, mkdtempSync, readFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { trackedAnswers } from "../server/archive-solutions";
@@ -62,9 +62,13 @@ const sorted = (entries: readonly ClearRequirement[]) =>
 describe("the stored requirement for a flagged puzzle", () => {
   for (const id of PUZZLES_REQUIRING_A_SPIN_WITHOUT_LINES) {
     test(`#${id} is served the requirement its own answer derives`, () => {
-      // The check that was missing. `bun run rederive-clears --write` is what
-      // makes this true; if somebody adds an id to the flag and stops there,
-      // this is what tells them the job is half done.
+      // Catches the two stores DISAGREEING: a requirement frozen against one
+      // answer while the answer on file says something else.
+      //
+      // It does not, on its own, catch the state this PR fixed — before the
+      // correction, puzzles.json and the archive's answer agreed with each other
+      // and were simply both stale, so this assertion passed. The sibling below
+      // is the one that goes red for that.
       const puzzle = served().find((entry) => entry.id === id);
       expect(puzzle).toBeDefined();
 
@@ -74,8 +78,11 @@ describe("the stored requirement for a flagged puzzle", () => {
     });
 
     test(`#${id}'s stored answer actually contains the spin that clears nothing`, () => {
-      // Correcting the requirement without the answer is the harmful half: the
-      // gate would see a shortfall and serve the puzzle with no requirement.
+      // The check that was missing, and the one that goes red on the pre-fix
+      // state: if somebody adds an id to the flag and stops there, this tells
+      // them the job is half done. Correcting the requirement without the answer
+      // is the harmful half — the gate sees a shortfall and serves the puzzle
+      // with no requirement at all.
       expect(storedAnswer(id).some((step) => step.clear === "spin (no lines)")).toBe(true);
     });
   }
@@ -107,9 +114,17 @@ describe("the stored requirement for a flagged puzzle", () => {
 });
 
 describe("as a deploy box loads it", () => {
+  // Cleaned up, as the other thirteen test files using mkdtempSync do. Three
+  // directories leaked per run before this.
+  const scratch: string[] = [];
+  afterAll(() => {
+    for (const directory of scratch) rmSync(directory, { recursive: true, force: true });
+  });
+
   /** No `data/solutions.json` beside the puzzles, which is every production box. */
   function deployBox(): PuzzleArchive {
     const directory = mkdtempSync(join(tmpdir(), "flagged-spins-"));
+    scratch.push(directory);
     const path = join(directory, "puzzles.json");
     copyFileSync(PROMPTS, path);
     return PuzzleArchive.load(path, {}, [], [], trackedAnswers(ARCHIVE));
@@ -145,4 +160,37 @@ describe("as a deploy box loads it", () => {
 
     expect(changed.map((puzzle) => puzzle.id)).toEqual([]);
   });
+});
+
+describe("as a contributor's box loads it", () => {
+  /**
+   * The combination the deploy-box tests above structurally cannot see.
+   *
+   * `data/solutions.json` is untracked and gitignored, so `git pull` delivers the
+   * corrected tracked stores and never touches a contributor's local answer key.
+   * `withSolutions` merges that local answer *ahead* of the archive and
+   * `withFallbackSolutions` is additive-only, so a stale local copy WINS over the
+   * corrected tracked one — and `withoutUnmeetableClears` then blanks the
+   * requirement. Such a box goes from enforcing two of the three spins to
+   * enforcing none, silently, with everything else green.
+   *
+   * The remedy is `bun run rederive-clears --write`, which is what this asserts
+   * has been done. Skipped where the file is absent — every deploy box, every
+   * fresh clone, and CI.
+   */
+  const LOCAL = resolve(import.meta.dir, "../data/solutions.json");
+
+  test.skipIf(!existsSync(LOCAL))(
+    "serves the flagged requirement with the local answer key merged in",
+    () => {
+      const archive = PuzzleArchive.load(PROMPTS, {}, [], [], trackedAnswers(ARCHIVE));
+
+      for (const id of PUZZLES_REQUIRING_A_SPIN_WITHOUT_LINES) {
+        const puzzle = archive.get(id);
+
+        expect(puzzle?.solution?.map((step) => step.clear)).toContain("spin (no lines)");
+        expect(puzzle?.requiredClears ?? []).not.toEqual([]);
+      }
+    },
+  );
 });

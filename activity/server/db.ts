@@ -234,7 +234,10 @@ CREATE TABLE IF NOT EXISTS archive_puzzles (
   -- went away when the requirement became a pure function of the replayed
   -- solution. Carrying an old value over a new answer is the "demands a clear
   -- its own solution never makes" state that \`withoutUnmeetableClears\` blanks
-  -- at load. A metadata correction still leaves it alone; only the answer moves it.
+  -- at load. A metadata correction still leaves it alone, because re-deriving
+  -- from an untouched answer writes the same value back. The answer is not the
+  -- only input, though: PUZZLES_REQUIRING_A_SPIN_WITHOUT_LINES is consulted too,
+  -- so adding an id there moves this column with no change to the solution.
   required_clears  TEXT,
   source_puzzle    TEXT NOT NULL,
   source_solution  TEXT NOT NULL,

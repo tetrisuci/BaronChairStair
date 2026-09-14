@@ -753,9 +753,10 @@ the game had no name for that, so only two of the three were ever counted.
 A spin with no line clear is its own clear now, and it counts toward a
 requirement only for the puzzle ids in
 `PUZZLES_REQUIRING_A_SPIN_WITHOUT_LINES` (`shared/puzzle.ts`). Everywhere else
-it is ignored, deliberately: 43 of the archive's 138 answers happen to contain
-one, and deriving them all would have made every one of those puzzles stricter
-for a spin its maker never asked for.
+it is ignored, deliberately: 43 of the 138 answers the game serves happen to
+contain one — 47 across all 153 rows of the tracked archive — and deriving them
+all would have made every one of those puzzles stricter for a spin its maker
+never asked for.
 
 Adding a puzzle is one id in that set, then `bun run rederive-clears --write` to
 correct what is stored. The rule is in code; the requirement is written down in
