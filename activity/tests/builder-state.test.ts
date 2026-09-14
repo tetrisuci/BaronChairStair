@@ -353,7 +353,10 @@ describe("a goal written as counts", () => {
 
   test("names every clear, so a new one cannot go unlabelled", () => {
     for (const clear of CLEAR_NAMES) expect(GOAL_LABELS[clear]).not.toBe("");
-    expect(CLEAR_NAMES).toHaveLength(10);
+    // Eleven since a spin that clears no lines got its own name. The count is
+    // the point of the test: it is what makes adding to the vocabulary a thing
+    // somebody has to come here and look at.
+    expect(CLEAR_NAMES).toHaveLength(11);
   });
 });
 

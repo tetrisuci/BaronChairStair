@@ -744,6 +744,25 @@ the puzzle is served exactly as its source has it.
 operator typed and not an identity — worth what `submissions.reviewed_by` is
 worth, and for the same reason.
 
+### When a goal asks for a spin that clears no lines
+
+One puzzle does. #123 "style" reads *"Perform 3 Spins"*, and its own answer
+spins three times — but one of those spins clears nothing, and for a long time
+the game had no name for that, so only two of the three were ever counted.
+
+A spin with no line clear is its own clear now, and it counts toward a
+requirement only for the puzzle ids in
+`PUZZLES_REQUIRING_A_SPIN_WITHOUT_LINES` (`shared/puzzle.ts`). Everywhere else
+it is ignored, deliberately: 43 of the archive's 138 answers happen to contain
+one, and deriving them all would have made every one of those puzzles stricter
+for a spin its maker never asked for.
+
+Adding a puzzle is one id in that set, then `bun run sync-archive` to re-derive
+the stored requirement — the rule is in code, but the requirement itself is a
+column, and it does not change until a sync recomputes it. Like a correction, it
+survives `bun run puzzles`, and for the same reason: it was never in the
+generated file.
+
 ## Placing a piece
 
 **Only a hard drop places a piece.** There is no lock delay and no limit on

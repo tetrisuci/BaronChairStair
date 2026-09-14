@@ -46,7 +46,12 @@ function sum(values: readonly number[]): number {
 
 /** Turns a lock result into the name players actually use for it. */
 export function nameClear(lock: LockRes, isPerfectClear: boolean): ClearName | null {
-  if (lock.lines === 0) return null;
+  // A spin that clears nothing is still a spin, and a goal may ask for one.
+  // This used to answer `null` before looking at `lock.spin` at all, which is
+  // why puzzle 123 "style" could only ever require two of the three spins its
+  // own answer makes. Named as its own clear so the requirement derivation can
+  // still tell it from a spin that cleared a line — see `requirementFromSolution`.
+  if (lock.lines === 0) return lock.spin === "none" ? null : "spin (no lines)";
   if (isPerfectClear) return "perfect clear";
 
   const isT = lock.mino === Mino.T;

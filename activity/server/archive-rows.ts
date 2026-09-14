@@ -470,7 +470,7 @@ export function upsertArchive(
   // field while an update stored this would make a fresh row and a re-synced row
   // disagree about the same puzzle — which is exactly what the sync's own
   // idempotence tests caught.
-  const derivedClears = requirementFromSolution(puzzle.solution ?? []);
+  const derivedClears = requirementFromSolution(puzzle.solution ?? [], puzzle.id);
 
   const existing = archiveEntry(db, puzzle.id);
   const incoming = contentHash(puzzle);

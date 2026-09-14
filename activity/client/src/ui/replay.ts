@@ -47,6 +47,7 @@ const CLEAR_LABELS: Readonly<Record<ClearName, string>> = {
   tst: "TST",
   tsmini: "T mini",
   spin: "spin",
+  "spin (no lines)": "empty spin",
   "perfect clear": "perfect clear",
 };
 
