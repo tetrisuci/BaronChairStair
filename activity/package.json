@@ -15,6 +15,7 @@
     "test": "bun test",
     "sync-archive": "bun run tools/sync-archive.ts",
     "audit-archive": "bun run tools/audit-archive.ts",
+    "rederive-clears": "bun run tools/rederive-flagged-clears.ts",
     "publish-archive": "bun run tools/publish-archive.ts"
   },
   "dependencies": {

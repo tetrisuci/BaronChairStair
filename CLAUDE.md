@@ -143,12 +143,25 @@ not the place to restate them.
 **When the owner names a puzzle, the whole edit is one id in that set.** Two
 things follow, and nothing will remind you of either:
 
-- **Re-derive the stored requirement: `bun run sync-archive`, in `activity/`.**
-  The rule lives in code, but every puzzle's `required_clears` is *stored* — in
-  `activity/data/daily.sqlite` and in the tracked archive — and neither row
-  changes until a sync recomputes it. The flag alone changes nothing a player
-  meets. That command is the safe, re-runnable one; it is not
-  `publish-archive` and not `bun run puzzles`.
+- **Re-derive what is stored: `bun run rederive-clears --write`, in `activity/`.**
+  The rule lives in code; the requirement a player meets is *written down*, in
+  three places — `activity/data/puzzles.json` (what the game shows, and what an
+  unpublished puzzle is judged by), the tracked archive's `solution` and
+  `required_clears` (where a deploy box gets the answer from, `data/solutions.json`
+  being untracked), and this box's own `data/solutions.json`. The flag alone
+  changes none of them. That command replays the puzzle's own blueprint through
+  the current engine, corrects all three, and refuses to write anything if the
+  replay comes back as a different answer rather than a renamed one. It needs no
+  spreadsheet and is re-runnable.
+
+  **It is not `bun run sync-archive`, which this file used to say.** The sync
+  does re-derive, but into `daily.sqlite` by default and never into
+  `data/puzzles.json` — and an unpublished puzzle is served from that file, so a
+  sync changes nothing the player sees. Correcting the requirement while leaving
+  the stored answer alone is worse than correcting neither:
+  `withoutUnmeetableClears` then sees a shortfall and serves the puzzle with
+  **no** requirement at all. This is not hypothetical — #123 shipped with the
+  flag set, a green suite, and a puzzle still asking for two spins.
 - **Write the release note.** A puzzle that starts asking for a third spin is a
   change a player can see, so the rule under *A player-visible change needs a
   release note* applies.

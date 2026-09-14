@@ -757,11 +757,22 @@ it is ignored, deliberately: 43 of the archive's 138 answers happen to contain
 one, and deriving them all would have made every one of those puzzles stricter
 for a spin its maker never asked for.
 
-Adding a puzzle is one id in that set, then `bun run sync-archive` to re-derive
-the stored requirement — the rule is in code, but the requirement itself is a
-column, and it does not change until a sync recomputes it. Like a correction, it
-survives `bun run puzzles`, and for the same reason: it was never in the
-generated file.
+Adding a puzzle is one id in that set, then `bun run rederive-clears --write` to
+correct what is stored. The rule is in code; the requirement is written down in
+three places — `data/puzzles.json`, the tracked archive's row, and this box's
+untracked `data/solutions.json` — and none of them changes until something
+replays the puzzle's blueprint through the current engine. That command is the
+something: it needs no spreadsheet, and it refuses to write if the replay comes
+back as a different answer rather than a renamed one.
+
+`bun run sync-archive` is *not* that something, though it looks like it: it
+writes `daily.sqlite` and never `data/puzzles.json`, which is the file an
+unpublished puzzle is served from. Correcting one store and not the other is the
+harmful half — a requirement the stored answer cannot meet is dropped by
+`withoutUnmeetableClears`, and the puzzle is then served on attack alone.
+
+Like a correction, the flag survives `bun run puzzles`, and for the same reason:
+it was never in the generated file.
 
 ## Placing a piece
 
