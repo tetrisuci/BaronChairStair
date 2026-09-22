@@ -25,6 +25,10 @@ Rows older than 30 days are deleted from `postings` on every sweep. A separate
 
 Sectors: tech, finance, healthcare, defense, industrial, retail, energy.
 
+To stop hearing from a company entirely, add its name to BLOCKED_COMPANIES
+below: its board is dropped at load and its stored rows are filtered out of
+anything that reads `postings`.
+
 WORKDAY NOTE
   Workday needs a (tenant, wd-instance, site) triple, not a single slug, and the
   site path is NOT guessable — brute-forcing common names ("External", "Careers")
@@ -217,15 +221,81 @@ SEED_BOARDS = [
 BOARDS_FILE = os.path.join(_HERE, "boards.json")
 
 
+def _norm(x):
+    return re.sub(r"[^a-z0-9]", "", (x or "").lower())
+
+
+# --------------------------------------------------------------------------
+# Companies nobody wants to hear from. A blocked company's board is dropped at
+# load, so it is never polled, never stored and never announced — one edit
+# here is the whole block for everything the tracker fetches from now on.
+#
+# Two consequences worth knowing before editing this set:
+#   * `postings` holds up to PRUNE_DAYS of history, so rows stored before the
+#     block stay readable until the pruner reaches them. `drop_blocked` is how
+#     a reader of that table honours the block in the meantime; every query
+#     that shows somebody a stored posting goes through it.
+#   * unblocking a company hands its whole open board to the next sweep as
+#     "new" — its ids never entered `seen` while it was blocked.
+# --------------------------------------------------------------------------
+
+BLOCKED_COMPANIES = {"Rocket Lab"}
+# Empties dropped deliberately: "" is a prefix of everything, so one blank
+# entry here would block the entire registry.
+_BLOCKED_NORM = {n for n in (_norm(c) for c in BLOCKED_COMPANIES) if n}
+
+
+def is_blocked_company(name) -> bool:
+    """True for a company the tracker must not show.
+
+    Matched on letters and digits only, and as a *prefix* rather than an exact
+    string, because the name a board is identified by is not the name anybody
+    types. `discover` writes the ATS slug into the company column, a company
+    files under a longer legal name, and a Workday board is identified by a
+    `tenant/wd-instance/site` path. All three are the blocked name with
+    something stuck on the end:
+
+        Rocket Lab -> rocketlab -> rocketlabusa, rocketlabinc,
+                                   rocketlabwd1rocketlabcareers
+
+    An exact match blocks the hand-written seed row and none of those, which is
+    the shape of a block that looks fine and quietly stops working.
+
+    The boundary, and the trap when editing BLOCKED_COMPANIES: this matches the
+    START of a name, so "Astro Rocket Labs" is not blocked but "Rocket Lab
+    Adjacent Inc" is. Over-blocking is the safe direction for a blocklist, but
+    it means a short or common entry would take unrelated companies with it —
+    keep the entries long and distinctive, or block the exact slug instead.
+    """
+    candidate = _norm(name)
+    return any(candidate.startswith(b) for b in _BLOCKED_NORM)
+
+
+def drop_blocked(rows, company_at=0):
+    """`rows` minus the blocked companies, order kept, input untouched.
+
+    `company_at` is the index of the company in each row, because the callers
+    are SQL queries with different column lists.
+    """
+    return [r for r in rows if not is_blocked_company(r[company_at])]
+
+
 def load_boards():
     try:
         with open(BOARDS_FILE) as f:
             rows = [tuple(r) for r in json.load(f)]
         seen = {(r[0], r[1]) for r in rows}
         rows += [b for b in SEED_BOARDS if (b[0], b[1]) not in seen]
-        return rows
     except FileNotFoundError:
-        return list(SEED_BOARDS)
+        rows = list(SEED_BOARDS)
+    # Both identifying columns, and after the merge rather than inside the seed
+    # list. `cmd_discover` appends [plat, slug, slug, "unknown", n] and dumps
+    # r[:4], so a discovered board has no display name at all — its company
+    # column IS the slug. Checking the label alone would drop the hand-written
+    # seed row and let the next `discover` run put the same company straight
+    # back under whatever slug it was found at.
+    return [r for r in rows
+            if not (is_blocked_company(r[1]) or is_blocked_company(r[2]))]
 
 
 BOARDS = load_boards()
@@ -1449,10 +1519,6 @@ AMBIGUOUS_SLUGS = {
     "onyx", "slate", "north", "found", "level", "range", "arc", "mach", "unit",
     "column", "vantage", "signal", "sonar", "radar", "helix", "quanta", "kite",
 }
-
-
-def _norm(x):
-    return re.sub(r"[^a-z0-9]", "", (x or "").lower())
 
 
 def yc_variants(c):
