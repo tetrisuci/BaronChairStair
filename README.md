@@ -1,295 +1,146 @@
+<div align="center">
+
 # BaronChairStair
 
-The Discord bot for the Tetris at UCI club, the daily puzzle activity it
-launches, and the TETR.IO replay engine both of them lean on.
+**A daily Tetris puzzle you play inside Discord.**
 
-It started as a bridge that let Python drive the `@haelp/teto` engine to pull
-highlights out of a replay. That bridge is still here and still does that job,
-but it is now one part of four:
+Four hand-made puzzles every day, a five-minute rush, 1v1 duels, and an archive
+of 138 to work through — opened as a Discord Activity, announced by a bot that
+tells the server who solved what.
+
+`beta 0.7` · MIT licensed · Bun + TypeScript + Python
+
+Built for the **Tetris at UCI** club.
+
+</div>
+
+---
+
+## What you can do
 
 | | |
-|---|---|
-| **The bot** — `client/` | Slash commands: replay highlights, the daily puzzle, server activity graphs, an internship tracker |
-| **The activity** — `activity/` | A Discord Activity: three modern Tetris puzzles a day, a five-minute puzzle rush, 1v1, and a builder for writing new ones. Has [its own README](activity/README.md) |
-| **The engine bridge** — `server/`, `client/teto_client.py` | A Bun process wrapping the TETR.IO engine, spoken to over NDJSON from Python |
-| **The internship tracker** — `internship_poller.py` | Unrelated to Tetris; it lives here because the bot fronts it |
+| :-- | :-- |
+| **Four puzzles a day** | An easy, a medium, a hard and an extreme, drawn from the club's archive. Every run is re-scored on the server by replaying the keys you actually pressed, so your screen and the leaderboard can never disagree. |
+| **Puzzle rush** | Five minutes on the clock — solve as many as you can. |
+| **1v1 duels** | The same puzzle and the same pieces, head to head. |
+| **Explore the archive** | Every puzzle, any time. Solved ones are ticked off, and the maker's own walkthrough unlocks once you have cracked it yourself. |
+| **Leaderboards and a profile** | Solve times, streaks, rush records, and every alternate line you were the first person to find. |
+| **A puzzle builder** | Write your own, submit it, and an officer reviews it into the archive. |
+
+These are **placement** problems, not reaction tests. Gravity is zero and
+nothing locks until you hard-drop it, so a piece stays exactly where you put it
+for as long as you leave it there — and undo and redo are always one key away.
 
 ---
 
-## Layout
+## In Discord
 
-```
-BaronChairStair/
-├── server/server.ts          Bun NDJSON stdio server — the engine side
-├── client/
-│   ├── discord_bot.py        the bot: commands, schedulers, entry point
-│   ├── teto_client.py        Python client for the engine bridge
-│   ├── build_snapshots.py    replay JSON → per-round board snapshots
-│   ├── render.py             attack-burst highlight boards
-│   ├── presence_tracker.py   samples who is online, every 10 minutes
-│   ├── puzzle_commands.py    the /puzzle command; talks to the activity server
-│   ├── report_commands.py    /report — files a GitHub issue for a player
-│   ├── archive_commands.py   /archive sync — pulls the sheet into the archive
-│   ├── puzzle_admins.py     who may run it; reads puzzle-admins.json
-│   ├── report_text.py        what a report looks like once published
-│   ├── test_report_text.py   `python3 -m unittest discover -s client`
-│   └── puzzle_recap.py       yesterday's results, replied to yesterday's post
-├── activity/                 the Discord Activity (own README, own tests)
-├── internship_poller.py      Greenhouse / Lever / Ashby / Workday poller
-├── resolve_boards.py         careers URL → validated job-board endpoint
-├── sync_guilds.py            push slash commands into one guild, instantly
-├── check_dupes.py            find commands registered twice
-└── example.env               every environment variable, documented
-```
+| Command | What it does |
+| :-- | :-- |
+| `/puzzle` | Today's puzzles, and the link that opens the activity |
+| `/highlights` | Attach a `.ttrm` replay — get each player's biggest attack bursts as boards |
+| `/report` | File a bug or a suggestion. No GitHub account needed |
+| `/activity graph`<br>`/activity now` | Who is online, right now or across the last week |
+| `/internships …` | The club's internship tracker: recent postings, salaries, a ping list |
+| `/archive sync` | **Officers only.** Pull the club's spreadsheet into the puzzle archive |
+
+The day after each puzzle, the bot replies to its own announcement with how the
+server did — who solved what, how fast, and how long the server's streak is.
+
+Every command in detail: **[docs/bot.md](docs/bot.md)**.
 
 ---
 
-## The bot
+## Quick start
 
-Run from `client/`, so the sibling modules import cleanly:
-
-```bash
-pip install discord.py python-dotenv aiohttp matplotlib
-bun install        # once, at the repo root — the replay parser behind
-                   # /highlights and build_snapshots.py needs @haelp/teto
-cd client && python discord_bot.py
-```
-
-Everything except the replay commands runs on Python alone; without the
-bridge, `/highlights` fails with an unexpected-error message from the
-spawned process.
-
-The token comes from `.env` at the repo root — copy `example.env` and fill it
-in. `.env` values override shell exports, which is usually what you want when a
-production shell has a stale one lying around.
-
-The **Server Members** and **Presence** privileged intents must be enabled in
-the Discord developer portal (Bot → Privileged Gateway Intents). Without them
-login fails outright with `PrivilegedIntentsRequired`, rather than degrading.
-
-### Replay highlights
-
-```
-/highlights top_x:5        attach a .ttrm file
-!highlights 5              the prefix form; bare !highlights gives the top 3
-```
-
-Returns each player's biggest attack bursts as monospace boards, so the stacks
-line up in Discord's proportional font.
-
-### `/puzzle` — the daily puzzle
-
-```
-/puzzle               today's three sheets, and a link that opens the activity
-```
-
-One command, not a group. It used to be four; the other three rendered in
-Discord what the activity now shows on its own front screen — boards, rush and
-the rules all live one click away — and each was a second place for a board to
-be wrong. The one job left is the one Discord is actually for: announcing the
-day in a channel, with a way in.
-
-The bot owns none of the game. It reads the activity server and formats what
-comes back, so the two can never disagree about a score. Needs
-`PUZZLE_APP_ID`, `PUZZLE_API` and `PUZZLE_API_KEY`; without them the command
-still registers and explains what is missing rather than failing shut.
-
-Once a day, after the puzzle turns over, the bot replies to that server's own
-`/puzzle` message with how yesterday went — who solved which of the day's puzzles
-and how fast, who missed, and how long the server's run of solves is. It happens
-once per server per day, and only in servers that announced the puzzle in the
-first place, because the reply needs something to reply to.
-
-### Versions, and how a server hears about them
-
-The project carries a version — `beta 0.3` at the time of writing — in
-`changelog.json` at the repository root, next to the list of what each one changed.
-Read by the bot's `/puzzle` announcement, below.
-
-**A server is told the first time somebody runs `/puzzle` on a build it has not
-heard about**, as a plain message behind the puzzle embed. Not on a timer and
-not at boot: a deploy should not wake a channel up, so the note rides along
-behind something a person actually asked for, and only the first person to ask
-sees it arrive. It sends with `AllowedMentions.none()`, so a release note can
-never ping a room however it is worded.
-
-**It names every version the server missed, not just the newest one.**
-Production pulls when somebody deploys, which may be several releases after the
-last deploy — announcing only the tip would drop the middle ones silently. Past
-three releases the message says how many older ones it is not listing, because a
-server that has never heard from the bot is owed the entire history and nobody
-typing `/puzzle` asked to read it — and it is trimmed by *length* as well, since
-counting releases is not counting characters. Before that cap existed, three
-releases of eight wordy notes rendered to 2,029 characters, which Discord
-rejects outright; the same input now fits.
-
-Releasing is adding a `Release` at the top of `RELEASES`; `VERSION` follows it,
-and a test fails if it does not. Order in that tuple *is* the version order —
-comparing `beta 0.10` against `beta 0.9` as text is wrong and as numbers is a
-parser nobody needs.
-
-What each server has been told lives in `bot_versions`, one row per guild, and
-the claim is taken before the message is sent — the write is what stops a second
-caller, so it has to happen where two callers can still both be running.
-
-A send that fails therefore loses those notes **permanently**: the row already
-says the server has heard, and the next release names only what came after it.
-That is a trade, not a mitigation, and it is the right one only because nobody
-depends on a changelog. Something that mattered would claim after the send and
-dedupe instead.
-
-### `/report` — a bug, without a GitHub account
-
-```
-/report category:<Bugged puzzle | UI issue | …> description:<what happened>
-```
-
-Files a GitHub issue on the player's behalf, so somebody can say "puzzle 46 is
-unsolvable" without making an account. The title is their Discord display name
-and the category; the body is what they wrote, followed by a line saying who
-sent it and from which server.
-
-Its own command rather than `/puzzle report`: Discord will not let a command be
-both invocable and a group, and `/puzzle` is the one people already type.
-
-Needs `GITHUB_TOKEN` and `GITHUB_REPO`; without them the command still
-registers and explains what is missing. **It publishes text typed by anybody in
-the server, under the bot's identity, to whatever repository you name** — so the
-token should be fine-grained, scoped to Issues on that one repository, and able
-to do nothing else. `@mentions` and `#references` are defanged so a report
-cannot become a stranger's notification, the description is capped, and one
-player may file fifteen reports an hour, and one server sixty.
-
-### `/archive sync` — pull the spreadsheet in, officers only
-
-```
-/archive sync [dry_run:True]
-```
-
-Runs `bun run sync-archive` against the club's sheet and reports what moved:
-what was added, what changed content, and what would not replay. Everything it
-writes lands **unpublished**, so a sync on its own changes nothing a player is
-served — publishing stays a decision somebody makes at a terminal, and neither
-`publish-archive` nor `bun run puzzles` is reachable from Discord. `dry_run`
-reads the sheet and writes nothing at all.
-
-A group of its own rather than `/puzzle sync`, for the same reason `/report` is
-top-level: Discord will not let a command be both invocable and a group, and
-`/puzzle` is the one people already type.
-
-**Who may run it is a file, not a role.** `puzzle-admins.json` at the
-repository root holds Discord user ids, one per officer, and is **gitignored** —
-this repository is public and its history is append-only, so an id committed by
-mistake could not be taken back. Copy `puzzle-admins.example.json` to start
-one. It is read fresh on every command, so adding somebody takes effect
-immediately with no restart, and a missing or malformed file means *nobody*
-rather than everybody. Anyone not on it is turned away privately.
-
-Set `PUZZLE_ACTIVITY_DIR` only if the activity is not the `activity/` beside
-this repository; the sync runs with its working directory there, because Bun
-reads `.env` from the working directory and does not walk up.
-
-### `/activity` — who is around
-
-```
-/activity graph [days] [breakdown] [guild_id]    PNG graph, last 7 days by default
-/activity now [guild_id]                         online / idle / dnd right now
-```
-
-Backed by `presence_tracker.py`, which samples every 10 minutes. Both accept a
-`guild_id` to inspect any server the bot is in. The x-axis is labelled in
-Pacific time, because the club is.
-
-### `/internships` — the tracker
-
-```
-/internships recent [days] [us_only]    recently posted tech internships
-/internships info <role>                salary and description for one role
-/internships ping                       subscribe yourself to notices
-/internships pinglist                   who is subscribed
-/internships debug                      sweep health, DB size, Gemini quota
-```
-
-Swept every 15 minutes, with notices batched to at most one an hour. A new
-posting produces one quiet, mention-free message per subscribed channel with a
-button on it; pressing the button replies ephemerally, so a good sweep never
-floods a channel.
-
-### `/bennxt` — retired
-
-`roles`, `recent`, `notify`, `notifylist` and `debug` all reply *"bennxt is no
-longer bummxt"*. The civil and mechanical job tracker behind them was removed
-once bennxt got hired. The commands and their descriptions are kept so old
-invocations still resolve and the picker looks unchanged.
-
----
-
-## The daily puzzle activity
-
-`activity/` is a self-contained Bun + TypeScript app served as a Discord
-Activity: four puzzles a day from the club's archive — an easy, a medium, a
-hard and an extreme — scored on the server by replaying the keys you actually pressed, plus a
-five-minute puzzle rush, 1v1 duels, an explorer for the whole archive, and a
-builder that writes Blueprint codes for new puzzles.
-
-It has its own README, its own tests, and its own `.env`. Start there:
+### Play with the puzzles locally
 
 ```bash
 cd activity
 bun install
-bun run puzzles     # decode the archive into data/puzzles.json
-bun run build
-bun run dev
+bun run build      # build the browser bundle — a restart is not a deploy
+bun run dev        # http://localhost:3001
 ```
 
-See [activity/README.md](activity/README.md) for the scoring model, what its
-timing does and does not prove, and how to point Discord at it.
+The puzzle data and the archive are **committed**, so a fresh clone can play
+straight away — you do not need the club's spreadsheet for anything.
+
+### Run the bot
+
+```bash
+cp example.env .env                                    # DISCORD_TOKEN at minimum
+pip install discord.py python-dotenv aiohttp matplotlib
+bun install                                            # repo root, for /highlights
+cd client && python discord_bot.py
+```
+
+Everything except `/highlights` runs on Python alone. Enable the **Server
+Members** and **Presence** intents in the Discord developer portal first, or
+login fails outright rather than degrading.
 
 ---
 
-## The engine bridge
+## How the pieces fit
 
-`server/server.ts` runs the `@haelp/teto` TETR.IO engine and speaks NDJSON —
-one JSON object per line — over stdin and stdout. `client/teto_client.py`
-drives it. You never touch the wire format unless you are extending the server.
+```mermaid
+flowchart LR
+  D([Discord])
+  B["Bot · client/"]
+  A["Activity · activity/"]
+  E["Engine bridge · server/"]
 
-```python
-from teto_client import TetoClient
-from pathlib import Path
-
-with TetoClient(server_dir=Path("server")) as client:
-    result = client.parse_replay_file("game.ttrm")
-    for clear in result["clears"]:
-        print(f"[{clear['timeSeconds']:.2f}s] {clear['username']}: "
-              f"{clear['clearType']} +{clear['attack']} atk")
+  D -->|"/puzzle"| B
+  D -->|"opens the activity"| A
+  B -->|"the day's results, over HTTP"| A
+  B -->|"parses .ttrm replays"| E
 ```
 
-On start the server writes `{"type":"ready"}` and the client blocks until it
-sees it. Then:
+It began as a bridge that let Python drive the `@haelp/teto` engine to pull
+highlights out of a replay. That bridge is still here and still does that job —
+it is simply one part of four now:
 
-```jsonc
-// request — `id` is any string, echoed back so responses can be matched
-{"id": "1", "action": "parse_replay", "replay": "<minified replay JSON as a string>"}
+| Part | Lives in | What it is |
+| :-- | :-- | :-- |
+| **The bot** | `client/` | Slash commands: the daily puzzle, replay highlights, activity graphs, an internship tracker |
+| **The activity** | `activity/` | The game itself, served as a Discord Activity. [Its own README](activity/README.md) |
+| **The engine bridge** | `server/` | A Bun process wrapping the TETR.IO engine, spoken to over NDJSON from Python |
+| **The internship tracker** | `internship_poller.py` | Nothing to do with Tetris; it lives here because the bot fronts it |
 
-// success
-{"id": "1", "status": "ok", "clears": [ /* one object per line clear */ ]}
+The bot owns none of the game. It reads the activity's server and formats what
+comes back, so the two cannot disagree about a score.
 
-// failure
-{"id": "1", "status": "error", "message": "Invalid replay structure"}
+---
+
+## Repo map
+
+```
+BaronChairStair/
+├── activity/                the Discord Activity — own README, own tests, own .env
+├── client/
+│   ├── discord_bot.py       the bot: commands, schedulers, entry point
+│   ├── puzzle_commands.py   /puzzle, and the daily recap
+│   ├── archive_commands.py  /archive sync, behind an officer allowlist
+│   ├── report_commands.py   /report — files a GitHub issue for a player
+│   ├── teto_client.py       Python client for the engine bridge
+│   └── render.py            attack-burst highlight boards
+├── server/server.ts         Bun NDJSON stdio server — the engine side
+├── docs/                    the bot in depth, and the bridge protocol
+├── changelog.json           the version, and what each release changed
+└── example.env              every environment variable, documented
 ```
 
-`parse_replay` is the only action. The replay must be a **string**, not nested
-JSON, and on a single line — TETR.IO's own files are already minified, so this
-has never come up in practice.
+---
 
-Each clear carries `playerId`, `username`, `round`, `frame`, `timeSeconds`,
-`piece`, `clearType`, `linesCleared`, `garbageCleared`, `attack`, `attackSent`,
-`isBTB`, `b2b` and `combo`. `clearType` is one of `single`, `double`, `triple`,
-`quad`, `tspinSingle`, `tspinDouble`, `tspinTriple`, `allspin` (a non-T spin,
-or a mini) or `perfectClear`.
+## Where to read more
 
-To add an action, extend the dispatch in `server.ts` and call it from Python
-with `client._request("my_action", field="value")`.
+| Document | What is in it |
+| :-- | :-- |
+| [activity/README.md](activity/README.md) | The game in depth: scoring, rush, duels, the builder, the review queue |
+| [docs/bot.md](docs/bot.md) | Every slash command, and why each is shaped the way it is |
+| [docs/engine-bridge.md](docs/engine-bridge.md) | The NDJSON protocol between Python and the TETR.IO engine |
+| [DEPLOY.md](DEPLOY.md) · [activity/DEPLOY.md](activity/DEPLOY.md) | Deploying each half. The order is load-bearing in both |
+| [CLAUDE.md](CLAUDE.md) | The few rules that live nowhere else |
+| [changelog.json](changelog.json) | Every release, newest first. The top entry is the version |
 
 ---
 
@@ -298,59 +149,44 @@ with `client._request("my_action", field="value")`.
 None of these are needed to run the bot.
 
 ```bash
-python internship_poller.py verify        # check every job board is still live
-python internship_poller.py sweep         # store and print what is new
-python internship_poller.py sweep --llm   # classify new postings with Gemini
-python internship_poller.py watch         # every 15 minutes until Ctrl-C
-python internship_poller.py stats
-
-# careers page → a job board that can actually be polled, validated before it
-# is emitted. It never guesses an ATS slug: guessing hits about 1 in 20, and
-# asking an LLM is worse — confident, well-formed, entirely fabricated URLs.
-python resolve_boards.py https://careers.example.com
-python resolve_boards.py --file careers_urls.txt
-
-python sync_guilds.py SERVER_ID           # push commands into one guild, instantly
-python sync_guilds.py --clear SERVER_ID   # remove the guild copies afterwards
-python check_dupes.py                     # find commands registered twice
+python internship_poller.py sweep      # store and print what is new
+python internship_poller.py watch      # every 15 minutes until Ctrl-C
+python resolve_boards.py <careers-url> # careers page → a pollable job board
+python sync_guilds.py SERVER_ID        # push slash commands into one guild, instantly
+python check_dupes.py                  # find commands registered twice
 ```
 
 Global slash commands take up to an hour to propagate; a guild copy is
-immediate. Run `sync_guilds.py --clear` once the global ones have landed, or
-the picker shows every command twice — which is what `check_dupes.py` detects.
+immediate. Run `sync_guilds.py --clear SERVER_ID` once the global ones land, or
+the picker shows every command twice.
 
 ---
 
 ## Prerequisites
 
 | Tool | Version | Install |
-|------|---------|---------|
+| :-- | :-- | :-- |
 | **Bun** | ≥ 1.2 | `curl -fsSL https://bun.sh/install \| bash` |
-| **Python** | ≥ 3.10 | https://python.org |
+| **Python** | ≥ 3.10 | <https://python.org> |
 
 `bun install` at the repo root pulls `@haelp/teto` for the engine bridge;
 `activity/` has its own dependencies and its own `bun install`.
-
-Python needs `discord.py`, `python-dotenv`, `aiohttp` and `matplotlib`. The
-Python side of the engine bridge (`client/teto_client.py`) uses only the
-standard library; the bridge server itself is TypeScript and needs
-`@haelp/teto` (installed by `bun install` above).
 
 ---
 
 ## Environment
 
-Everything is documented inline in `example.env`. Copy it to `.env` at the repo
-root and fill in what you need:
+Copy `example.env` to `.env` at the repo root — every variable is documented
+inline. The ones that matter:
 
-- `DISCORD_TOKEN` — the bot. Required.
-- `PUZZLE_APP_ID`, `PUZZLE_API`, `PUZZLE_API_KEY` — the `/puzzle` commands.
-  `PUZZLE_API_KEY` must match `BOT_API_KEY` in `activity/.env`.
-- `PUZZLE_ACTIVITY_DIR` — where `/archive sync` runs. Optional; defaults to the
-  `activity/` beside this repository. Who may run it is `puzzle-admins.json`,
-  not an environment variable.
-- `GEMINI_API_KEY` and the `GEMINI_*` limits — only for
-  `internship_poller.py --llm`.
+- **`DISCORD_TOKEN`** — the bot. Required.
+- **`PUZZLE_APP_ID`, `PUZZLE_API`, `PUZZLE_API_KEY`** — the `/puzzle` command.
+  `PUZZLE_API_KEY` must match `BOT_API_KEY` in `activity/.env` — different names
+  on either side, and a mismatch is a silent 401.
+- **`GEMINI_API_KEY`** — only for `internship_poller.py --llm`.
+
+Who may run `/archive sync` is a file, not a variable: `puzzle-admins.json`,
+gitignored, copied from `puzzle-admins.example.json`.
 
 `.env` is gitignored and must stay that way.
 
@@ -358,26 +194,23 @@ root and fill in what you need:
 
 ## Contributing
 
-`main` is protected. It takes a pull request and one approving review from
-someone other than the author — GitHub refuses a self-approval, so a solo change
-still needs a second pair of eyes, and a new commit dismisses the reviews the
-old one had. Branch off `main`, open a PR, get a review.
+`main` is protected and append-only. Branch off it, open a pull request, and get
+one approving review from somebody other than the author — GitHub refuses a
+self-approval, so even a solo change gets a second pair of eyes, and a new
+commit dismisses the reviews the old one had.
 
-**`main` is append-only, for everybody.** Force pushes and branch deletion are
-refused for every account including owners: those two sit under GitHub's "rules
-applied to everyone including administrators" and are not waived by the
-administrator exemption below. Nothing on `main` has been rewritten, because
-nothing on `main` *can* be.
+Force pushes and branch deletion are refused for **every** account, owners
+included. Nothing on `main` has been rewritten, because nothing on `main` can be.
 
-**The review gate is a default rather than a wall.** `enforce_admins` is off, so
-an administrator can merge or push without the pull request and the approval —
-useful when something is on fire, and worth knowing before reading every commit
-on `main` as having been reviewed by a second person. Direct pushes are
-additionally restricted to a single account, so "an admin can push straight to
-`main`" means one specific owner rather than any of them.
+Tests, before you open it:
+
+```bash
+cd activity && bun test && bun run typecheck   # the activity
+python3 -m unittest discover -s client         # the bot
+```
 
 ---
 
 ## Licence
 
-See [LICENSE](LICENSE).
+[MIT](LICENSE) © 2026 tetrisatuci
