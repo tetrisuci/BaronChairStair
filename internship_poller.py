@@ -266,7 +266,15 @@ def is_blocked_company(name) -> bool:
     Adjacent Inc" is. Over-blocking is the safe direction for a blocklist, but
     it means a short or common entry would take unrelated companies with it —
     keep the entries long and distinctive, or block the exact slug instead.
+
+    Anything that is not a string is not a company name, and is never blocked
+    and never an error. boards.json is edited by hand, and this runs over every
+    row of it while the module is imported — discord_bot.py loads this module
+    at import with no try around it — so a raise here is not a wrong answer but
+    a bot that will not start.
     """
+    if not isinstance(name, str):
+        return False
     candidate = _norm(name)
     return any(candidate.startswith(b) for b in _BLOCKED_NORM)
 
@@ -294,8 +302,13 @@ def load_boards():
     # column IS the slug. Checking the label alone would drop the hand-written
     # seed row and let the next `discover` run put the same company straight
     # back under whatever slug it was found at.
+    #
+    # Sliced rather than indexed, so a short row is checked on the columns it
+    # has. Before this filter existed a malformed hand-edited row cost at most
+    # its own sweep; indexing here turned it into an IndexError at import, and
+    # a bot that will not start.
     return [r for r in rows
-            if not (is_blocked_company(r[1]) or is_blocked_company(r[2]))]
+            if not any(is_blocked_company(v) for v in r[1:3])]
 
 
 BOARDS = load_boards()

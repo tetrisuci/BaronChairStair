@@ -16,7 +16,10 @@ suite with bare `python3` has none, so it is stubbed with the surface the
 import touches. Nothing here makes a request.
 """
 
+import importlib.util
+import json
 import os
+import shutil
 import sys
 import tempfile
 import types
@@ -67,6 +70,15 @@ class BlockedNames(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertFalse(poller.is_blocked_company(name))
 
+    def test_something_that_is_not_a_name_is_never_blocked(self):
+        # boards.json is edited by hand, so a column can hold anything JSON can.
+        # Not a string means not a company name: never blocked, and never an
+        # exception — a raise here, reached from `load_boards` while the module
+        # is imported, is a bot that will not start.
+        for value in (12345, 3.5, True, ["Rocket Lab"], {"company": "Rocket Lab"}):
+            with self.subTest(value=value):
+                self.assertFalse(poller.is_blocked_company(value))
+
     def test_the_company_is_caught_under_its_longer_legal_name(self):
         # Rocket Lab files as "Rocket Lab USA, Inc." and `discover` finds boards
         # under whatever the ATS slug says. An exact match blocks the seed row
@@ -93,18 +105,46 @@ class BlockedNames(unittest.TestCase):
 
 
 class Registry(unittest.TestCase):
+    def _boards(self, rows=None):
+        """`load_boards()` against a boards.json holding `rows`, or none at all.
+
+        Never the real file. On the box BOARDS_FILE is whatever `discover` last
+        wrote, so a test that reads it tests the box rather than the code: it
+        goes red on a healthy deploy the day `discover` records a seed company
+        under its slug, and CLAUDE.md's stop-on-red rule then halts that deploy
+        for a fault that is not in the code.
+        """
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "boards.json")
+            if rows is not None:
+                with open(path, "w") as f:
+                    json.dump(rows, f)
+            original = poller.BOARDS_FILE
+            poller.BOARDS_FILE = path
+            try:
+                return poller.load_boards()
+            finally:
+                poller.BOARDS_FILE = original
+
     def test_a_blocked_company_is_never_polled(self):
         # The strongest half of the block: no board, no request, no row, so
         # nothing can be announced in the first place. Both identifying columns
         # are checked, because a discovered board only has its slug.
-        self.assertFalse([b for b in poller.load_boards()
+        self.assertFalse([b for b in self._boards()
                           if poller.is_blocked_company(b[1])
                           or poller.is_blocked_company(b[2])])
 
     def test_the_rest_of_the_registry_survives(self):
-        companies = {b[2] for b in poller.load_boards()}
+        # Against the seed list alone, so the display names are the hand-written
+        # ones. A boards.json row with the same (platform, slug) replaces its
+        # seed row and `discover` writes the slug as the company, so on a box
+        # where `discover` has found SpaceX the real file says "spacex" — and
+        # this assertion would fail while SpaceX was still being polled.
+        boards = self._boards()
+        companies = {b[2] for b in boards}
         self.assertIn("SpaceX", companies)
         self.assertNotIn("Rocket Lab", companies)
+        self.assertEqual(len(boards), len(poller.SEED_BOARDS) - 1)
 
     def test_a_discovered_board_cannot_reintroduce_a_blocked_company(self):
         # The row shape is the whole point of this test. `cmd_discover` appends
@@ -112,24 +152,64 @@ class Registry(unittest.TestCase):
         # board carries its SLUG in the company column and its sector is always
         # "unknown" — a fixture with a tidy display name in column 2 is a shape
         # discover never writes, and passes while the real thing leaks.
-        import json
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, "boards.json")
-            with open(path, "w") as f:
-                json.dump([["lever", "rocketlabusa", "rocketlabusa", "unknown"],
-                           ["workday", "rocketlab/wd1/Careers",
-                            "rocketlab/wd1/Careers", "unknown"],
-                           ["greenhouse", "anduril", "anduril", "unknown"]], f)
-            original = poller.BOARDS_FILE
-            poller.BOARDS_FILE = path
-            try:
-                boards = poller.load_boards()
-            finally:
-                poller.BOARDS_FILE = original
+        boards = self._boards([["lever", "rocketlabusa", "rocketlabusa", "unknown"],
+                               ["workday", "rocketlab/wd1/Careers",
+                                "rocketlab/wd1/Careers", "unknown"],
+                               ["greenhouse", "anduril", "anduril", "unknown"]])
         self.assertEqual([b[1] for b in boards if b[3] == "unknown"], ["anduril"])
         self.assertFalse([b for b in boards
                           if poller.is_blocked_company(b[1])
                           or poller.is_blocked_company(b[2])])
+
+    def test_a_malformed_row_costs_that_row_not_the_boot(self):
+        # boards.json is written by `discover` but edited by hand, and before
+        # the blocklist existed a short or mistyped row cost at most its own
+        # sweep. The filter reads two columns of every row, so it must not be
+        # what turns a typo into an exception. Each row is kept exactly as it
+        # was before the filter existed.
+        short = ["greenhouse", "acme"]
+        bad_name = ["greenhouse", "acmetwo", 7, "tech"]
+        bad_slug = ["lever", 12345, "Some Co", "misc"]
+        boards = self._boards([short, bad_name, bad_slug])
+        for row in (short, bad_name, bad_slug):
+            with self.subTest(row=row):
+                self.assertIn(tuple(row), boards)
+
+    def test_a_malformed_row_cannot_smuggle_a_blocked_company_in(self):
+        # The other direction of the rule above: tolerating a bad column must
+        # not become a way past the block. Either identifying column matching
+        # is enough, whatever sits in the other one or however short the row.
+        boards = self._boards([["greenhouse", "rocketlabusa", 7, "defense"],
+                               ["workday", 99, "Rocket Lab", "defense"],
+                               ["lever", "rocketlabinc"]])
+        self.assertEqual([b for b in boards
+                          if b[1] in ("rocketlabusa", 99, "rocketlabinc")], [])
+
+
+class Boot(unittest.TestCase):
+    def test_the_bot_still_starts_with_a_malformed_boards_json(self):
+        # What this pins is not a wrong answer but a bot that will not start.
+        # `BOARDS = load_boards()` runs while the module is imported, and
+        # discord_bot.py loads this module at import with no try around it, so
+        # an exception there takes every command down with it — the puzzle
+        # included. Loaded the way the bot loads it, exec_module on a copy with
+        # a hand-edited boards.json beside it; the copy gets a name of its own,
+        # so the module the rest of this file tests is left alone.
+        with tempfile.TemporaryDirectory() as d:
+            shutil.copy(poller.__file__, d)
+            with open(os.path.join(d, "boards.json"), "w") as f:
+                json.dump([["greenhouse", "acme"],
+                           ["greenhouse", "acmetwo", 7, "tech"],
+                           ["lever", 12345, "Some Co", "misc"],
+                           ["greenhouse", "rocketlabusa", "rocketlabusa", "unknown"]],
+                          f)
+            spec = importlib.util.spec_from_file_location(
+                "internship_poller_boot_check",
+                os.path.join(d, "internship_poller.py"))
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+        self.assertIn(("greenhouse", "acme"), module.BOARDS)
+        self.assertFalse([b for b in module.BOARDS if b[1] == "rocketlabusa"])
 
 
 class StoredRows(unittest.TestCase):
