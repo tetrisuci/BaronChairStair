@@ -4577,6 +4577,10 @@
    "targetAttack": 2,
    "requiredClears": [
     {
+     "clear": "spin (no lines)",
+     "count": 1
+    },
+    {
      "clear": "spin",
      "count": 2
     }

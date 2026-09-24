@@ -439,9 +439,11 @@ export interface ContentChange {
  * fixed, and holding those back would give officers a reason to want the
  * content check turned off.
  *
- * `requiredClears` survives a metadata correction untouched, for the reason
- * `db.ts` gives on the column: the requirement is a decision somebody made
- * about what a goal means, not a fact about the board.
+ * `requiredClears` survives a metadata correction untouched — not because it is
+ * frozen, but because re-deriving it from an answer the correction did not touch
+ * writes the same value back. (The older reason, "a decision somebody made about
+ * what a goal means", was retired from `db.ts`'s comment on the column when the
+ * requirement became a pure function of the replayed solution.)
  *
  * It cannot survive a *content* edit unexamined. A requirement frozen against
  * the old answer, left bolted to a new board, is enforced by
