@@ -17,6 +17,7 @@ import {
   readOverrides,
   writeOverride,
 } from "./puzzle-overrides";
+import { readPublishedArchive } from "./archive-rows";
 import {
   acceptSubmission,
   countPendingSubmissions,
@@ -2547,6 +2548,11 @@ export class Store {
    */
   acceptedPuzzles(): Puzzle[] {
     return readAcceptedPuzzles(this.db);
+  }
+
+  /** Every published `archive_puzzles` row, for `PuzzleArchive.load` to lay over the file. */
+  publishedArchive(): Puzzle[] {
+    return readPublishedArchive(this.db);
   }
 
   /** Whether an id names an accepted puzzle, without reading the puzzle. */

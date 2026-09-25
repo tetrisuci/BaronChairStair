@@ -2,6 +2,12 @@
   "$comment": "The project's version and its player-facing release notes. Newest first; order in this list IS the version order. Read by client/changelog.py — the bot's /puzzle announcement. Adding a release means putting it at the top. Keep `changes` to things a player can see.",
   "releases": [
     {
+      "version": "beta 0.8",
+      "changes": [
+        "**New puzzles from the club's sheet show up as soon as an officer syncs them** — in Explore and duels straight away, and in the daily rotation from the next day. Nothing about a day you are already playing changes, and nobody gets disconnected."
+      ]
+    },
+    {
       "version": "beta 0.7",
       "changes": [
         "**A puzzle can ask for a spin that clears no lines.** #123 “style” says “Perform 3 Spins” and its own answer spins three times — but one of those spins clears nothing, and the game had no name for that, so only two of the three were ever counted. It is named now, and style asks for all three. No other puzzle changes: a spin that clears nothing counts toward a goal only where the goal actually asks for one."

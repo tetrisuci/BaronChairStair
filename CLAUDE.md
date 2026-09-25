@@ -99,6 +99,10 @@ Report these and stop; do not act on them unasked.
   every future day deals. (`bun run sync-archive` is safe and re-runnable by contrast —
   everything it writes lands unpublished, and that is the review gate.) Both live in
   `activity/`, not the root.
+- **Discord's `/archive sync` (without `dry_run`)**, or `sync-archive --publish`. Unlike
+  the terminal sync, this one **publishes** and reloads the running activity, so it
+  changes what players are dealt from tomorrow on. It is the officers' call; the
+  allowlist in `puzzle-admins.json` is the review gate.
 - **`GOAL_ENFORCEMENT`.** Controls whether clear requirements are shown and enforced.
   Check what the box actually sets (`grep -E '^GOAL_ENFORCEMENT=' activity/.env`) rather
   than assuming; it defaults to `log`, which shows and enforces nothing. Turning it `on`

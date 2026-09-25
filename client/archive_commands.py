@@ -12,14 +12,18 @@ for that reason, and `/report` is top-level for the same one. `/archive` is a
 name nobody types today, so it costs nothing and leaves room for the siblings
 this will want later: a status, and one day a publish.
 
-**Only the safe half of the sync.** `bun run sync-archive` reads the sheet and
-upserts every puzzle it can replay, and everything it writes lands
-*unpublished* — the review gate. It is re-runnable, and it is what
-`activity/DEPLOY.md` blesses. The two neighbouring tools are deliberately not
-reachable from Discord: `publish-archive` changes which puzzle every future day
-deals, and `bun run puzzles` has already caused a boot failure by dropping a
-puzzle a rush pool referenced. Those stay decisions somebody makes at a
-terminal with the guide open.
+**A sync from here is a published sync.** `bun run sync-archive` reads the
+sheet and upserts every puzzle it can replay; from a terminal everything it
+writes lands *unpublished*, the review gate. From Discord it is run with
+`--publish`, because the officers on the allowlist are that gate: running this
+command is the decision that the sheet is ready. Then the activity is asked to
+reload in place (`POST /api/bot/reload-archive`), so what was synced is
+playable at once, with no restart to drop anybody's duel. A dry run does
+neither.
+
+The two neighbouring tools stay unreachable from Discord: `publish-archive` by
+id at a terminal, and `bun run puzzles`, which has already caused a boot
+failure by dropping a puzzle a rush pool referenced.
 
 Environment (see example.env):
     PUZZLE_ACTIVITY_DIR   Where the activity checkout lives. Defaults to the
@@ -32,7 +36,9 @@ import asyncio
 import os
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 
+import aiohttp
 import discord
 from discord import app_commands
 
@@ -54,8 +60,16 @@ DEFAULT_ACTIVITY_DIR = Path(__file__).resolve().parent.parent / "activity"
 SYNC_TIMEOUT_S = 300
 
 #: Discord's own ceiling is 2000 characters. The reply spends the rest on the
-#: framing around the tool's output.
-MAX_OUTPUT_CHARS = 1500
+#: framing around the tool's output, the verdict, and what went live.
+MAX_OUTPUT_CHARS = 1200
+
+#: Where the activity takes its reload, and how long to give it. The reload
+#: itself is milliseconds; the rest is a round trip through the proxy.
+RELOAD_PATH = "/api/bot/reload-archive"
+RELOAD_TIMEOUT_S = 15
+
+#: How many ids a line of the reply will spell out before counting the rest.
+MAX_IDS_LISTED = 15
 
 #: `sync-archive` distinguishes its exits, and treating any non-zero as failure
 #: would report the tool's expected work as a fault. 1 means rows it could not
@@ -125,8 +139,10 @@ async def run_sync(dry_run: bool, by: str, cwd: Path | None = None) -> tuple[int
     """
     directory = cwd or _activity_dir()
     argv = ["bun", "run", "sync-archive"]
-    if dry_run:
-        argv.append("--dry-run")
+    # Never both. A dry run's transaction is rolled back before publishing is
+    # reached, so passing both would be harmless — but a command that asks for
+    # a publish it cannot get reads as a bug to whoever next opens this.
+    argv.append("--dry-run" if dry_run else "--publish")
     argv += ["--by", by]
 
     # Checked before the exec, because `create_subprocess_exec` raises
@@ -204,7 +220,7 @@ def verdict(code: int, dry_run: bool) -> str:
     behind a distinct exit code.
     """
     if code == EXIT_OK:
-        return "Sheet read, nothing left over." if dry_run else "Synced."
+        return "Sheet read, nothing left over." if dry_run else "Synced and published."
     if code == EXIT_EDITED:
         if dry_run:
             return (
@@ -212,8 +228,8 @@ def verdict(code: int, dry_run: bool) -> str:
                 "above are worth reading before anybody syncs for real."
             )
         return (
-            "Synced, and some puzzles changed content — the lines above are worth "
-            "reading before anybody publishes."
+            "Synced and published, and some puzzles changed content — the lines "
+            "above are worth reading."
         )
     if code == EXIT_UNWRITTEN:
         return (
@@ -224,6 +240,81 @@ def verdict(code: int, dry_run: bool) -> str:
     return "The sync failed."
 
 
+def _ids(ids: list) -> str:
+    shown = ", ".join(f"#{i}" for i in ids[:MAX_IDS_LISTED])
+    more = len(ids) - MAX_IDS_LISTED
+    return f"{shown} and {more} more" if more > 0 else shown
+
+
+def describe_reload(result: dict) -> str:
+    """
+    What the activity's reload did, for the officer who asked.
+
+    Says what players will and will not notice, because that is the question
+    an officer publishing to a live game has. New puzzles are playable in
+    Explore and duels at once but reach the daily rotation only from tomorrow:
+    today's four and today's rush pool were pinned before the swap, so nobody
+    playing now is re-dealt. A changed board is named rather than buried —
+    it is the one thing that did not go live, and the officer should know why.
+    """
+    added = list(result.get("added") or [])
+    held = list(result.get("held") or [])
+    lines = []
+    if added:
+        lines.append(
+            f"**Live now:** {_ids(added)} — in Explore and duels straight away, and in "
+            "the daily rotation from tomorrow. Today's puzzles and rush don't move."
+        )
+    else:
+        lines.append("The activity reloaded; no new puzzles to add.")
+    if held:
+        lines.append(
+            f"**Waiting for the activity's next restart:** {_ids(held)} — the sheet "
+            "changed the board itself, and swapping it now would score anyone "
+            "mid-solve against a board they were never shown."
+        )
+    return "\n".join(lines)
+
+
+async def reload_activity() -> str:
+    """
+    Asks the running activity to serve what was just published, and says how
+    that went. Never raises: the sync has already happened, and a reply that
+    blamed it for the activity being unreachable would be wrong about both.
+
+    Every failure says the same true thing — the rows are published, and the
+    activity picks them up whenever it next starts — so the officer knows
+    nothing is lost, only delayed.
+    """
+    later = "They go live when the activity next restarts."
+    base = os.environ.get("PUZZLE_API", "").rstrip("/")
+    key = os.environ.get("PUZZLE_API_KEY", "").strip()
+    if not base or not key:
+        return f"Published, but `PUZZLE_API` or `PUZZLE_API_KEY` is unset, so the activity was not told. {later}"
+    host = urlparse(base).hostname or ""
+    # The same rule `puzzle_commands._get` holds, for the same key.
+    if not base.startswith("https://") and host not in ("localhost", "127.0.0.1", "::1"):
+        return f"Published, but `PUZZLE_API` is not https, so the key was not sent. {later}"
+
+    try:
+        timeout = aiohttp.ClientTimeout(total=RELOAD_TIMEOUT_S)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(base + RELOAD_PATH, headers={"X-Api-Key": key}) as response:
+                body = await response.json(content_type=None)
+                if response.status == 200 and isinstance(body, dict):
+                    return describe_reload(body)
+                reason = body.get("error") if isinstance(body, dict) else None
+                print(f"archive-sync: reload answered HTTP {response.status}: {reason}",
+                      file=sys.stderr)
+                if response.status == 422 and reason:
+                    return f"Published, but the activity would not take the new pool: {reason}"
+                return f"Published, but the activity answered HTTP {response.status}. {later}"
+    except (aiohttp.ClientError, TimeoutError, ValueError) as exc:
+        # The type too: most of these stringify to "", as `_get` records.
+        print(f"archive-sync: reload failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return f"Published, but the activity could not be reached. {later}"
+
+
 archive = app_commands.Group(
     name="archive",
     description="Officer tools for the puzzle archive.",
@@ -232,7 +323,7 @@ archive = app_commands.Group(
 
 @archive.command(
     name="sync",
-    description="Pull the club's spreadsheet into the puzzle archive.",
+    description="Pull the club's spreadsheet in and make its new puzzles playable.",
 )
 @app_commands.describe(
     dry_run="Read the sheet and report what would change, writing nothing.",
@@ -280,12 +371,18 @@ async def archive_sync(
             or "discord"
         )
         code, output = await run_sync(dry_run=dry_run, by=f"discord:{label}")
+        # Inside the lock, so two officers' syncs cannot interleave reloads. Not
+        # after a dry run, which published nothing, nor after a sync that never
+        # started (-1). Every other exit reloads: rows that did write were
+        # published, and reloading an unchanged pool is a no-op.
+        live = await reload_activity() if not dry_run and code != -1 else ""
 
     heading = "**Dry run** — nothing was written.\n" if dry_run else ""
     body = _fence_safe(_clip(output))
+    tail = f"\n{_fence_safe(live)}" if live else ""
     try:
         await interaction.followup.send(
-            f"{heading}```\n{body}\n```\n{verdict(code, dry_run)}",
+            f"{heading}```\n{body}\n```\n{verdict(code, dry_run)}{tail}",
             # The two sibling command modules both pass this on every send, and
             # this one carries text from the spreadsheet, so it needs it most:
             # an @everyone in a puzzle title would otherwise ping the server.

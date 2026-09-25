@@ -110,6 +110,16 @@ class TheGate(unittest.IsolatedAsyncioTestCase):
         self._real_sync = archive_commands.run_sync
         archive_commands.run_sync = fake_sync
         self.addCleanup(setattr, archive_commands, "run_sync", self._real_sync)
+        # Nor the network.
+        self.reloads = 0
+
+        async def fake_reload():
+            self.reloads += 1
+            return "**Live now:** #167"
+
+        self._real_reload = archive_commands.reload_activity
+        archive_commands.reload_activity = fake_reload
+        self.addCleanup(setattr, archive_commands, "reload_activity", self._real_reload)
 
     async def test_an_unlisted_user_is_refused(self):
         interaction = Interaction(User(2002))
@@ -199,6 +209,32 @@ class TheGate(unittest.IsolatedAsyncioTestCase):
             "exactly the reply's own opening and closing fence, and no others",
         )
 
+    async def test_a_real_sync_tells_the_activity_and_says_what_went_live(self):
+        interaction = Interaction(User(1001))
+        await CALLBACK(interaction)
+        self.assertEqual(self.reloads, 1)
+        self.assertIn("Live now", interaction.followup.sent[0]["content"])
+
+    async def test_a_dry_run_never_touches_the_activity(self):
+        # It published nothing, so a reload would at best be a no-op — and a
+        # reply saying "live now" under "nothing was written" would be a lie.
+        interaction = Interaction(User(1001))
+        await CALLBACK(interaction, dry_run=True)
+        self.assertEqual(self.reloads, 0)
+        self.assertNotIn("Live now", interaction.followup.sent[0]["content"])
+
+    async def test_a_sync_that_never_started_does_not_reload(self):
+        async def missing_bun(dry_run, by, cwd=None):
+            return -1, "`bun` is not on this bot's PATH"
+
+        archive_commands.run_sync = missing_bun
+        await CALLBACK(Interaction(User(1001)))
+        self.assertEqual(self.reloads, 0)
+
+    async def test_a_refused_user_does_not_reload_either(self):
+        await CALLBACK(Interaction(User(2002)))
+        self.assertEqual(self.reloads, 0)
+
     async def test_a_second_sync_while_one_runs_is_refused(self):
         started = asyncio.Event()
         release = asyncio.Event()
@@ -225,7 +261,7 @@ class ReadingTheResult(unittest.TestCase):
     def test_the_verdicts_distinguish_the_tools_exit_codes(self):
         # Treating any non-zero as failure would report the tool's expected
         # work — a content edit — as a fault.
-        self.assertEqual(archive_commands.verdict(0, dry_run=False), "Synced.")
+        self.assertEqual(archive_commands.verdict(0, dry_run=False), "Synced and published.")
         self.assertIn("changed content", archive_commands.verdict(2, dry_run=False))
         self.assertIn("would not write", archive_commands.verdict(1, dry_run=False))
         self.assertIn("failed", archive_commands.verdict(-1, dry_run=False))
@@ -356,6 +392,28 @@ class StartingTheProcess(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("NODE_CHANNEL_SERIALIZATION_MODE", seen["env"])
         self.assertEqual(seen["env"]["A_VARIABLE_THAT_SHOULD_SURVIVE"], "yes")
 
+    async def test_a_real_sync_publishes_and_a_dry_run_never_does(self):
+        # Discord's sync is a published sync; a dry run must not even ask.
+        seen: list = []
+
+        async def fake_exec(*argv, **kwargs):
+            seen.append(argv)
+            raise FileNotFoundError("no bun here")
+
+        real = asyncio.create_subprocess_exec
+        asyncio.create_subprocess_exec = fake_exec
+        try:
+            with tempfile.TemporaryDirectory() as here:
+                await archive_commands.run_sync(dry_run=False, by="me", cwd=Path(here))
+                await archive_commands.run_sync(dry_run=True, by="me", cwd=Path(here))
+        finally:
+            asyncio.create_subprocess_exec = real
+
+        self.assertIn("--publish", seen[0])
+        self.assertNotIn("--dry-run", seen[0])
+        self.assertIn("--dry-run", seen[1])
+        self.assertNotIn("--publish", seen[1])
+
     async def test_a_missing_bun_blames_bun(self):
         async def fake_exec(*argv, **kwargs):
             raise FileNotFoundError("no bun here")
@@ -375,3 +433,45 @@ class StartingTheProcess(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TellingTheActivity(unittest.IsolatedAsyncioTestCase):
+    def test_new_puzzles_are_named_with_when_they_reach_the_daily(self):
+        said = archive_commands.describe_reload({"added": [167, 168], "held": [], "kept": []})
+        self.assertIn("#167, #168", said)
+        self.assertIn("from tomorrow", said)
+        self.assertNotIn("restart", said)
+
+    def test_a_held_board_is_named_and_explained(self):
+        said = archive_commands.describe_reload({"added": [], "held": [8, 96], "kept": []})
+        self.assertIn("#8, #96", said)
+        self.assertIn("restart", said)
+
+    def test_a_long_list_is_counted_rather_than_spelt_out(self):
+        said = archive_commands.describe_reload({"added": list(range(1, 41)), "held": []})
+        self.assertIn("and 25 more", said)
+
+    async def test_an_unconfigured_bot_says_the_rows_are_published_anyway(self):
+        saved = {k: os.environ.pop(k, None) for k in ("PUZZLE_API", "PUZZLE_API_KEY")}
+        try:
+            said = await archive_commands.reload_activity()
+        finally:
+            for k, v in saved.items():
+                if v is not None:
+                    os.environ[k] = v
+        self.assertIn("Published", said)
+        self.assertIn("next restarts", said)
+
+    async def test_the_key_is_never_sent_in_the_clear(self):
+        saved = {k: os.environ.get(k) for k in ("PUZZLE_API", "PUZZLE_API_KEY")}
+        os.environ["PUZZLE_API"] = "http://puzzle.example.org"
+        os.environ["PUZZLE_API_KEY"] = "secret"
+        try:
+            said = await archive_commands.reload_activity()
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+        self.assertIn("not https", said)

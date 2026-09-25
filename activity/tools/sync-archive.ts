@@ -2,7 +2,7 @@
 /**
  * Pulls the puzzle archive out of the Google Sheet and into `archive_puzzles`.
  *
- *     bun run sync-archive [--dry-run] [--db <path>] [--from <dir>] [--by <name>]
+ *     bun run sync-archive [--dry-run] [--publish] [--db <path>] [--from <dir>] [--by <name>]
  *
  * The sheet is published, so both tabs come back as CSV from `gviz` with no
  * credentials and nothing to configure. `--from` reads the same two files off
@@ -14,6 +14,12 @@
  * review gate used to be git — a puzzle arrived as a diff in a tracked file
  * that somebody approved — and this would otherwise be a script that silently
  * changes what the club plays tomorrow. Run it as often as you like.
+ *
+ * **`--publish` is the exception, and it is the bot's.** Discord's
+ * `/archive sync` passes it: the officers on its allowlist decided that a sync
+ * they run from Discord is the review, so every row this run leaves waiting is
+ * published once the sync has committed. Run from a terminal without it, this
+ * stays exactly as safe as it always was.
  *
  * Every puzzle is decoded and replayed through the real engine by
  * `decode-archive.ts`, the same module `build-puzzles.ts` uses, so a puzzle
@@ -38,7 +44,12 @@
 import { Database } from "bun:sqlite";
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { upsertArchive, type SyncOutcome } from "../server/archive-rows";
+import {
+  pendingArchive,
+  publishArchive,
+  upsertArchive,
+  type SyncOutcome,
+} from "../server/archive-rows";
 import type { ClearRequirement, Puzzle } from "../shared/puzzle";
 import { migrateArchive } from "../server/db";
 import { archiveMetaOf, CODES_SHEET, META_SHEET, buildPuzzle, indexById } from "./decode-archive";
@@ -61,6 +72,8 @@ interface Options {
   from: string | null;
   /** Who to record against a content change. An attribution, not an identity. */
   by: string;
+  /** Publish every waiting row once the sync has committed. Ignored on a dry run. */
+  publish: boolean;
 }
 
 function parseArgs(argv: readonly string[]): Options {
@@ -71,11 +84,16 @@ function parseArgs(argv: readonly string[]): Options {
       : resolve(import.meta.dir, "../data/daily.sqlite"),
     from: null,
     by: "sync-archive",
+    publish: false,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const flag = argv[i];
     if (flag === "--dry-run") {
       options.dryRun = true;
+      continue;
+    }
+    if (flag === "--publish") {
+      options.publish = true;
       continue;
     }
     const value = argv[i + 1];
@@ -119,6 +137,8 @@ interface Report {
    * the command that did it exited 0.
    */
   unwritten: { id: number; reason: string }[];
+  /** What `--publish` made playable, or null when it was not asked for. */
+  published: number[] | null;
 }
 
 function record(report: Report, puzzle: Puzzle, outcome: SyncOutcome): void {
@@ -146,6 +166,7 @@ function describe(report: Report, dryRun: boolean): void {
   console.log(`${verb} ${report.added.length}, amended ${report.amended.length}, ` +
     `unchanged ${report.unchanged}`);
   if (report.added.length) console.log(`  new: ${report.added.join(", ")}`);
+  if (report.published) console.log(`published ${report.published.length} that were waiting`);
   for (const { id, fields } of report.amended) {
     console.log(`  #${id}: ${fields.join(", ")}`);
   }
@@ -226,6 +247,7 @@ async function main(): Promise<void> {
   // replay is the slow part, and it needs no database at all.
   const report: Report = {
     added: [], amended: [], edited: [], unchanged: 0, failed: [], unwritten: [],
+    published: null,
   };
   const built: { puzzle: Puzzle; meta: ReturnType<typeof archiveMetaOf> }[] = [];
   for (const [id, codes] of [...codesById].sort(([a], [b]) => a - b)) {
@@ -276,6 +298,13 @@ async function main(): Promise<void> {
       }
       if (options.dryRun) throw new DryRun();
     })();
+    // After the commit, never inside it: publishing is a decision about what
+    // the sync wrote, so it is only taken once that is on file. A dry run
+    // never reaches this line — its transaction threw above.
+    if (options.publish) {
+      const waiting = pendingArchive(db).map((entry) => entry.puzzle.id);
+      report.published = publishArchive(db, waiting, options.by, now);
+    }
   } catch (error) {
     if (!(error instanceof DryRun)) throw error;
   } finally {

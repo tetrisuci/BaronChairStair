@@ -706,6 +706,19 @@ describe.skipIf(!hasSolutions)("puzzle rush", () => {
     expect(noKey.status).toBe(enabled ? 401 : 404);
   });
 
+  test("reloading the archive is the bot's alone", async () => {
+    // It changes what every player is dealt from tomorrow on, so it sits behind
+    // the same key as every other bot route. Never called with a good key here:
+    // this process's archive is shared by every server test file, and
+    // `tests/archive-reload.test.ts` covers the reload on a store of its own.
+    const enabled = Boolean(process.env.BOT_API_KEY);
+    const reload = (headers: Record<string, string>) =>
+      fetchApp(new Request(`${BASE}/api/bot/reload-archive`, { method: "POST", headers }));
+
+    expect((await reload({ "X-Api-Key": "wrong" })).status).toBe(enabled ? 401 : 404);
+    expect((await reload({})).status).toBe(enabled ? 401 : 404);
+  });
+
   test.skipIf(!process.env.BOT_API_KEY)("the bot rush board answers the right key", async () => {
     const response = await fetchApp(
       new Request(`${BASE}/api/rush/standings`, {

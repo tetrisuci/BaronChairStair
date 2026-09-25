@@ -55,6 +55,7 @@ import {
 } from "./limits";
 import { DAILY_TIERS, type DailyTier } from "../shared/daily";
 import { PuzzleArchive } from "./puzzles";
+import { reloadInPlace } from "./archive-reload";
 import {
   apiError,
   GUEST_ID,
@@ -134,6 +135,7 @@ const archive = PuzzleArchive.load(
   community,
   store.overridesFor(),
   trackedSolutions,
+  store.publishedArchive(),
 );
 {
   // Worth a line. Without it a deploy box serves every puzzle answerless, and
@@ -775,6 +777,44 @@ app.get("/api/recap", (c) => {
   });
 });
 
+/**
+ * The bot's `/archive sync` calls this once the sync has published, so what it
+ * synced is playable without anybody restarting the server — which would drop
+ * every duel in progress. See `server/archive-reload.ts` for how the swap keeps
+ * everybody mid-game on the board they were shown.
+ *
+ * 422 when the sources would not load: the running archive is untouched, and
+ * the message is the one an operator would otherwise have read in a crashed
+ * boot.
+ */
+app.post("/api/bot/reload-archive", (c) => {
+  requireBotKey(c);
+  try {
+    return c.json(
+      reloadInPlace({
+        archive,
+        schedule,
+        store,
+        onPool: useArchive,
+        load: () =>
+          PuzzleArchive.load(
+            config.paths.puzzles,
+            { timeZone: config.timeZone },
+            store.acceptedPuzzles(),
+            store.overridesFor(),
+            trackedSolutions,
+            store.publishedArchive(),
+          ),
+      }),
+    );
+  } catch (error) {
+    console.warn("[puzzle] archive reload refused; still serving the old pool.", error);
+    throw new HTTPException(422, {
+      message: `The archive did not reload, and players still have the old one: ${String(error)}`,
+    });
+  }
+});
+
 /** The rush board for the bot, same gate as the daily one. */
 app.get("/api/rush/standings", (c) => {
   requireBotKey(c);
@@ -1405,9 +1445,9 @@ function relativeTo(absolute: string): string {
 console.log(
   `puzzle — day ${archive.currentDay()}, ` +
     `${archive.puzzles.length} puzzles` +
-    // Said at startup because this is the only moment it is ever answered. An
-    // accepted puzzle joins the archive here and nowhere else, so a restart
-    // that did not pick one up looks exactly like a restart that did.
+    // Said at startup because a restart that did not pick up an accepted
+    // puzzle looks exactly like one that did. A reload through
+    // `/api/bot/reload-archive` says the same thing in its own log line.
     (community.length > 0 ? ` (${community.length} from players)` : "") +
     `, resetting at midnight ${config.timeZone}, ` +
     `listening on :${config.port}` +
