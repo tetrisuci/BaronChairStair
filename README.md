@@ -42,7 +42,7 @@ for as long as you leave it there — and undo and redo are always one key away.
 | `/report` | File a bug or a suggestion. No GitHub account needed |
 | `/activity graph`<br>`/activity now` | Who is online, right now or across the last week |
 | `/internships …` | The club's internship tracker: recent postings, salaries, a ping list |
-| `/archive sync` | **Officers only.** Pull the club's spreadsheet into the puzzle archive |
+| `/archive sync` | **Officers only.** Pull the club's spreadsheet in, and make its new puzzles playable |
 
 The day after each puzzle, the bot replies to its own announcement with how the
 server did — who solved what, how fast, and how long the server's streak is.

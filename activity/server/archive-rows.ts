@@ -616,7 +616,8 @@ export function upsertArchive(
 }
 
 /**
- * Publish rows, making them playable at the next restart.
+ * Publish rows, making them playable — at the activity's next start, or at
+ * once when the bot asks it to reload (`POST /api/bot/reload-archive`).
  *
  * Bulk by design. The rotation is a pure function of the pool's *length*, so
  * every publish changes which puzzle every future day draws; publishing a few

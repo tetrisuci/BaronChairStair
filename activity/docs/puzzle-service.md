@@ -72,6 +72,11 @@ runs `bun run puzzles`, and commits the result:
                                                             ▼
                                                   PuzzleArchive.load  (boot)
 
+**Now, as well** — the first half of the planned flow below is built. The sync
+writes rows, Discord's `/archive sync` publishes them, and the activity reads
+published rows over the JSON at boot and on a reload. The review UI is not the
+gate yet; the allowlist on `/archive sync` is. See step 3 under *Order of work*.
+
 **Planned.** The same decode-and-replay step, run against the sheet directly,
 writing rows instead of files:
 
@@ -253,8 +258,12 @@ makes this easy; nothing else about dev should reach production.
    the detail route gates the answer through `maySeeSolution`. The public,
    key-less, solution-bearing endpoints are new paths beside them, not a
    relaxation of these — relaxing them is precisely rule 1's failure.
-3. **The activity reads the table.** `PuzzleArchive.load` sources from the
-   database, with the committed JSON as the seed. Run endpoints unchanged.
+3. ~~**The activity reads the table.**~~ **Done.** `PuzzleArchive.load` lays
+   published rows over the committed JSON (`withPublished`), which stays the
+   seed. Discord's `/archive sync` publishes what it synced and asks the running
+   server to reload in place (`server/archive-reload.ts`): new ids go live at
+   once, today's deal and rush pool stay pinned, and a changed board is held as
+   it was until the next start. Run endpoints unchanged.
 4. **Retire the duplicates.** `activity/data/solutions.json`, and the website's
    `var/data/puzzles.json` seed, once the website consumes the endpoint.
 

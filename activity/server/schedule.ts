@@ -122,6 +122,43 @@ export class DaySchedule {
   }
 
   /**
+   * Writes down every day up to `day` from the pool as it stands, before the
+   * pool changes underneath a running server.
+   *
+   * A day is pinned the first time anybody asks for it, and a server that
+   * restarts has the boot backfill for whatever it missed. A pool that grows
+   * *without* a restart has neither: a quiet day between the last one asked
+   * for and today would be derived later from the bigger pool, which is a
+   * different puzzle from the one this server would have dealt on it. So the
+   * gap is closed first, from the pool that was live on those days.
+   *
+   * Today's rush pool too, and today most of all. Players are holding today's
+   * tiers and ranked rush tickets right now, and a rush ticket carries a seed
+   * and no pool identity — `sequenceFor` re-derives its forty from the pinned
+   * pool when the run is handed in.
+   *
+   * Walks back only as far as the last day with anything on file. A day
+   * pinned before `extreme` holds three rows and is topped up when viewed; it
+   * is not this method's business to do that eagerly for every old day.
+   */
+  freezeThrough(day: number): void {
+    let first = day;
+    while (first > 1 && Object.keys(this.store.pinnedTiers(first - 1)).length === 0) first -= 1;
+    for (let each = first; each <= day; each += 1) this.pinFor(each);
+    this.rushPoolFor(day);
+  }
+
+  /**
+   * Drops the memoised day, so a corrected title or difficulty on one of
+   * today's puzzles is served without waiting for tomorrow. Safe because the
+   * ids it would re-read are pinned, and `PuzzleArchive.reconcile` has already
+   * refused to move the board under any of them.
+   */
+  forget(): void {
+    this.cached = null;
+  }
+
+  /**
    * Which of a day's tiers a puzzle is, or null if it is not one of them.
    *
    * Answered from the ids alone, without resolving a puzzle. This gates the

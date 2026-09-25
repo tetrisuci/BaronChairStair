@@ -15,9 +15,10 @@
  * exists and dripping a few rows at a time is discouraged: one deliberate
  * change beats a churn of small ones.
  *
- * **A restart is what actually serves them.** The archive is read once at boot.
- * Published rows appear in the public API immediately, and to players at the
- * next restart.
+ * **A restart is what serves them, from here.** The activity lays published
+ * rows over `data/puzzles.json` when it starts. Discord's `/archive sync` does
+ * not wait for one — it asks the running server to reload in place — but this
+ * tool has no key to ask with. Published rows appear in the public API at once.
  *
  * Like `sync-archive`, this never constructs a `Store` — that would run the
  * whole schema and the runs rebuild against a live database.
@@ -114,9 +115,9 @@ async function main(): Promise<void> {
     }
     console.log(`now ${after.published} published, ${after.pending} waiting`);
     console.log(
-      "\nThe public API serves these immediately. Players see them at the next\n" +
-        "restart — the pool is read once at boot — and the daily rotation has\n" +
-        "moved, so tomorrow draws differently than it would have.",
+      "\nThe public API serves these immediately. Players see them when the activity\n" +
+        "next starts, or at once after an /archive sync from Discord, which reloads\n" +
+        "it in place. The daily rotation has moved, so tomorrow draws differently.",
     );
   } finally {
     db.close();

@@ -407,10 +407,81 @@ function correctedOrSource(
   return { puzzles: [...sources], applied: false };
 }
 
+/**
+ * A published row, if it is one the engine can play — or nothing, loudly.
+ *
+ * The opposite of {@link assertValid}'s stance, and on purpose. The file and
+ * an accepted submission are both checked by a person before they reach here,
+ * so a bad one is worth refusing to boot over. A published row is not: Discord's
+ * `/archive sync` publishes whatever the sheet held, with nobody reading it in
+ * between, so one malformed row would otherwise take the server down at its
+ * next start — for every player, with no route left to undo it from. The
+ * sync's own replay makes that unlikely; this makes it survivable. Skipping
+ * the row falls back to the file's entry for that id, where there is one.
+ */
+function servable(puzzle: Puzzle): Puzzle[] {
+  try {
+    return [assertValid(puzzle, `published puzzle ${puzzle?.id}`)];
+  } catch (error) {
+    console.warn(`[puzzle] not serving ${String(error).replace(/^Error: /, "")}.`);
+    return [];
+  }
+}
+
+/**
+ * The published archive laid over the club's file.
+ *
+ * A published row replaces the file's entry for its id, and a row the file has
+ * never heard of is added after it. The file stays the seed rather than being
+ * retired: every box has it, while `archive_puzzles` is empty until somebody
+ * syncs, and a server that could only play what had been synced would boot to
+ * nothing on a fresh checkout.
+ *
+ * Additions go after the file's entries rather than being sorted in. The daily
+ * rotation re-sorts every tier by id in the constructor, so the order here only
+ * reaches a rush pool pinned for a day nobody has asked for yet.
+ */
+export function withPublished(file: readonly Puzzle[], published: readonly Puzzle[]): Puzzle[] {
+  if (published.length === 0) return [...file];
+  const replacing = new Map(published.map((puzzle) => [puzzle.id, puzzle]));
+  const known = new Set(file.map((puzzle) => puzzle.id));
+  return [
+    ...file.map((puzzle) => replacing.get(puzzle.id) ?? puzzle),
+    ...published.filter((puzzle) => !known.has(puzzle.id)),
+  ];
+}
+
+/**
+ * Everything a run on a puzzle is scored against.
+ *
+ * A board, queue, hold or target that moves under a player mid-solve scores
+ * their keystrokes against a puzzle they were never shown; so does a clear
+ * requirement, now that it is enforced. Metadata is deliberately absent.
+ */
+function playKey(puzzle: Puzzle): string {
+  return JSON.stringify([shapeKey(puzzle), puzzle.requiredClears ?? []]);
+}
+
+/** What {@link PuzzleArchive.reconcile} did, for the log and the bot's reply. */
+export interface ArchiveChange {
+  /** New to this process, and playable from now on. */
+  readonly added: readonly number[];
+  /**
+   * Whose board, queue, hold, target or requirement changed on file. Still
+   * served as they were — somebody may be halfway through one — until the
+   * server next starts.
+   */
+  readonly held: readonly number[];
+  /** Served before and missing from the new sources. Still served; see `reconcile`. */
+  readonly kept: readonly number[];
+}
+
 export class PuzzleArchive {
-  private readonly byId: ReadonlyMap<number, Puzzle>;
-  private readonly originalById: ReadonlyMap<number, Puzzle>;
-  private readonly tiers: Readonly<Record<DailyTier, readonly Puzzle[]>>;
+  // Not `readonly`: `adopt` replaces all of them at once, in place, so that the
+  // one object every route and the schedule already hold serves the new pool.
+  private byId: ReadonlyMap<number, Puzzle>;
+  private originalById: ReadonlyMap<number, Puzzle>;
+  private tiers: Readonly<Record<DailyTier, readonly Puzzle[]>>;
 
   /**
    * @param puzzles what everything plays, reads and lists: sources with every
@@ -421,8 +492,8 @@ export class PuzzleArchive {
    *   would be serving a correction that has already been made.
    */
   private constructor(
-    readonly puzzles: readonly Puzzle[],
-    readonly originals: readonly Puzzle[],
+    public puzzles: readonly Puzzle[],
+    public originals: readonly Puzzle[],
     private readonly dayOptions: DayOptions,
     /**
      * Whether the corrections on file are the ones being served.
@@ -432,7 +503,7 @@ export class PuzzleArchive {
      * would otherwise show an officer their correction applied while every
      * player got the source.
      */
-    readonly correctionsApplied: boolean = true,
+    public correctionsApplied: boolean = true,
   ) {
     this.byId = new Map(puzzles.map((puzzle) => [puzzle.id, puzzle]));
     this.originalById = new Map(originals.map((puzzle) => [puzzle.id, puzzle]));
@@ -502,6 +573,8 @@ export class PuzzleArchive {
    * by {@link shapeKey}. Passed in rather than read here: loading an archive
    * needs no database, and this file's header keeps it that way — the reader
    * lives in `server/archive-solutions.ts`.
+   * @param published the rows `archive_puzzles` has published, laid over the
+   * file by {@link withPublished}. Passed in for the same reason as the rest.
    */
   static load(
     path: string,
@@ -509,6 +582,7 @@ export class PuzzleArchive {
     community: readonly Puzzle[] = [],
     overrides: readonly PuzzleOverride[] = [],
     answers: ReadonlyMap<string, readonly SolutionStep[]> = new Map(),
+    published: readonly Puzzle[] = [],
   ): PuzzleArchive {
     let parsed: { puzzles?: unknown[] };
     try {
@@ -523,9 +597,12 @@ export class PuzzleArchive {
     if (!Array.isArray(list) || list.length === 0) {
       throw new Error(`${path} contains no puzzles`);
     }
-    const file = withSolutions(
-      list.map((entry, index) => assertValid(entry, `puzzles.json entry ${index}`)),
-      path,
+    const file = withPublished(
+      withSolutions(
+        list.map((entry, index) => assertValid(entry, `puzzles.json entry ${index}`)),
+        path,
+      ),
+      published.flatMap((puzzle) => servable(puzzle)),
     );
     const accepted = community.map((puzzle) =>
       assertValid(puzzle, `accepted puzzle ${puzzle?.id}`),
@@ -538,6 +615,82 @@ export class PuzzleArchive {
     // so this has to see what will actually be served. `sources` is left as its
     // author wrote it — the review tool's job is to say what the source says.
     return new PuzzleArchive(withoutUnmeetableClears(puzzles), sources, dayOptions, applied);
+  }
+
+  /**
+   * A freshly loaded archive, made safe to serve in place of a running one.
+   *
+   * People are mid-solve on the running one, and nothing records the board a
+   * run was played on — every route verifies a submission against whatever the
+   * archive holds for that id *when it arrives*. So three rules, and none of
+   * them is about the rotation, which `DaySchedule` pins separately:
+   *
+   * - **A new id is served at once.** Nobody can be holding a puzzle that did
+   *   not exist.
+   * - **A changed board is not.** If what a run is scored against moved —
+   *   see {@link playKey} — the puzzle is served exactly as it was, title and
+   *   all, until the server next starts. Swapping it would score a player's
+   *   keystrokes against a board they were never shown; and serving the new
+   *   title or goal over the old board would describe a puzzle that is not
+   *   there. Metadata on an unchanged board goes live.
+   * - **Nothing is dropped.** A day already pinned to a missing id throws in
+   *   `DaySchedule.resolve`, and a player holding it would get a 404. The
+   *   sources only ever grow today, so this is a guard rather than a feature.
+   *
+   * Built through the constructor, so the duplicate-id and empty-tier checks
+   * run on the merged pool and a bad one throws here — before anything has
+   * been swapped.
+   */
+  static reconcile(
+    current: PuzzleArchive,
+    next: PuzzleArchive,
+  ): { archive: PuzzleArchive; change: ArchiveChange } {
+    const added: number[] = [];
+    const held: number[] = [];
+    const puzzles = next.puzzles.map((incoming) => {
+      const serving = current.get(incoming.id);
+      if (!serving) {
+        added.push(incoming.id);
+        return incoming;
+      }
+      if (playKey(serving) === playKey(incoming)) return incoming;
+      held.push(incoming.id);
+      return serving;
+    });
+    const present = new Set(next.puzzles.map((puzzle) => puzzle.id));
+    const kept = current.puzzles.filter((puzzle) => !present.has(puzzle.id));
+    const originals = [
+      ...next.originals,
+      ...kept.flatMap((puzzle) => current.original(puzzle.id) ?? []),
+    ];
+    return {
+      archive: new PuzzleArchive(
+        [...puzzles, ...kept],
+        originals,
+        current.dayOptions,
+        next.correctionsApplied,
+      ),
+      change: { added, held, kept: kept.map((puzzle) => puzzle.id) },
+    };
+  }
+
+  /**
+   * Becomes `next`, in place.
+   *
+   * In place because everything that serves a puzzle already holds this
+   * object: the routes, `DaySchedule`, the review tool. Replacing the binding
+   * instead would leave each of them on the old pool. JavaScript runs one
+   * request handler at a time, so there is no moment where half of this is
+   * visible.
+   */
+  adopt(next: PuzzleArchive): void {
+    this.puzzles = next.puzzles;
+    this.originals = next.originals;
+    this.correctionsApplied = next.correctionsApplied;
+    this.byId = next.byId;
+    this.originalById = next.originalById;
+    this.tiers = next.tiers;
+    this.cached = null;
   }
 
   get(id: number): Puzzle | undefined {

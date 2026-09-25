@@ -111,6 +111,57 @@ describe("syncing from a sheet", () => {
   });
 });
 
+describe("--publish, which Discord's /archive sync passes", () => {
+  const counts = () => {
+    const db = new Database(dbPath);
+    try {
+      return archiveCounts(db);
+    } finally {
+      db.close();
+    }
+  };
+
+  test("publishes what the sync wrote, under the name it was run by", async () => {
+    const { code, out } = await sync("--publish", "--by", "discord:an officer");
+
+    expect(code).toBe(0);
+    expect(out).toContain("published 2 that were waiting");
+    expect(counts()).toEqual({ published: 2, pending: 0 });
+    const db = new Database(dbPath);
+    try {
+      const row = db
+        .query<{ published_by: string }, []>("SELECT published_by FROM archive_puzzles WHERE id = 1")
+        .get();
+      expect(row?.published_by).toBe("discord:an officer");
+    } finally {
+      db.close();
+    }
+  });
+
+  test("also publishes rows an earlier, unpublished sync left waiting", async () => {
+    await sync();
+    expect(counts()).toEqual({ published: 0, pending: 2 });
+
+    await sync("--publish");
+
+    expect(counts()).toEqual({ published: 2, pending: 0 });
+  });
+
+  test("without it the sync is exactly as safe as it always was", async () => {
+    await sync();
+
+    expect(counts()).toEqual({ published: 0, pending: 2 });
+  });
+
+  test("a dry run publishes nothing, even when asked to", async () => {
+    await sync();
+    const { out } = await sync("--dry-run", "--publish");
+
+    expect(out).not.toContain("that were waiting");
+    expect(counts()).toEqual({ published: 0, pending: 2 });
+  });
+});
+
 describe("when a creator edits a published puzzle", () => {
   test("the edit is applied, reported, and the old puzzle is recoverable", async () => {
     await sync();

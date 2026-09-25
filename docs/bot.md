@@ -108,12 +108,29 @@ player may file fifteen reports an hour, and one server sixty.
 /archive sync [dry_run:True]
 ```
 
-Runs `bun run sync-archive` against the club's sheet and reports what moved:
-what was added, what changed content, and what would not replay. Everything it
-writes lands **unpublished**, so a sync on its own changes nothing a player is
-served — publishing stays a decision somebody makes at a terminal, and neither
-`publish-archive` nor `bun run puzzles` is reachable from Discord. `dry_run`
-reads the sheet and writes nothing at all.
+Runs `bun run sync-archive --publish` against the club's sheet, reports what
+moved — what was added, what changed content, and what would not replay — and
+**makes it playable straight away**. Running it from Discord *is* the review: an
+officer on the allowlist has decided the sheet is ready. So the sync publishes
+every row it leaves waiting, then asks the activity to reload its puzzle pool
+in place — no restart, so nobody's duel drops and nobody is signed out.
+
+What players notice, and what they deliberately do not:
+
+- **New puzzles** join Explore at once, and join the daily and rush rotation
+  from **tomorrow**. Today's four puzzles and today's rush pool are already
+  pinned and do not move, so a rush in flight is scored on what it was dealt.
+- **A corrected title, goal or difficulty** on an unchanged board goes live at
+  once.
+- **A changed board** — the sheet replaced the puzzle behind an id — is held as
+  it was until the activity next restarts, and the reply names it. Swapping it
+  would score somebody mid-solve against a board they were never shown.
+
+If the activity cannot be reached, the reply says so: the rows are published
+all the same, and they go live at its next restart. `dry_run` reads the sheet
+and writes and publishes nothing at all. A sync run from a terminal without
+`--publish` still lands everything unpublished, and neither `publish-archive`
+nor `bun run puzzles` is reachable from Discord.
 
 A group of its own rather than `/puzzle sync`, for the same reason `/report` is
 top-level: Discord will not let a command be both invocable and a group, and
