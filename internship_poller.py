@@ -267,11 +267,10 @@ def is_blocked_company(name) -> bool:
     it means a short or common entry would take unrelated companies with it —
     keep the entries long and distinctive, or block the exact slug instead.
 
-    Anything that is not a string is not a company name, and is never blocked
-    and never an error. boards.json is edited by hand, and this runs over every
-    row of it while the module is imported — discord_bot.py loads this module
-    at import with no try around it — so a raise here is not a wrong answer but
-    a bot that will not start.
+    Anything that is not a string is not a company name: never blocked, and
+    never an error. `load_boards` already drops rows that are not all strings,
+    so this is the second line of defence rather than the first — but it runs
+    while the module is imported, where a raise is a bot that will not start.
     """
     if not isinstance(name, str):
         return False
@@ -288,27 +287,61 @@ def drop_blocked(rows, company_at=0):
     return [r for r in rows if not is_blocked_company(r[company_at])]
 
 
+def _as_board(entry):
+    """`entry` as a board tuple, or None if it is not one.
+
+    A board is exactly [platform, slug, company, sector], all strings — what
+    SEED_BOARDS holds and all `discover` ever writes (`r[:4]`). boards.json is
+    edited by hand, and every other shape breaks something: a row that is not
+    four long makes `fetch_all` raise before a single board is polled, because
+    it spreads each row into a five-argument call.
+    """
+    if (isinstance(entry, list) and len(entry) == 4
+            and all(isinstance(v, str) for v in entry)):
+        return tuple(entry)
+    return None
+
+
 def load_boards():
+    """boards.json, plus every seed board it does not mention, minus the blocked.
+
+    Runs while the module is imported, and discord_bot.py loads this module at
+    import with no try around it — so nothing boards.json can hold may raise
+    here. A file that will not parse falls back to the seed boards, and a row
+    that is not a board is dropped. Both are named on stderr; neither stops the
+    bot, and neither stops a sweep.
+    """
     try:
         with open(BOARDS_FILE) as f:
-            rows = [tuple(r) for r in json.load(f)]
-        seen = {(r[0], r[1]) for r in rows}
-        rows += [b for b in SEED_BOARDS if (b[0], b[1]) not in seen]
+            listed = json.load(f)
     except FileNotFoundError:
-        rows = list(SEED_BOARDS)
+        listed = []
+    except (OSError, ValueError) as e:  # ValueError includes JSONDecodeError
+        print(f"boards.json: cannot read it ({e}); using the seed boards only",
+              file=sys.stderr)
+        listed = []
+    if not isinstance(listed, list):
+        print("boards.json: expected a list of boards; using the seed boards only",
+              file=sys.stderr)
+        listed = []
+    rows = []
+    for entry in listed:
+        board = _as_board(entry)
+        if board is None:
+            print(f"boards.json: ignoring {entry!r}, which is not "
+                  "[platform, slug, company, sector]", file=sys.stderr)
+        else:
+            rows.append(board)
+    seen = {(r[0], r[1]) for r in rows}
+    rows += [b for b in SEED_BOARDS if (b[0], b[1]) not in seen]
     # Both identifying columns, and after the merge rather than inside the seed
     # list. `cmd_discover` appends [plat, slug, slug, "unknown", n] and dumps
     # r[:4], so a discovered board has no display name at all — its company
     # column IS the slug. Checking the label alone would drop the hand-written
     # seed row and let the next `discover` run put the same company straight
     # back under whatever slug it was found at.
-    #
-    # Sliced rather than indexed, so a short row is checked on the columns it
-    # has. Before this filter existed a malformed hand-edited row cost at most
-    # its own sweep; indexing here turned it into an IndexError at import, and
-    # a bot that will not start.
     return [r for r in rows
-            if not any(is_blocked_company(v) for v in r[1:3])]
+            if not (is_blocked_company(r[1]) or is_blocked_company(r[2]))]
 
 
 BOARDS = load_boards()
