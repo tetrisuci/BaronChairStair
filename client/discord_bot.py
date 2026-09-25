@@ -32,6 +32,10 @@ New postings produce one quiet, mention-free notice per subscribed channel
 with a button; pressing it replies with the listing as an ephemeral ("only you
 can see this") message, so the channel is never flooded.
 
+Companies in `poller.BLOCKED_COMPANIES` are shown by none of these commands —
+their boards are not polled, and rows stored before they were blocked are
+filtered out of every query below.
+
 /bennxt roles | recent | notify | notifylist | debug
                             all reply "bennxt is no longer bummxt"
 The civil/mechanical job tracker these used to front was removed once bennxt
@@ -646,11 +650,12 @@ def _recent_internships(days: int, us_only: bool, categories: list[str] | None =
     first saw them.
     """
     cutoff = time.time() - days * 86400
-    rows = pconn.execute(
+    rows = poller.drop_blocked(pconn.execute(
         "SELECT platform, external_id, company, sector, title, location, url,"
         "       category, term, region, published, first_seen"
         " FROM postings WHERE is_intern=1 AND is_tech=1 AND unbounded=0"
-        "  AND COALESCE(published, first_seen) >= ?", (cutoff,)).fetchall()
+        "  AND COALESCE(published, first_seen) >= ?", (cutoff,)).fetchall(),
+        company_at=2)
 
     pairs = []
     for (plat, eid, company, sector, title, loc, url,
@@ -997,27 +1002,36 @@ async def internships_filters_slash(
 
 _INFO_COLS = ("platform, external_id, company, sector, title, location, url,"
               " category, term, region, published, first_seen")
+_COMPANY_COL = 2          # company's index in a row of _INFO_COLS
+FIND_SCAN_MAX = 25        # rows `info` scans past blocked ones for a match
 
 
 def _find_posting(role: str):
     """Resolve an `info` argument: rowid from autocomplete, else fuzzy text
-    (every typed word must appear somewhere in company + title)."""
+    (every typed word must appear somewhere in company + title).
+
+    Blocked companies are skipped rather than resolved-then-refused: a stale
+    rowid from a listing taken before the block, or a query that a blocked
+    posting happens to match best, must still find the next real one.
+    """
     role = role.strip()
     if role.isdigit():
         row = pconn.execute(
             f"SELECT {_INFO_COLS} FROM postings WHERE rowid=?",
             (int(role),)).fetchone()
-        if row:
+        if row and not poller.is_blocked_company(row[_COMPANY_COL]):
             return row
     tokens = role.lower().split()
     if not tokens:
         return None
     cond = " AND ".join(["(company || ' ' || title) LIKE ?"] * len(tokens))
-    return pconn.execute(
+    rows = pconn.execute(
         f"SELECT {_INFO_COLS} FROM postings WHERE is_intern=1 AND is_tech=1"
         f"  AND {cond}"
-        " ORDER BY COALESCE(published, first_seen) DESC LIMIT 1",
-        [f"%{t}%" for t in tokens]).fetchone()
+        f" ORDER BY COALESCE(published, first_seen) DESC LIMIT {FIND_SCAN_MAX}",
+        [f"%{t}%" for t in tokens]).fetchall()
+    matches = poller.drop_blocked(rows, company_at=_COMPANY_COL)
+    return matches[0] if matches else None
 
 
 @internships.command(name="info",
@@ -1070,10 +1084,11 @@ async def internships_info_autocomplete(interaction: discord.Interaction,
         return []
     tokens = current.lower().split()
     choices = []
-    for rid, company, title in pconn.execute(
+    for rid, company, title in poller.drop_blocked(pconn.execute(
             "SELECT rowid, company, title FROM postings"
             " WHERE is_intern=1 AND is_tech=1 AND unbounded=0"
-            " ORDER BY COALESCE(published, first_seen) DESC LIMIT 400"):
+            " ORDER BY COALESCE(published, first_seen) DESC LIMIT 400"
+            ).fetchall(), company_at=1):
         label = f"{company} — {title}"
         if not all(t in label.lower() for t in tokens):
             continue
