@@ -149,6 +149,16 @@ systemctl list-units '*bot*'; pm2 list; tmux ls; pgrep -af discord_bot.py
 Stop the old process before starting the new one. **Two instances on one token
 double-handle every command**, which presents as the bot answering everything twice.
 
+**This box runs a second bot, DIAYN, the club's internship finder.** It has its
+own service (the pm2 app or systemd unit named `diayn`), its own checkout, its own
+`.env` and its own token, and its repository's DEPLOY.md is its guide. Act on this
+bot by its own name only:
+
+- never `pm2 restart all` or `pm2 stop all`, which take DIAYN down too;
+- `pm2 save` records every app `pm2 list` shows, so check that both are listed as
+  you want them before saving;
+- `pm2 startup` is set up once per user, so do not run it again.
+
 Before restarting, confirm every module the bot imports still parses. `discord_bot.py`
 imports nine of the files under `client/` at module scope, so a syntax error in any one
 of them is a start-up crash rather than a degraded feature:
