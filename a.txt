@@ -1,6 +1,0 @@
-highlight score
-
-attack (apm)
-lines cleared
-starting height
-complexity (baron-chairstair index)

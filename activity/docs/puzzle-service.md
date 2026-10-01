@@ -214,13 +214,27 @@ say what a finished score was set on. It is append-only for the reason
 `puzzle_override_log` is: the write being recorded is the write that destroys
 the evidence.
 
-### 5. `PuzzleArchive.load` runs once, at module scope
+### 5. A running server's pool changes only through `reloadInPlace`
 
-`activity/server/index.ts:113`. The pool a process serves is the pool it booted
-with, and several modules document that they depend on this. Reading the
-archive from the database does not change that and must not: a pool that can
-change under a running server means a player's run can be scored against a
-different puzzle than it started on. **New rows become playable on restart.**
+`PuzzleArchive.load` runs once, at module scope in `activity/server/index.ts`,
+and every route, `DaySchedule` and the review tool hold the object it returns.
+The one way that pool changes while the server runs is `reloadInPlace`
+(`server/archive-reload.ts`). Only `POST /api/bot/reload-archive` calls it, and
+the bot's `/archive sync` posts there once its `sync-archive --publish` has
+run. It exists because a restart drops every duel in progress.
+
+What it has to keep is what this rule always protected: a pool that changes
+under a running server can score a player's run against a different puzzle
+than the one they were shown. So `PuzzleArchive.reconcile` serves a new id at
+once, holds a puzzle whose board changed exactly as it was, title and all,
+until the next start, and drops nothing; and `DaySchedule.freezeThrough` pins
+today's tiers and rush pool to the pool they were dealt from before the swap.
+Change the pool any other way, with a second `load` or a reassigned binding,
+and some of those holders are left serving the old one.
+
+**New rows from Discord's `/archive sync` go live at once. A changed board, and
+anything published from the terminal (`sync-archive --publish` or
+`publish-archive`, which have no key to ask with), wait for a restart.**
 
 ### 6. Dev may read production, but must never write it
 

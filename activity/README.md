@@ -1,9 +1,9 @@
 # Puzzle — the daily Tetris puzzle
 
-Three modern Tetris puzzles a day — an easy, a medium and a hard — played
-inside Discord as an
+Four modern Tetris puzzles a day — an easy, a medium, a hard and an extreme —
+played inside Discord as an
 [Activity](https://discord.com/developers/docs/activities/overview). Everyone
-in the server gets the same three, they change at midnight, solving any one of
+in the server gets the same four, they change at midnight, solving any one of
 them keeps a streak, and the result pastes into a channel as a spoiler-light
 grid. Alongside them run puzzle rush (five minutes, one sequence everyone
 shares, as many puzzles as you can solve), 1v1 duels, and a builder for writing
@@ -619,7 +619,7 @@ the author ever hears back about a puzzle they wrote. An acceptance needs no
 note because the puzzle turning up in the archive is the message.
 
 **The reviewer's difficulty is the one that counts**, and under full rotation it
-routes: `dailyTierOf` reads it to pick which of the day's three a puzzle can be,
+routes: `dailyTierOf` reads it to pick which of the day's four a puzzle can be,
 and `rushBand` to place it on the ladder. The author's own rating is kept beside
 it as `claimed_difficulty` and is a hint, never a control — a self-rated field
 that routed would hand the person being routed the switch.

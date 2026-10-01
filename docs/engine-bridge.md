@@ -39,9 +39,15 @@ has never come up in practice.
 
 Each clear carries `playerId`, `username`, `round`, `frame`, `timeSeconds`,
 `piece`, `clearType`, `linesCleared`, `garbageCleared`, `attack`, `attackSent`,
-`isBTB`, `b2b` and `combo`. `clearType` is one of `single`, `double`, `triple`,
-`quad`, `tspinSingle`, `tspinDouble`, `tspinTriple`, `allspin` (a non-T spin,
-or a mini) or `perfectClear`.
+`isBTB`, `b2b`, `combo` and `board`. `clearType` is one of `single`, `double`,
+`triple`, `quad`, `tspinSingle`, `tspinDouble`, `tspinTriple`, `allspin` (a
+non-T spin, or a mini) or `perfectClear`.
+
+`board` is the visible playfield just after the clear: a list of rows from the
+bottom up (20 on a standard board), each a list of cells from left to right.
+A cell is `null` when empty, or the engine's name for what fills it: `i`, `j`,
+`l`, `o`, `s`, `t`, `z`, `gb` for garbage, or `bomb`. `client/render.py` draws
+it, and `client/build_snapshots.py` reads it as the board after each window.
 
 To add an action, extend the dispatch in `server.ts` and call it from Python
 with `client._request("my_action", field="value")`.
