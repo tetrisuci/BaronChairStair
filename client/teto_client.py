@@ -160,7 +160,7 @@ class TetoClient:
                 round       int   — which round of the match (0-indexed)
                 frame       int   — game frame (60fps)
                 timeSeconds float — frame / 60, i.e. in-game clock in seconds
-                piece       str   — piece that caused the clear (I/O/T/L/J/S/Z)
+                piece       str   — piece that caused the clear (i/j/l/o/s/t/z)
                 clearType   str   — one of: single, double, triple, quad,
                                    tspinSingle, tspinDouble, tspinTriple,
                                    allspin, perfectClear
@@ -174,8 +174,9 @@ class TetoClient:
                 board           list[list[str|None]]
                                       — post-clear board state, visible rows only.
                                         board[0] is the bottom row, board[19] the top.
-                                        Each cell is a mino string
-                                        ("I","O","T","L","J","S","Z","G","B")
+                                        Each cell is the engine's mino name
+                                        ("i","j","l","o","s","t","z",
+                                        "gb" for garbage, "bomb")
                                         or None if empty.
 
         Raises:
