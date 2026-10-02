@@ -6,6 +6,21 @@
  * sitting on top of it with a hard plum shadow.
  */
 
+/*
+ * The selection model, stated once.
+ *
+ * The page is a play surface first: a drag, a tap or a two-finger chord can
+ * begin anywhere on it, so by default nothing on the sheet selects, flashes
+ * on a tap, or raises the long-press callout. Text that exists to be read
+ * asks back in with the `selectable` class — the goal sentence, the solution
+ * walkthroughs, the settings sheet — and form fields opt themselves in, so a
+ * caret moves even where page text may not select. One marker narrows even
+ * those: while a live run is up, the deck's own rail text goes inert again
+ * (the `deck--gestures` rule below), because a drift across the goal
+ * sentence mid-drag would paint a highlight and eat the gesture's move
+ * stream. Furniture — masthead, credits strip, toast — carries no class and
+ * stays inert on every screen.
+ */
 .sheet {
   position: fixed;
   inset: 0;
@@ -17,6 +32,39 @@
     linear-gradient(var(--ink-hair) 1px, transparent 1px) 0 0 / 100% 28px,
     linear-gradient(90deg, var(--ink-hair) 1px, transparent 1px) 0 0 / 28px 100%,
     var(--sun);
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/*
+ * Reading surfaces ask back in. `user-select` is not inherited as a value,
+ * but a descendant left at the default `auto` follows the nearest ancestor's
+ * used value — so one class here re-arms a whole subtree, and a deeper rule
+ * (the live-run suppression below) can silence it again without a fight.
+ *
+ * `-webkit-touch-callout` is the exception that has to be re-armed by hand:
+ * the vendor property itself is inherited, so the root's `none` above would
+ * still swallow iOS's long-press copy menu whatever `user-select` says —
+ * which would make "read and copied" in the release note untrue on the very
+ * devices the note is about.
+ */
+.selectable {
+  user-select: text;
+  -webkit-user-select: text;
+  -webkit-touch-callout: default;
+}
+
+/* Form fields keep their caret and their text whatever the container says.
+   Without this, `user-select: none` above reaches into every input and a
+   long-press can no longer select — or in some engines even edit — it.
+   The callout comes back with them for the same reason it does above:
+   iOS hangs its cut/copy/paste menu off the inherited vendor property. */
+input, textarea, select {
+  user-select: text;
+  -webkit-user-select: text;
+  -webkit-touch-callout: default;
 }
 
 /* ── Header ───────────────────────────────────────────────────────────────── */
@@ -157,26 +205,20 @@
 @media (pointer: coarse) and (min-height: 500px) {
   .stage {
     touch-action: none;
-    user-select: none;
-    -webkit-user-select: none;
-    -webkit-tap-highlight-color: transparent;
     padding-bottom: 18px;
   }
 }
 
 /*
- * A live run is a gesture surface end to end: a drag can begin anywhere on
- * the deck, and a second tap of a two-finger undo can land on a caption or
- * a stat. Text selection there is never wanted — on mobile a long-press or
- * a drift across the HUD paints a selection highlight over the play surface
- * and eats the gesture's move stream — so the play deck opts out entirely,
- * whatever the pointer. `deck--play` is the LAYOUT and is up on the
- * solutions' reading screen too, which has no run at all: `deck--gestures`
- * is the one app.ts raises only while a run is there to play. Screens
- * without a run (home, verdict, builder, reading) keep selection;
- * copy-the-goal-text still works there.
+ * The deck still carries `deck--gestures` while a run is live (app.ts raises
+ * and drops it with the playfield), but under the sheet-level model its job
+ * narrows to one suppression: even the ask-back-in text goes inert, because
+ * the goal sentence rides the rail during play too, and a drift across it
+ * mid-drag would paint a highlight and eat the gesture's move stream. Off
+ * the run — reading, verdict, the chooser — the marker is gone and
+ * `.selectable` reads normally.
  */
-.deck--gestures:not(:has(.build__board)) {
+.deck--gestures .selectable {
   user-select: none;
   -webkit-user-select: none;
   -webkit-touch-callout: none;
@@ -190,13 +232,10 @@
   /*
    * The board is a pointer target first: taps rotate, drags place, a held
    * finger holds. `touch-action: none` hands every contact to the game — the
-   * browser must not turn a drag into a page pan — and the rest keeps the
-   * selection and tap-highlight machinery out of the way of the gesture.
+   * browser must not turn a drag into a page pan. Selection is the sheet's
+   * business now, not the board's.
    */
   touch-action: none;
-  user-select: none;
-  -webkit-user-select: none;
-  -webkit-tap-highlight-color: transparent;
 }
 
 /* ── Footer strip ─────────────────────────────────────────────────────────── */

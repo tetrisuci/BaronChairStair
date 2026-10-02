@@ -189,7 +189,7 @@ export function todaySheet(entry: DailyEntry, options: SheetOptions): HTMLButton
       filed
         ? null
         : hero
-          ? el("p", { class: "goal__text", text: goal })
+          ? el("p", { class: "goal__text selectable", text: goal })
           : el("span", { class: "explore__goal", text: goal }),
       filed
         ? null

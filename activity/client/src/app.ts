@@ -756,7 +756,7 @@ export class App {
       // lives on every other screen here.
       panel(
         "Reading",
-        { class: "solutions" },
+        { class: "solutions selectable" },
         el("p", { class: "note", text: this.creditFor(line) }),
         el(
           "div",
@@ -979,6 +979,12 @@ export class App {
     this.clearCredits();
     this.deck.classList.add("deck--screen");
     this.deck.classList.remove("deck--play");
+    // A screen replaces the playfield, so this is a transition out of live
+    // play like any other: the gesture marker drops with `deck--play`, or
+    // Home and every screen after a run keep the deck's reading surfaces
+    // inert under `.deck--gestures .selectable`. `showColumns` clears it for
+    // column mounts; this and the verdict are the exits that bypass it.
+    this.deck.classList.remove("deck--gestures");
     const modifiers = [
       options.wide && "screen--wide",
       options.full && "screen--full",
@@ -1807,6 +1813,10 @@ export class App {
     // the game's chrome. The phone's board-plus-column shape keys off the
     // class this drops, so the settled run falls back to the banded layout.
     this.deck.classList.remove("deck--play");
+    // The run is over, so the deck stops being a gesture surface: the goal
+    // and walkthrough this verdict mounts are reading text, and the marker
+    // left standing would keep exactly those inert under `.deck--gestures`.
+    this.deck.classList.remove("deck--gestures");
     this.relayout();
   }
 

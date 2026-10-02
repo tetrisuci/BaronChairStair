@@ -99,7 +99,10 @@ export function createHud(callbacks: HudCallbacks): Hud {
   let required: readonly ClearRequirement[] = [];
 
   // ── Right rail ─────────────────────────────────────────────────────────────
-  const goalText = el("p", { class: "goal__text", text: "—" });
+  // `selectable` asks the sheet's selection model back in: the goal sentence
+  // is the one text worth copying off a board. While a run is live the deck's
+  // marker silences it again — a drift across it mid-drag must not select.
+  const goalText = el("p", { class: "goal__text selectable", text: "—" });
   const goalSub = el("p", { class: "goal__sub", text: "" });
   /**
    * How the required clears are going, one row each.

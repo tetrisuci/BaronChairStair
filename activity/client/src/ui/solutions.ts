@@ -82,7 +82,8 @@ export function createSolutionsPanel(now: () => number = Date.now): SolutionsPan
   const rows = el("div", { class: "board-list solutions__list" });
   const steps = el("div", { class: "solutions__steps" });
   const replay = createReplay();
-  const element = panel("Solutions", { class: "solutions" }, rows, steps);
+  // `selectable`: the walkthrough and the solved-by list exist to be read.
+  const element = panel("Solutions", { class: "solutions selectable" }, rows, steps);
 
   return {
     element,

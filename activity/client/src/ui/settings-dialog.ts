@@ -62,7 +62,7 @@ function column(title: string, body: HTMLElement): HTMLElement {
 function buildSheet(parts: SheetParts): HTMLElement {
   return el(
     "div",
-    { class: "spec", attrs: { hidden: true, role: "dialog", "aria-label": "Settings" } },
+    { class: "spec selectable", attrs: { hidden: true, role: "dialog", "aria-label": "Settings" } },
     el(
       "div",
       { class: "spec__sheet" },
