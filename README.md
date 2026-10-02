@@ -38,7 +38,7 @@ for as long as you leave it there — and undo and redo are always one key away.
 | Command | What it does |
 | :-- | :-- |
 | `/puzzle` | Today's puzzles, and the link that opens the activity |
-| `/highlights` | Attach a `.ttrm` replay — get each player's biggest attack bursts as boards |
+| `/highlights` | Attach a `.ttrm` replay — get each player's biggest attack bursts, clear by clear |
 | `/report` | File a bug or a suggestion. No GitHub account needed |
 | `/activity graph`<br>`/activity now` | Who is online, right now or across the last week |
 | `/archive sync` | **Officers only.** Pull the club's spreadsheet in, and make its new puzzles playable |
@@ -47,7 +47,7 @@ The bot can also reply to each day's announcement with how the server did — wh
 solved what, how fast, and the server's streak. That recap is **off unless
 `PUZZLE_RECAP=on`** is set, because it pings every player it names.
 
-Every command in detail: **[docs/bot.md](docs/bot.md)**.
+Every slash command in detail: **[docs/bot.md](docs/bot.md)**.
 
 ---
 
@@ -74,9 +74,11 @@ bun install                                            # repo root, for /highlig
 cd client && python discord_bot.py
 ```
 
-Everything except `/highlights` runs on Python alone. Enable the **Server
-Members** and **Presence** intents in the Discord developer portal first, or
-login fails outright rather than degrading.
+Everything except `/highlights` and `/archive sync` runs on Python alone.
+`/archive sync` runs `bun run sync-archive` inside `activity/`, so it needs Bun
+on the bot's PATH and that folder's own `bun install`. Enable the **Message
+Content**, **Server Members** and **Presence** intents in the Discord developer
+portal first, or login fails outright rather than degrading.
 
 ---
 
@@ -176,9 +178,12 @@ Copy `example.env` to `.env` at the repo root — every variable is documented
 inline. The ones that matter:
 
 - **`DISCORD_TOKEN`** — the bot. Required.
-- **`PUZZLE_APP_ID`, `PUZZLE_API`, `PUZZLE_API_KEY`** — the `/puzzle` command.
-  `PUZZLE_API_KEY` must match `BOT_API_KEY` in `activity/.env` — different names
-  on either side, and a mismatch is a silent 401.
+- **`PUZZLE_APP_ID`, `PUZZLE_API`** — the `/puzzle` command.
+- **`PUZZLE_API_KEY`** — the daily recap, and `/archive sync` telling the
+  activity to reload; `/puzzle` itself never sends it. It must match
+  `BOT_API_KEY` in `activity/.env` — different names on either side, and a
+  mismatch is a 401: the recap silently never posts, and a sync publishes but
+  the activity refuses to reload, so nothing goes live until its next restart.
 - **`PUZZLE_RECAP`** — `on` turns on the daily recap. Off by default, because it
   pings every player it names.
 
@@ -202,8 +207,8 @@ included. Nothing on `main` has been rewritten, because nothing on `main` can be
 Tests, before you open it:
 
 ```bash
-cd activity && bun test && bun run typecheck   # the activity
-python3 -m unittest discover -s client         # the bot
+(cd activity && bun test && bun run typecheck)   # the activity
+python3 -m unittest discover -s client           # the bot, from the repo root
 ```
 
 ---

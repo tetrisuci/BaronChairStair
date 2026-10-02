@@ -24,12 +24,14 @@ Do not treat either as licence to skip a step the other requires.
 ## The one thing the guides cannot tell you, because it is about you
 
 **When a check goes red, stop and report. Do not restart through it.** That is this
-project's own precedent and it has caught real bugs. A check that is red on a box where
-CI was green usually means the box differs from CI in a way worth understanding.
+project's own precedent and it has caught real bugs. There is no CI — the suites are
+run by hand before a pull request, as `README.md`'s *Contributing* asks — so a check
+that is red on a box when it passed for the author usually means the box differs from
+the author's machine in a way worth understanding.
 
 Two exceptions worth knowing so you do not stop on a healthy deploy:
 
-- `bun test` in `activity/` reports **around 83 skips** on a box without
+- `bun test` in `activity/` reports **around 100 skips** on a box without
   `data/solutions.json`, which is gitignored and not in git. Skips are expected;
   `0 fail` is the thing to check.
 - A bot suite run with a bare `python3` skips or stubs anything needing `discord.py`.
@@ -62,10 +64,10 @@ same notes on its own front screen. That card is gone — eight release notes pu
 day itself off the bottom of the screen — but the file stays where it is: one list, in
 one place, read by the half that announces it.
 
-**Add one whenever a change is visible to a player.** The file's own rule for what
-counts: "Refactored the planner" is not a change to announce; "the drag lands where
-the preview showed" is. A new tier, a fixed error message, a button that now asks
-before doing something irreversible — all of those.
+**Add one whenever a change is visible to a player.** The rule for what counts, from
+`client/changelog.py`: "Refactored the planner" is not a change to announce; "the drag
+lands where the preview showed" is. A new tier, a fixed error message, a button that
+now asks before doing something irreversible — all of those.
 
 This is the easiest rule in the repository to skip, because skipping it breaks
 nothing. No test fails, no deploy stops, the bot simply goes quiet and players are
@@ -96,13 +98,19 @@ Report these and stop; do not act on them unasked.
   `activity/DEPLOY.md` forbids running it before the backfill, and it has caused a boot
   failure by dropping a puzzle a rush pool referenced.
 - **`bun run publish-archive`** makes synced puzzles playable, which changes which puzzle
-  every future day deals. (`bun run sync-archive` is safe and re-runnable by contrast —
-  everything it writes lands unpublished, and that is the review gate.) Both live in
-  `activity/`, not the root.
+  every future day deals. **`bun run sync-archive`** is not the safe half it looks like:
+  a new row lands unpublished, but a sheet edit to a puzzle already published is written
+  over that row in the live database and the row stays published. Players are served
+  the edit from the next restart (a title or goal fix sooner, if `/archive sync` reloads
+  first), and a changed board, queue, hold, target or answer voids that puzzle's
+  discovered lines at once. `sync-archive --dry-run` is the safe, re-runnable one: run
+  it and report what it would move. Both live in `activity/`, not the root.
 - **Discord's `/archive sync` (without `dry_run`)**, or `sync-archive --publish`. Unlike
-  the terminal sync, this one **publishes** and reloads the running activity, so it
-  changes what players are dealt from tomorrow on. It is the officers' call; the
-  allowlist in `puzzle-admins.json` is the review gate.
+  a plain terminal sync, these **publish** every row left waiting, so they change what
+  players are dealt from tomorrow on. From Discord the running activity is then
+  reloaded; run by hand, `--publish` does not reload, and the activity serves it from
+  its next restart. It is the officers' call; the allowlist in `puzzle-admins.json` is
+  the review gate.
 - **`GOAL_ENFORCEMENT`.** Controls whether clear requirements are shown and enforced.
   Check what the box actually sets (`grep -E '^GOAL_ENFORCEMENT=' activity/.env`) rather
   than assuming; it defaults to `log`, which shows and enforces nothing. Turning it `on`
@@ -120,9 +128,12 @@ Report these and stop; do not act on them unasked.
   held a player table; `activity/tests/tracked-archive.test.ts` asserts that.
 - **`pkill -f` on a broad pattern.** `pkill -f "server/index.ts"` matches more than you
   mean and has already taken down the wrong server. Kill by exact PID.
-- **Leave two bot processes running.** Two instances on one token double-handle every
-  command, which presents as the bot answering everything twice. Stop the old one before
-  starting the new one — `DEPLOY.md` has the commands for finding how it runs.
+- **Leave two copies of this bot running.** Two instances on one token double-handle
+  every command, which presents as the bot answering everything twice. Stop the old one
+  before starting the new one — `DEPLOY.md` has the commands for finding how it runs.
+  The box also runs DIAYN, a separate bot with its own service (`diayn`), checkout,
+  `.env` and token. It is meant to be there: act on this bot by name, and never
+  `pm2 restart all` or `pm2 stop all`, which take DIAYN down too.
 - **Assume `.env` is loaded.** Bun reads `.env` from the process working directory only;
   it does not look beside the entrypoint and does not walk up.
 
@@ -150,8 +161,8 @@ things follow, and nothing will remind you of either:
 
 - **Re-derive what is stored: `bun run rederive-clears --write`, in `activity/`.**
   The rule lives in code; the requirement a player meets is *written down*, in
-  three places — `activity/data/puzzles.json` (what the game shows, and what an
-  unpublished puzzle is judged by), the tracked archive's `solution` and
+  three places — `activity/data/puzzles.json` (what the game shows, and judges
+  against, for an unpublished puzzle), the tracked archive's `solution` and
   `required_clears` (where a deploy box gets the answer from, `data/solutions.json`
   being untracked), and this box's own `data/solutions.json`. The flag alone
   changes none of them. That command replays the puzzle's own blueprint through
@@ -167,6 +178,22 @@ things follow, and nothing will remind you of either:
   `withoutUnmeetableClears` then sees a shortfall and serves the puzzle with
   **no** requirement at all. This is not hypothetical — #123 shipped with the
   flag set, a green suite, and a puzzle still asking for two spins.
+
+  **The three files do not reach a puzzle the deploy box has published.**
+  Discord's `/archive sync` runs there and publishes every row it leaves waiting
+  in that box's `daily.sqlite`, and a published row is served in place of its
+  `data/puzzles.json` entry (`withPublished`), with the requirement stored on
+  the row — which `rederive-clears` never writes. So before calling it done,
+  check the database the deployed activity serves from, on the box players
+  reach: the file `DATABASE_PATH` names, or `activity/data/daily.sqlite` when it
+  is unset. Run `SELECT published_at FROM archive_puzzles WHERE id = <id>`
+  there; a development checkout's copy says nothing about it. If you cannot
+  reach that box, say so in your report rather than calling it done. If `published_at`
+  is set, report it rather than syncing: a sync into that database would
+  re-derive the row, but it also applies whatever else the sheet has changed to
+  every published puzzle, and the new requirement reaches players only at the
+  activity's next restart, because a reload holds any puzzle whose requirement
+  changed.
 - **Write the release note.** A puzzle that starts asking for a third spin is a
   change a player can see, so the rule under *A player-visible change needs a
   release note* applies.

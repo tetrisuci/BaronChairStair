@@ -9,17 +9,24 @@ true today; sections marked **planned** are not built yet.
 
 ## Why this document exists
 
-There are three copies of the puzzle archive, and they disagree:
+There are four copies of the puzzle archive, and they disagree:
 
 | Copy | Rows | Owner |
 |---|---|---|
 | the Google Sheet | 200 metadata rows, 151 with blueprint codes | the club, edited by hand in Blueprint |
-| `activity/data/puzzles.json` (+ `solutions.json`) | 138 | this repository, committed |
+| `activity/data/puzzles.json` (answers in `solutions.json`, gitignored) | 138 | this repository, committed |
+| `activity/data/archive/puzzles.sqlite` | 153 | this repository, committed, every answer included and every row unpublished; built by `bun run sync-archive --db data/archive/puzzles.sqlite` in `activity/` |
 | `var/data/puzzles.json` in the website repo | 140 | that repository, committed |
 
-The two committed copies were cut from the sheet at different times and neither
-is refreshed by anything automatic. Every new puzzle currently has to be
-imported twice, by hand, into two repositories that decode it differently.
+The three committed copies were cut from the sheet at different times and none
+is refreshed by anything automatic. Every new puzzle used to be imported twice,
+by hand, into two repositories that decode it differently. This repository now
+also pulls from the sheet itself (`bun run sync-archive`, or Discord's
+`/archive sync`). By default that lands in the live database (`DATABASE_PATH`,
+default `data/daily.sqlite`), not in any committed copy. Only a deliberate
+`--db data/archive/puzzles.sqlite` rebuilds the tracked one. It happens only
+when somebody runs it, and rule 3 keeps it off a timer. The website still keeps
+its own copy until it consumes the public endpoints (step 4).
 
 **Measured 2026-09-06** by running the existing build against the live sheet
 (`bun run tools/build-puzzles.ts --archive <fetched> --out <scratch>`):
@@ -31,7 +38,8 @@ imported twice, by hand, into two repositories that decode it differently.
   step the router cannot reach, and #58's answer sends no attack, so there is
   nothing to score against.
 - **136 of 148 stated goals match the replayed clears.** The other twelve
-  disagree, which is what the frozen clear requirement exists to absorb.
+  disagree, which is what deriving the clear requirement from the replayed
+  answer exists to absorb.
 - **12 already-published puzzles have changed content since the last build.**
   That is the finding that matters most, and it has its own rule below.
 
@@ -68,14 +76,21 @@ runs `bun run puzzles`, and commits the result:
 
     Sheet ──manual CSV──▶ tools/build-puzzles.ts ──▶ data/puzzles.json
                                 (decode + replay)     data/solutions.json
-                                                            │ committed
+                                                            │ only puzzles.json
+                                                            │ is committed
                                                             ▼
                                                   PuzzleArchive.load  (boot)
 
-**Now, as well** — the first half of the planned flow below is built. The sync
-writes rows, Discord's `/archive sync` publishes them, and the activity reads
-published rows over the JSON at boot and on a reload. The review UI is not the
-gate yet; the allowlist on `/archive sync` is. See step 3 under *Order of work*.
+**Now, as well** — most of the planned flow below is built. The sync reads the
+sheet over gviz and writes rows; Discord's `/archive sync` publishes them and
+asks the running activity to reload in place, while `bun run publish-archive`
+publishes from a terminal, and the game picks that up only at the next restart.
+The activity lays published rows over the JSON, and `GET /api/public` (and
+`/api/public/:id`) reads the table on every request, so it serves published
+rows to anybody at once, answers included. What is not built is the review UI
+as the gate: it publishes nothing, and the gate is the allowlist on
+`/archive sync`, or whoever publishes from a terminal (`publish-archive`, or
+`sync-archive --publish` run by hand). See rule 5 and *Order of work*.
 
 **Planned.** The same decode-and-replay step, run against the sheet directly,
 writing rows instead of files:
@@ -84,13 +99,15 @@ writing rows instead of files:
                           (decode + replay)             │
                                               review UI │ publishes
                                                         ▼
-                                              PuzzleArchive.load  (boot)
+                                              archive_puzzles  (published)
                                                         │
                                         ┌───────────────┴───────────────┐
                                         ▼                               ▼
-                                 the game                     GET /api/archive
-                             (withholds answers)            (public, includes
-                                                              answers)
+                              PuzzleArchive.load (boot)       GET /api/public
+                                        │                   (public, includes
+                                        ▼                    answers; reads the
+                                     the game                table per request)
+                                (withholds answers)
 
 `gviz/tq?tqx=out:csv&sheet=<tab>` exports a public sheet tab as CSV with no
 credentials, which is what removes the manual download step. Measured
@@ -108,7 +125,7 @@ project or is one edit away from doing so.
 
 Storing solutions publicly and showing them to a player mid-run are different
 questions. The club's position is that the answers are already public
-elsewhere, so the *service* may serve them — `GET /api/archive` includes the
+elsewhere, so the *service* may serve them — `GET /api/public` includes the
 solution, and the website may render it.
 
 **The run endpoints must not.** A player part-way through today's puzzle must
@@ -137,14 +154,21 @@ it. A row that reaches the pool unverified is a puzzle that cannot be beaten.
 
 ### 3. Something still reviews new puzzles before players see them
 
-Today the review gate is git: a new puzzle arrives as a diff in a tracked JSON
-file and a human approves the pull request. A database write has no such gate,
-and adding 62 puzzles to the live pool without one is the main risk in this
-whole plan.
+The review gate used to be git: a new puzzle arrived as a diff in a tracked
+JSON file and a human approved the pull request. That still holds for
+`data/puzzles.json`, but a sync writes to the database, which has no such
+gate, and adding new puzzles to the live pool without one is the main risk in
+this whole plan.
 
-The replacement: **sync writes rows unpublished**, and the existing review UI
-publishes them. Sync is a command somebody runs, not a timer — a cron job that
-silently changes what the club plays tomorrow is the thing to avoid.
+The replacement: **sync writes new rows unpublished**, and publishing is a
+separate step, `bun run publish-archive` at a terminal. (An edit to a puzzle
+already published is applied to its row, which stays published. See rule 4b.)
+`--publish` is the exception: Discord's `/archive sync` passes it, so there a
+sync is also a publish, and the allowlist in `puzzle-admins.json` is the gate.
+Run by hand, `sync-archive --publish` publishes too, and the game waits for a
+restart, as rule 5 says. The review UI does not publish yet. Sync is a
+command somebody runs, not a timer — a cron job that silently changes what the
+club plays tomorrow is the thing to avoid.
 
 ### 4. Growing the pool reshuffles every future day
 
@@ -176,7 +200,7 @@ published puzzles: **#8 is a different puzzle** (board, queue, goal and title �
 queues**, and the other nine are difficulty ratings and a title typo.
 
 **What an edit does not do.** Existing scores do not change. Every `runs` row
-stores the `target_attack` it was judged against (`db.ts:271`), written at
+stores the `target_attack` it was judged against (`db.ts:410`), written at
 submit and read straight back; no leaderboard or streak query joins a puzzle
 table. No rank, time or solved flag moves. The earlier claim here that an edit
 "re-files finished scores" was wrong.
@@ -196,12 +220,16 @@ table. No rank, time or solved flag moves. The earlier claim here that an edit
   line counts on the review Archive tab, and — worst — the unique index on
   `(puzzle_id, canonical_key)` would make the next player to genuinely find one
   of those lines on the *new* board a duplicate, refused credit by `ON CONFLICT
-  DO NOTHING`. So the edit deletes them and records how many in the log.
-- **The frozen clear requirement can no longer be trusted.** It is a decision
-  about the *old* answer. Left attached to a new board it is still enforced, and
-  can demand a clear the new answer never makes — a published puzzle nobody can
-  solve. So `upsertArchive` checks the incoming answer against it: kept when it
-  still holds, dropped and reported when it does not.
+  DO NOTHING`. So the edit voids them instead: it stamps `voided_at` and keeps
+  the rows, so a finder keeps the credit, and the unique index covers live rows
+  only, so a voided line no longer stands in anyone's way. It records how many
+  in the log.
+- **The clear requirement cannot be carried over.** It is a reading of the
+  *old* answer. Left attached to a new board it would still be enforced, and
+  could demand a clear the new answer never makes — a published puzzle nobody
+  can solve. So `upsertArchive` re-derives it from the incoming answer on every
+  write (`requirementFromSolution`), and when the new answer misses the old
+  requirement it reports which one stopped applying, beside the new one.
 
 Unaffected, and worth saying so: `rush_runs` stores no puzzle reference at all,
 `day_rush` pins ids and difficulty and no past rush is ever re-served, and
@@ -214,13 +242,27 @@ say what a finished score was set on. It is append-only for the reason
 `puzzle_override_log` is: the write being recorded is the write that destroys
 the evidence.
 
-### 5. `PuzzleArchive.load` runs once, at module scope
+### 5. A running server's pool changes only through `reloadInPlace`
 
-`activity/server/index.ts:113`. The pool a process serves is the pool it booted
-with, and several modules document that they depend on this. Reading the
-archive from the database does not change that and must not: a pool that can
-change under a running server means a player's run can be scored against a
-different puzzle than it started on. **New rows become playable on restart.**
+`PuzzleArchive.load` runs once, at module scope in `activity/server/index.ts`,
+and every route, `DaySchedule` and the review tool hold the object it returns.
+The one way that pool changes while the server runs is `reloadInPlace`
+(`server/archive-reload.ts`). Only `POST /api/bot/reload-archive` calls it, and
+the bot's `/archive sync` posts there once its `sync-archive --publish` has
+run. It exists because a restart drops every duel in progress.
+
+What it has to keep is what this rule always protected: a pool that changes
+under a running server can score a player's run against a different puzzle
+than the one they were shown. So `PuzzleArchive.reconcile` serves a new id at
+once, holds a puzzle whose board changed exactly as it was, title and all,
+until the next start, and drops nothing; and `DaySchedule.freezeThrough` pins
+today's tiers and rush pool to the pool they were dealt from before the swap.
+Change the pool any other way, with a second `load` or a reassigned binding,
+and some of those holders are left serving the old one.
+
+**New rows from Discord's `/archive sync` go live at once. A changed board, and
+anything published from the terminal (`sync-archive --publish` or
+`publish-archive`, which have no key to ask with), wait for a restart.**
 
 ### 6. Dev may read production, but must never write it
 
@@ -242,8 +284,12 @@ makes this easy; nothing else about dev should reach production.
    content change is written, its previous content goes to
    `archive_content_log` in the same transaction, and the run reports each
    edited id with its hashes, the runs already filed against it, and any clear
-   requirement that had to be dropped. It exits **2** for that; exit 1 means a
-   row the sync could not write.
+   requirement the new answer no longer meets, beside the one re-derived from
+   it. It exits **2** when a published puzzle's content changed, or would have
+   on a `--dry-run` (a metadata-only fix is an amendment and exits 0). Exit 1,
+   which wins over 2, means a row the sync could not write, or a sync that
+   failed outright: an unreadable or renamed sheet tab, a network error, a bad
+   flag.
 
    So running it today **will** move the twelve changed puzzles — #8, #7 and
    #109 among them. That is allowed, and it is not something to discover
@@ -253,11 +299,14 @@ makes this easy; nothing else about dev should reach production.
    Still inherited from the build and not yet fixed: sheet columns are read
    **by position**, so a column inserted in either tab shifts every field
    silently. Matching on header names is the fix.
-2. **Public read endpoints.** Note `/api/archive` and `/api/archive/:id`
-   already exist and are **not** these: both sit behind `requireSession`, and
-   the detail route gates the answer through `maySeeSolution`. The public,
-   key-less, solution-bearing endpoints are new paths beside them, not a
-   relaxation of these — relaxing them is precisely rule 1's failure.
+2. ~~**Public read endpoints.**~~ **Done.** `GET /api/public` and
+   `GET /api/public/:id` (`server/public-routes.ts`) serve published rows of
+   `archive_puzzles`, answers included, with no session and no key, and carry
+   the only CORS in the server. They are new paths beside `/api/archive` and
+   `/api/archive/:id`, not a relaxation of them: both still sit behind
+   `requireSession`, the list sends no answer, and the detail route sends it
+   only to a player who has cleared the puzzle (`maySeeSolution` and
+   `hasCleared`). Relaxing those is precisely rule 1's failure.
 3. ~~**The activity reads the table.**~~ **Done.** `PuzzleArchive.load` lays
    published rows over the committed JSON (`withPublished`), which stays the
    seed. Discord's `/archive sync` publishes what it synced and asks the running
@@ -267,8 +316,10 @@ makes this easy; nothing else about dev should reach production.
 4. **Retire the duplicates.** `activity/data/solutions.json`, and the website's
    `var/data/puzzles.json` seed, once the website consumes the endpoint.
 
-Publishing the 62 new puzzles is a step of its own, taken deliberately, after
-1–3 are in and reviewed. See rule 4.
+Publishing the new puzzles — 10 in the measurement above; the tracked
+`data/archive/puzzles.sqlite` now holds 15 that `data/puzzles.json` does not
+— is a step of its own, taken deliberately, after 1–3 are in and reviewed. See
+rule 4.
 
 ---
 

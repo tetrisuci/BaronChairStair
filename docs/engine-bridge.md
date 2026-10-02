@@ -24,7 +24,7 @@ sees it. Then:
 
 ```jsonc
 // request — `id` is any string, echoed back so responses can be matched
-{"id": "1", "action": "parse_replay", "replay": "<minified replay JSON as a string>"}
+{"id": "1", "action": "parse_replay", "replay": "<replay JSON as a string>"}
 
 // success
 {"id": "1", "status": "ok", "clears": [ /* one object per line clear */ ]}
@@ -34,14 +34,21 @@ sees it. Then:
 ```
 
 `parse_replay` is the only action. The replay must be a **string**, not nested
-JSON, and on a single line — TETR.IO's own files are already minified, so this
-has never come up in practice.
+JSON. The request itself has to fit on one line, and `json.dumps` sees to that
+by escaping every newline inside the replay, so a pretty-printed file works as
+well as a minified one.
 
 Each clear carries `playerId`, `username`, `round`, `frame`, `timeSeconds`,
 `piece`, `clearType`, `linesCleared`, `garbageCleared`, `attack`, `attackSent`,
-`isBTB`, `b2b` and `combo`. `clearType` is one of `single`, `double`, `triple`,
-`quad`, `tspinSingle`, `tspinDouble`, `tspinTriple`, `allspin` (a non-T spin,
-or a mini) or `perfectClear`.
+`isBTB`, `b2b`, `combo` and `board`. `clearType` is one of `single`, `double`,
+`triple`, `quad`, `tspinSingle`, `tspinDouble`, `tspinTriple`, `allspin` (a
+non-T spin, or a T-spin mini single) or `perfectClear`.
+
+`board` is the visible playfield just after the clear: a list of rows from the
+bottom up (20 on a standard board), each a list of cells from left to right.
+A cell is `null` when empty, or the engine's name for what fills it: `i`, `j`,
+`l`, `o`, `s`, `t`, `z`, `gb` for garbage, or `bomb`. `client/render.py` draws
+it, and `client/build_snapshots.py` reads it as the board after each window.
 
 To add an action, extend the dispatch in `server.ts` and call it from Python
 with `client._request("my_action", field="value")`.

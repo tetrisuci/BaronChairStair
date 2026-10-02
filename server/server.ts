@@ -51,8 +51,8 @@ interface ClearEvent {
   /**
    * Post-clear board state — visible playfield only (rows 0–19).
    * Row 0 is the bottom, row 19 is the top.
-   * Each cell is a mino string ("I","O","T","L","J","S","Z","G","B")
-   * or null if empty.
+   * Each cell is the engine's mino name ("i","j","l","o","s","t","z",
+   * "gb" for garbage, "bomb") or null if empty.
    */
   board: (string | null)[][];
 }
