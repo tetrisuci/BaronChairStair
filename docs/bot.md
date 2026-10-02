@@ -4,8 +4,9 @@ Every slash command in detail — what it does, what it needs, and why it is
 shaped the way it is. For the short version, see the commands table in the
 [README](../README.md).
 
-Run the bot from `client/`, so the sibling modules import cleanly. See
-[DEPLOY.md](../DEPLOY.md) for running it properly.
+The bot finds its sibling modules, its `.env` and its `stats.db` from its own
+path, so it runs from any working directory. See [DEPLOY.md](../DEPLOY.md) for
+running it properly.
 
 ---
 
@@ -16,13 +17,17 @@ Run the bot from `client/`, so the sibling modules import cleanly. See
 !highlights 5              the prefix form; bare !highlights gives the top 3
 ```
 
-Returns each player's biggest attack bursts as monospace boards, so the stacks
-line up in Discord's proportional font.
+Returns each player's biggest attack bursts — the five-second windows that
+sent the most — as a monospace list: a line per burst giving its round, its
+span in seconds, its attack and its clear and line counts, then one line per
+clear in it, so the columns line up in Discord's proportional font. The bot
+leaves the boards out; `render.py --highlights`, run by hand on a `.pkl` from
+`build_snapshots.py`, still draws them.
 
 ### `/puzzle` — the daily puzzle
 
 ```
-/puzzle               today's three sheets, and a link that opens the activity
+/puzzle               today's four puzzles, and a link that opens the activity
 ```
 
 One command, not a group. It used to be four; the other three rendered in
@@ -33,8 +38,10 @@ day in a channel, with a way in.
 
 The bot owns none of the game. It reads the activity server and formats what
 comes back, so the two can never disagree about a score. Needs
-`PUZZLE_APP_ID`, `PUZZLE_API` and `PUZZLE_API_KEY`; without them the command
-still registers and explains what is missing rather than failing shut.
+`PUZZLE_APP_ID` and `PUZZLE_API`. Without the first the command still
+registers and says what is missing rather than failing shut; without the
+second it posts the launch link with no puzzle details. `PUZZLE_API_KEY` is
+for the recap below and for `/archive sync`, not for `/puzzle` itself.
 
 The daily recap is **off unless `PUZZLE_RECAP=on`** is set in `.env`, because it
 mentions everyone it names — turned on, it pings every player it names, every
@@ -48,9 +55,9 @@ something to reply to.
 
 ### Versions, and how a server hears about them
 
-The project carries a version — `beta 0.3` at the time of writing — in
-`changelog.json` at the repository root, next to the list of what each one changed.
-Read by the bot's `/puzzle` announcement, below.
+The project's version is the first release listed in `changelog.json` at the
+repository root — the same list that says what each one changed. Read by the
+bot's `/puzzle` announcement, below.
 
 **A server is told the first time somebody runs `/puzzle` on a build it has not
 heard about**, as a plain message behind the puzzle embed. Not on a timer and
@@ -69,10 +76,10 @@ counting releases is not counting characters. Before that cap existed, three
 releases of eight wordy notes rendered to 2,029 characters, which Discord
 rejects outright; the same input now fits.
 
-Releasing is adding a `Release` at the top of `RELEASES`; `VERSION` follows it,
-and a test fails if it does not. Order in that tuple *is* the version order —
-comparing `beta 0.10` against `beta 0.9` as text is wrong and as numbers is a
-parser nobody needs.
+Releasing is adding an entry at the top of `releases` in `changelog.json`;
+`VERSION` in `client/changelog.py` is read from it, and a test fails if it is
+not. Order in that list *is* the version order — comparing `beta 0.10` against
+`beta 0.9` as text is wrong and as numbers is a parser nobody needs.
 
 What each server has been told lives in `bot_versions`, one row per guild, and
 the claim is taken before the message is sent — the write is what stops a second
@@ -99,12 +106,14 @@ Its own command rather than `/puzzle report`: Discord will not let a command be
 both invocable and a group, and `/puzzle` is the one people already type.
 
 Needs `GITHUB_TOKEN` and `GITHUB_REPO`; without them the command still
-registers and explains what is missing. **It publishes text typed by anybody in
-the server, under the bot's identity, to whatever repository you name** — so the
-token should be fine-grained, scoped to Issues on that one repository, and able
-to do nothing else. `@mentions` and `#references` are defanged so a report
-cannot become a stranger's notification, the description is capped, and one
-player may file fifteen reports an hour, and one server sixty.
+registers, and tells the player privately that an officer has yet to finish
+setting it up. It does not say which key is unset, and logs nothing, so check
+both. **It publishes text typed by anybody in the server, under the bot's
+identity, to whatever repository you name** — so the token should be
+fine-grained, scoped to Issues on that one repository, and able to do nothing
+else. `@mentions` and `#references` are defanged so a report cannot become a
+stranger's notification, the description is capped, and one player may file
+fifteen reports an hour, and one server sixty.
 
 ### `/archive sync` — pull the spreadsheet in, officers only
 
@@ -132,9 +141,13 @@ What players notice, and what they deliberately do not:
 
 If the activity cannot be reached, the reply says so: the rows are published
 all the same, and they go live at its next restart. `dry_run` reads the sheet
-and writes and publishes nothing at all. A sync run from a terminal without
-`--publish` still lands everything unpublished, and neither `publish-archive`
-nor `bun run puzzles` is reachable from Discord.
+and writes and publishes nothing at all. A terminal sync without `--dry-run` or
+`--publish` lands new rows unpublished, but it still writes the sheet's edits
+over puzzles already published: the public archive feed (`/api/public`) serves
+them at once, players get them at the activity's next restart, and a changed
+board, queue, hold, target or answer voids that puzzle's discovered lines
+straight away. Neither `publish-archive` nor `bun run puzzles` is reachable
+from Discord.
 
 A group of its own rather than `/puzzle sync`, for the same reason `/report` is
 top-level: Discord will not let a command be both invocable and a group, and

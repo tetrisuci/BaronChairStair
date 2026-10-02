@@ -23,7 +23,7 @@ web tool to review them.
 |---|---|
 | **Submitting** | A Submit control in the in-app puzzle builder. A player must solve their own puzzle before they can send it; the server replays their keystrokes and derives the target and the answer key from what it sees. |
 | **Reviewing** | A second page at `/review`, outside Discord, reached by a link minted on this box. It shows the board, steps the author's solution, and accepts or rejects. |
-| **Accepting** | An accepted puzzle joins the archive and the daily/rush rotation at the next restart. |
+| **Accepting** | An accepted puzzle joins the archive and the daily/rush rotation at the next restart, or at the next Discord `/archive sync` without `dry_run`, which reloads the archive in place. |
 
 Two things changed underneath that matter to a deployment:
 
@@ -122,7 +122,7 @@ bun run build            # writes dist/, including dist/review/index.html
 ```
 
 **Skips are expected here.** `data/solutions.json` holds the answer keys and is
-not in git, so a box without it reports around 83 tests skipped rather than
+not in git, so a box without it reports around 100 tests skipped rather than
 failed — the ones that need a reference solution to build a solving log. `0
 fail` is the thing to check. A number of skips that is suddenly zero means the
 answers are on this box; a *failure* is what stops a deploy.
@@ -195,12 +195,12 @@ Run all of these. Each fails in a way the others do not catch.
 **1. The server came up and knows what it is serving.** In the service log:
 
 ```
-puzzle — day 247, 138 puzzles, resetting at midnight America/Los_Angeles
+puzzle — day 247, 138 puzzles, resetting at midnight America/Los_Angeles, listening on :3001
 ```
 
 Once anything has been accepted it reads `139 puzzles (1 from players)`. If a
-page is missing from the build there is a second line naming it — that warning
-is one you can act on.
+page is missing from the build, a warning just above it names the page
+(`[puzzle] the build at … is missing …`) — that warning is one you can act on.
 
 **2. The backfill ran.** This is the ordering rule, checked.
 
@@ -300,10 +300,12 @@ never opens the database, so it is safe to run while the service is up.
 
 **What the link is worth.** Whoever holds it is the reviewer — it is a bearer
 capability with nothing written down behind it. The link lasts fifteen minutes
-by default, and the page trades it once for a two-hour session. Those two
-windows add up rather than overlap: a link spent in its last second still buys a
-full two hours, so the worst case is fifteen minutes plus two hours. **Send it
-in a DM, not a channel** — anywhere it can be seen is somewhere it can be used.
+by default and up to an hour with `--minutes 60`, the most the command accepts,
+and the page trades it once for a two-hour session. Those two windows add up
+rather than overlap: a link spent in its last second still buys a full two
+hours, so the worst case is the link's own life plus two hours — three hours for
+a sixty-minute link. **Send it in a DM, not a channel** — anywhere it can be
+seen is somewhere it can be used.
 
 The token rides in the URL *fragment* (`/review#t=…`), which a browser never
 sends to the server. That keeps it out of the one copy nobody can be careful
@@ -321,8 +323,11 @@ person with SSH to this box is the officer, and that is the real trust root.
 
 **Queue** is the landing screen: puzzles players have sent, waiting on a
 verdict. Accepting one assigns it an id in the community band (100000 and up)
-and it joins the archive and the rotation **at the next restart** — the archive
-is read once at start-up, and the tool says so when you accept.
+and it joins the archive and the rotation **at the next restart**, or sooner if
+an officer runs Discord's `/archive sync` without `dry_run`: that reloads the
+whole archive in place, accepted puzzles included. The tool mentions only the
+restart when you accept. Running a sync is the officers' call rather than a way
+to hurry one puzzle along: it also publishes whatever the club's sheet holds.
 
 **Archive** lists every puzzle, club and community, and corrects its metadata:
 title, author, goal, difficulty and set. Nothing else — a board, queue, hold,
@@ -336,20 +341,29 @@ Three things to know before you use it:
   rewritten wholesale by `bun run puzzles`, so a correction written there would
   die at the next rebuild. Surviving that rebuild is the whole reason the
   override layer exists.
-- **Difficulty is rotation input.** It decides which of the easy/medium/hard
-  pools a puzzle is dealt from, and the order a rush stack comes in. Changing it
-  moves the puzzle for **future** days only: every day already played is written
-  down in `day_puzzles`, and a pinned rush stack keeps the difficulty it was
-  dealt with.
+- **Difficulty is rotation input.** It decides which of the four daily pools
+  (easy, medium, hard, extreme) a puzzle is dealt from, and the order a rush
+  stack comes in. Changing it moves the puzzle for **future** days only: every
+  day already played is written down in `day_puzzles`, and a pinned rush stack
+  keeps the difficulty it was dealt with.
 - **Corrections reach players at the next restart**, like an accepted puzzle,
-  and for the same reason — a live-mutating archive would reshuffle a day under
-  players holding its prompt.
+  or at the next Discord `/archive sync` without `dry_run`, which reloads the
+  archive in place and reads every saved correction afresh. Neither reshuffles
+  a day under players holding its prompt: the reload pins today's tiers and
+  rush pool from the old pool before it swaps anything in. A correction still
+  waits for the restart if its puzzle's board, queue, hold, target or clear
+  requirement has changed since the server began serving it: that puzzle is
+  served as it was, title and all.
 
 Every correction and every revert is recorded per field in
-`puzzle_override_log`, append-only, with the name from the review link. If a
-correction ever stops the server booting, the log is how you find out what
-changed and who changed it; the fix is one `DELETE` through the tool, and the
-archive falls back to what the club wrote rather than refusing to start.
+`puzzle_override_log`, append-only, with the name from the review link. A
+correction cannot stop the server booting. One the archive cannot use is
+ignored, and if the corrections together would leave a daily tier empty,
+every one of them is ignored; either way the puzzle is served as its source
+wrote it, the service log says `[puzzle] ignoring …`, and the tool marks the
+correction as on file but not in force. `puzzle_override_log` is how you find
+out what changed and who changed it; the fix is one `DELETE` through the tool,
+then a restart.
 
 ---
 
@@ -384,10 +398,11 @@ Accept nothing until you are confident in the upgrade, and rollback stays free.
 - **`/review` serving a page while `/api/review/*` answers 404.** The page is a
   static file and is always served; the routes behind it are what
   `REVIEW_SECRET` switches on.
-- **An accepted puzzle not appearing immediately.** The archive is read once at
-  start-up. It appears at the next restart, and the review tool says so when you
-  accept.
-- **`day_puzzles` growing by three rows a day forever.** That is the design. It
+- **An accepted puzzle not appearing immediately.** The archive is read at
+  start-up, and again only when Discord's `/archive sync` (without `dry_run`)
+  asks the activity to reload it. The puzzle appears at whichever comes first;
+  the review tool, when you accept, mentions only the restart.
+- **`day_puzzles` growing by four rows a day forever.** That is the design. It
   is a few hundred kilobytes a decade.
 
 ## Things that are wrong
@@ -414,16 +429,21 @@ Accept nothing until you are confident in the upgrade, and rollback stays free.
   puzzle a pinned day was dealt has left `data/puzzles.json` — almost always
   because `bun run puzzles` rebuilt the file from a sheet that no longer has it.
   The pin refuses to re-derive rather than quietly deal a different puzzle, so
-  the failure is loud on purpose. Two exits, and the first is the right one
-  unless you know the day is finished with:
+  the failure is loud on purpose. Two exits, and the first is the right one: a
+  start checks only today's pool, so the day in the error is always today, and
+  its rush is still being played:
 
   ```sh
-  # Preferred: put the puzzle back in the sheet and rebuild.
+  # Preferred: put the puzzle back in the sheet, re-export its two tabs as CSV
+  # into tmp/ at the repository root (this reads those files, not the sheet),
+  # and rebuild.
   bun run puzzles
 
   # Or, if that puzzle is genuinely gone for good, drop that day's pinned pool.
-  # The day's three are unaffected; only the rush stack is re-derived, and only
-  # for a day whose rush nobody can play any more anyway.
+  # The day's four are unaffected; only the rush stack is re-derived. But that
+  # day is today: everyone who plays its ranked rush from now on is dealt a
+  # different forty from the runs already on its board, and a run started in
+  # the last five minutes is scored against boards it was never shown.
   bun -e 'import {Database} from "bun:sqlite";
           import {resolve} from "node:path";
           const p = resolve(process.env.DATABASE_PATH ?? "data/daily.sqlite");

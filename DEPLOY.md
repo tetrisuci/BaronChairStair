@@ -53,11 +53,20 @@ without it — it is not only needed by the graph command that uses it.
 
 **The replay commands need one more thing.** `/highlights` and
 `build_snapshots.py` spawn a TypeScript bridge (`server/server.ts`) that imports
-`@haelp/teto`, so run `bun install` **at the repository root** once. Everything
-else runs on Python alone. Bun can resolve the package on its own when there is
-no `node_modules` at all, so a fresh box may work without this — run it anyway,
-so the version is the one `bun.lock` pins rather than whatever the registry
-serves at the moment somebody asks for a replay.
+`@haelp/teto`, so run `bun install` **at the repository root** once. Bun can
+resolve the package on its own when there is no `node_modules` at all, so a
+fresh box may work without this — run it anyway, so the version is the one
+`bun.lock` pins rather than whatever the registry serves at the moment somebody
+asks for a replay.
+
+**`/archive sync` needs Bun too.** It runs `bun run sync-archive` as a
+subprocess inside the activity checkout — the `activity/` beside this file, or
+`PUZZLE_ACTIVITY_DIR` — so `bun` must be on the bot process's own PATH (a
+systemd unit takes that from its own `Environment=`, not from the shell profile
+Bun's installer edits), and that checkout needs its own `bun install`. Who may
+run it is the list of ids in `puzzle-admins.json` at the repository root, which
+is gitignored: copy `puzzle-admins.example.json` to start one. A missing or
+malformed list means nobody. Everything else runs on Python alone.
 
 Use the interpreter that actually runs the bot, not a bare `python3` — a system
 interpreter usually has none of these installed:
@@ -79,8 +88,8 @@ grep -oE '^[A-Z_][A-Z0-9_]*=' .env | tr -d '='
 |---|---|---|
 | `DISCORD_TOKEN` | everything | the bot does not start |
 | `PUZZLE_APP_ID` | the launch link | `/puzzle` cannot build its button |
-| `PUZZLE_API` | the recap; `/archive sync` telling the activity to reload | the recap has nowhere to read from; a sync publishes, but the activity is not told |
-| `PUZZLE_API_KEY` | the recap; `/archive sync` telling the activity to reload | the recap silently never posts; a sync publishes, but the activity is not told |
+| `PUZZLE_API` | `/puzzle`'s day details; the recap; `/archive sync` telling the activity to reload | `/puzzle` posts only the launch link, with "puzzle details are unavailable right now"; the recap has nowhere to read from; a sync publishes, but the activity is not told |
+| `PUZZLE_API_KEY` | the recap; `/archive sync` telling the activity to reload | the recap never posts; once a day is owed, the log names the key every 5 minutes (`recap failed for guild …`); a sync publishes, but the activity is not told |
 | `PUZZLE_RECAP` | the recap | the recap is off — the default, because it pings every player it names |
 | `GITHUB_TOKEN` | `/report` | `/report` answers "Reports aren't wired up yet" |
 | `GITHUB_REPO` | `/report` | as above |
@@ -118,8 +127,9 @@ that and abuse:
   GitHub's issue-autolink forms (`#26`, `GH-26`, `owner/repo#26`, and the organisation
   form) are neutralised with an empty HTML comment, so a report cannot ping a team or
   post a backlink into an unrelated repository.
-- Control characters are stripped, as are the invisible ranges that let a title read as
-  something other than what it says.
+- Control characters become spaces — every one in a title, and all but line breaks in
+  the report itself, so steps to reproduce keep their lines. That is C0 and DEL only:
+  zero-width and direction-override characters pass through untouched.
 - A filed report replies **in the channel**, so the club can see a bug is already
   known. Anything about the *player* replies privately — too long, too often, and
   "not set up yet" — because "you have filed fifteen reports this hour" is not
@@ -188,12 +198,18 @@ propagate. To push the tree into one guild immediately, and tidy up afterwards, 
 
 ### Verifying the bot
 
-1. It connected — the log names the bot user and the guilds it is in.
+1. It connected — the log prints `Logged in as <bot user> (id: …)` at the end of
+   `on_ready`, after the command sync; a reconnect can print it again. It does not list
+   the guilds. It goes to stdout, unlike the lines below, so a bot not run on a terminal
+   and started without `python -u` or `PYTHONUNBUFFERED=1` can hold it back for a long
+   time; under a service, `/puzzle` answering is the surer sign.
 2. `/puzzle` returns the launch button, and the activity opens from it.
 3. The daily recap is **off unless `PUZZLE_RECAP=on`**, and the log says so at start-up
    (`puzzle recap off: …`). Turning it on posts the previous day's recap as soon as the
-   bot starts, then one a day. If it is on and silently does not post, check
-   `PUZZLE_API_KEY` against `BOT_API_KEY` in `activity/.env`.
+   bot starts, then one a day. If it is on and does not post, read the log. An unset
+   `PUZZLE_API_KEY` is named in a `recap failed for guild …` line; a key that does not
+   match `BOT_API_KEY` in `activity/.env` shows just above it as
+   `puzzle /api/recap… -> HTTP 401` (a `404` if `BOT_API_KEY` is unset).
 4. `/report` appears in the command list. Run it, pick a category, type a description,
    and confirm the issue appears at
    <https://github.com/tetrisuci/BaronChairStair/issues>. **Close your test issue
@@ -205,14 +221,16 @@ propagate. To push the tree into one guild immediately, and tidy up afterwards, 
 ## The activity
 
 See [`activity/DEPLOY.md`](activity/DEPLOY.md), which is complete and specific. Four
-things from it are worth knowing before you begin, because each fails silently:
+things from it are worth knowing before you begin, because each is easy to get wrong
+and three of them fail silently:
 
 - **There is an ordering rule.** Start the new code, and confirm the backfill ran,
   *before* the puzzle pool next changes. Getting it wrong writes plausible but wrong
   history for days nobody played, and nothing reports it.
 - **`TRUST_PROXY=true` must be set in `activity/.env` if anything fronts the server**
   (cloudflared, nginx, Caddy). Without it every player shares one rate-limit bucket and
-  starts collecting 429s. Only the exact lowercase `true` counts.
+  starts collecting 429s. This is the loud one: in production the server warns at
+  start-up (`[limits] TRUST_PROXY is not set …`). Only the exact lowercase `true` counts.
 - **`DATABASE_PATH` must be absolute, or unset.** A relative value resolves against the
   working directory, and if that is not `activity/` the server creates a brand-new empty
   database rather than refusing — it boots, and every leaderboard is gone.
@@ -223,11 +241,14 @@ things from it are worth knowing before you begin, because each fails silently:
 
 The `DATABASE_PATH` trap has a companion worth stating here: **Bun reads `.env` from the
 process working directory only.** It does not look beside the entrypoint and does not
-walk up. So `activity/.env` reaches the running service only if the unit sets
-`WorkingDirectory=<abs>/activity` or passes `EnvironmentFile=<abs>/activity/.env`. Check
-which yours does before editing that file, or your edits will have no effect and nothing
-will say so:
+walk up. So `activity/.env` reaches the running service only if the process starts in
+`<abs>/activity`, or whatever starts it passes the file in some other way. Under systemd
+that is `WorkingDirectory=<abs>/activity` or `EnvironmentFile=<abs>/activity/.env`;
+under pm2, the app's `cwd`; in a `tmux` session, the directory the command was run from.
+Check which yours does before editing that file, or your edits will have no effect and
+nothing will say so:
 
 ```sh
 systemctl cat <the-unit> | grep -iE 'Environment|WorkingDirectory|ExecStart'
+pm2 describe <the-app> | grep -iE 'exec cwd|script path'
 ```
