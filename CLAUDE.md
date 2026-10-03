@@ -14,9 +14,10 @@ drift, and the copy loaded into every session is the one that drifts unnoticed.
 |---|---|---|
 | **The Discord bot** | repository root, `client/` | [`DEPLOY.md`](DEPLOY.md) |
 | **The activity** (the puzzle itself) | `activity/` | [`activity/DEPLOY.md`](activity/DEPLOY.md) |
+| **The puzzle database site** (db.tetrisatuci.org) | `activity/puzzledb/` — its own process, build and `.env` | [`activity/puzzledb/DEPLOY.md`](activity/puzzledb/DEPLOY.md) |
 
-Two projects, separate deploys, different `.env` files. Follow the guide for the half
-you are touching, in the order it gives — the order is load-bearing in both.
+Two projects and a site: three deploys, different `.env` files. Follow the guide for the
+one you are touching, in the order it gives — the order is load-bearing in all three.
 
 Where this file and a guide differ, **do the stricter thing and say so in your report.**
 Do not treat either as licence to skip a step the other requires.
@@ -47,6 +48,12 @@ and the officer review tool (`client/review/`), which build together.
 
 `activity/DEPLOY.md` has the sequence and the verification steps, including how to tell
 whether a *specific* change reached the bundle. Use them; a restart is not a deploy.
+
+The puzzle database site is a second, separate build of the same code:
+`bun run build:puzzledb` compiles `client/src` and `shared/` into `activity/puzzledb/dist/`,
+and its server runs `server/puzzles.ts`. So an activity deploy leaves the site on the old
+code until it too is rebuilt and restarted —
+`activity/puzzledb/DEPLOY.md`, "After every activity deploy", says how.
 
 ## A player-visible change needs a release note, and nothing will remind you
 
@@ -108,6 +115,10 @@ Report these and stop; do not act on them unasked.
   than assuming; it defaults to `log`, which shows and enforces nothing. Turning it `on`
   needs the current bundle deployed first, or players are judged against a requirement
   their client never showed them.
+- **`PUBLISH_COMMUNITY_PUZZLES`, `FIRST_TIERED_DAY` and `FIRST_EXTREME_DAY`**
+  (`activity/puzzledb/server/policy.ts`). The first puts player-written puzzles and their
+  authors' Discord display names on the open web, with no consent step. The other two
+  decide which days the site presents as dealt, and come from the production box.
 - **Rotating a secret**, or anything that signs users out.
 
 ## Never

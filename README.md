@@ -138,6 +138,7 @@ BaronChairStair/
 | [docs/bot.md](docs/bot.md) | Every slash command, and why each is shaped the way it is |
 | [docs/engine-bridge.md](docs/engine-bridge.md) | The NDJSON protocol between Python and the TETR.IO engine |
 | [DEPLOY.md](DEPLOY.md) · [activity/DEPLOY.md](activity/DEPLOY.md) | Deploying each half. The order is load-bearing in both |
+| [activity/puzzledb/README.md](activity/puzzledb/README.md) · [its DEPLOY.md](activity/puzzledb/DEPLOY.md) | db.tetrisatuci.org, the read-only public puzzle archive: what it shows, what it never shows, and deploying it |
 | [CLAUDE.md](CLAUDE.md) | The few rules that live nowhere else |
 | [changelog.json](changelog.json) | Every release, newest first. The top entry is the version |
 

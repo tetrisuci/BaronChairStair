@@ -1,11 +1,12 @@
 # Deploying — start here
 
-This repository is **two projects**, deployed separately:
+This repository is **two projects and a site**, deployed separately:
 
 | | Where it lives | Its deploy guide |
 |---|---|---|
 | **The Discord bot** | the repository root and `client/` | this file |
 | **The activity** (the puzzle itself) | `activity/` | [`activity/DEPLOY.md`](activity/DEPLOY.md) |
+| **The puzzle database site** (db.tetrisatuci.org) | `activity/puzzledb/` — its own process, build and `.env` | [`activity/puzzledb/DEPLOY.md`](activity/puzzledb/DEPLOY.md) |
 
 They have different `package.json` files, different `.env` files, and different
 commands. Running one's commands from the other's directory is the commonest way a

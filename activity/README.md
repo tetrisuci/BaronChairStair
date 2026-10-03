@@ -35,6 +35,7 @@ tmp/*.csv ──► tools/build-puzzles.ts ──┬─► data/puzzles.json   �
 | `server/` | Hono + Bun: OAuth exchange, daily puzzle, puzzle rush, run verification, SQLite |
 | `client/` | The activity itself — canvas playfield and interface |
 | `client/public/fonts/` | Archivo and DM Mono, self-hosted (see below) |
+| `puzzledb/` | db.tetrisatuci.org: a read-only public view of the archive, as its own process and build — see [its README](puzzledb/README.md) |
 
 ## Running it locally
 

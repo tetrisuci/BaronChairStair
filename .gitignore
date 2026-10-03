@@ -390,6 +390,12 @@ ecosystem.config.cjs
 activity/data/*.sqlite
 activity/data/*.sqlite-*
 
+# The puzzle database site (activity/puzzledb/): its own build output and its own env file.
+# Both are matched by the generic rules above; named here so nothing about them depends on a
+# template's rules. Its public SQLite is built in memory and never written, so no .sqlite rule.
+activity/puzzledb/dist/
+activity/puzzledb/.env
+
 # The raw puzzle archive export. Decoded output lives in activity/data/puzzles.json.
 tmp/
 

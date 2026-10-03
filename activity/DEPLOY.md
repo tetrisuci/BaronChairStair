@@ -129,6 +129,11 @@ answers are on this box; a *failure* is what stops a deploy.
 
 Then restart the service the way this box already starts it.
 
+*If this box also runs the puzzle database site (pm2 `puzzle-db`), rebuild and restart
+it once the activity is verified —
+[`puzzledb/DEPLOY.md`](puzzledb/DEPLOY.md), "After every activity deploy".
+Restarting it never touches the game.*
+
 ### Rate limiting behind the proxy
 
 **If anything sits in front of this server — cloudflared, nginx, Caddy — put
