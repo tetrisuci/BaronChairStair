@@ -25,6 +25,8 @@
     "client/**/*.ts",
     "server/**/*.ts",
     "tools/**/*.ts",
+    // The puzzle database site: its own process and page, type-checked with the rest.
+    "puzzledb/**/*.ts",
     "tests/**/*.ts",
     // Named, not left to luck. It was in the program only because one test
     // happens to import it, so it was checked by accident and would have gone
