@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!--
+      The server writes each page's title, description and Open Graph tags in
+      place of the marker below, escaped, so a link unfurls with the page it
+      names. It must appear exactly once: the server refuses a template with
+      none or two. There is deliberately no title element here: the page sets
+      the same one from the same function once it has its data.
+    -->
+    <!--puzzledb:head-->
+    <meta name="theme-color" content="#fcd750" />
+    <!-- Without one, every browser asks for /favicon.ico, which this site answers 404. -->
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+  </head>
+  <body>
+    <!--
+      No inline script, no inline style, no style or on… attributes anywhere:
+      the site's Content-Security-Policy allows scripts and styles from 'self'
+      only, and anything inline would be refused without a sound.
+    -->
+    <div id="puzzledb" class="pdb"><p class="label">opening the archive</p></div>
+    <noscript>
+      <p class="pdb-noscript">
+        Browsing the archive needs JavaScript. All of it is also here as
+        <a href="/puzzles.json">JSON</a> and as one
+        <a href="/puzzles.sqlite" download>SQLite file</a>.
+      </p>
+    </noscript>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>
