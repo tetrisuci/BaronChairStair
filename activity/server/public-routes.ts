@@ -35,16 +35,7 @@ import type { Database } from "bun:sqlite";
 import { cors } from "hono/cors";
 import type { AppRouter } from "./http";
 import { archiveEntry, publishedEntries, type ArchiveEntry } from "./archive-rows";
-
-/**
- * Where a Blueprint code becomes a link.
- *
- * The club's spreadsheet stores these two ways in two tabs — a bare code on
- * one, a full URL on the other — and the website validates the host it links
- * to. Building the URL here from the code means downstream projects never have
- * to know that, and never have to trust a host that arrived in data.
- */
-const BLUEPRINT_VIEWER = "https://bp.tali.software/?";
+import { blueprintLink } from "../shared/blueprint/viewer";
 
 /** Where every route in this module lives. One prefix, so CORS can be scoped. */
 export const PUBLIC_PREFIX = "/api/public";
@@ -96,8 +87,6 @@ export interface PublicPuzzle {
 
 function toPublic(entry: ArchiveEntry): PublicPuzzle {
   const puzzle = entry.puzzle;
-  const link = (code: string | undefined) =>
-    code ? `${BLUEPRINT_VIEWER}${code}` : null;
   return {
     id: puzzle.id,
     title: puzzle.title,
@@ -112,8 +101,9 @@ function toPublic(entry: ArchiveEntry): PublicPuzzle {
     requiredClears: puzzle.requiredClears ?? null,
     solution: puzzle.solution ?? null,
     source: puzzle.source ?? null,
-    puzzleUrl: link(puzzle.source?.puzzle),
-    solutionUrl: link(puzzle.source?.solution),
+    // Never a URL that arrived in data: shared/blueprint/viewer.ts says why.
+    puzzleUrl: blueprintLink(puzzle.source?.puzzle),
+    solutionUrl: blueprintLink(puzzle.source?.solution),
     addedOn: entry.addedOn,
     solveCount: entry.solveCount,
   };
