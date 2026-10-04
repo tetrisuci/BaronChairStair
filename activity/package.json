@@ -16,7 +16,10 @@
     "sync-archive": "bun run tools/sync-archive.ts",
     "audit-archive": "bun run tools/audit-archive.ts",
     "rederive-clears": "bun run tools/rederive-flagged-clears.ts",
-    "publish-archive": "bun run tools/publish-archive.ts"
+    "publish-archive": "bun run tools/publish-archive.ts",
+    "puzzledb": "bun --env-file=puzzledb/.env puzzledb/server/main.ts",
+    "puzzledb:client": "vite --config puzzledb/vite.config.ts",
+    "build:puzzledb": "vite build --config puzzledb/vite.config.ts"
   },
   "dependencies": {
     "@discord/embedded-app-sdk": "^2.1.0",

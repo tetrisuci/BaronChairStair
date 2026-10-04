@@ -1,0 +1,441 @@
+/*
+ * The puzzle database's own rules — a document, not a game screen.
+ *
+ * It loads after `tokens.css`, `panels.css` and `overlays.css` (see main.ts),
+ * and everything below is layout this page needs and the activity does not.
+ * There is no second palette, no second button and no second card in it: the
+ * yellow ground, the plum ink, the cream card with its hard offset shadow,
+ * `.btn`, `.stat`, `.label` and the explorer's controls are all the game's.
+ *
+ * `sheet.css` and `narrow.css` are deliberately not loaded. They lay out a
+ * fixed-size playfield with a HUD either side of it, and all of that would have
+ * to be undone; the two things wanted from them — the ruled ground and the
+ * difficulty pips — are copied below with their sources named.
+ *
+ * Nothing here needs `'unsafe-inline'`: the page sets no inline styles, and
+ * the only `url()` is the self-hosted fonts in `tokens.css`.
+ */
+
+/*
+ * `tokens.css` hides the body's overflow because the activity is a board that
+ * must never scroll away from the player. This is a document, and it must.
+ */
+body {
+  overflow: auto;
+  overscroll-behavior: auto;
+  /* The game's ground: the club's yellow with a faint graph ruling (sheet.css, `.sheet`). */
+  background:
+    linear-gradient(var(--ink-hair) 1px, transparent 1px) 0 0 / 100% 28px,
+    linear-gradient(90deg, var(--ink-hair) 1px, transparent 1px) 0 0 / 28px 100%,
+    var(--sun);
+}
+
+.pdb {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: var(--sheet-pad);
+  display: grid;
+  gap: calc(var(--gutter) * 1.25);
+  align-content: start;
+}
+
+/* Links in prose read as links; the ones that are cards or buttons say so themselves. */
+.pdb a {
+  color: inherit;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+.pdb a:hover { text-decoration-thickness: 2px; }
+
+.pdb-stack {
+  display: grid;
+  gap: var(--gutter);
+  align-content: start;
+  min-width: 0;
+}
+
+.pdb-main { min-width: 0; }
+
+/* ── Header ───────────────────────────────────────────────────────────────── */
+
+.pdb-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 20px;
+  flex-wrap: wrap;
+}
+
+.pdb .pdb-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  text-decoration: none;
+}
+
+.pdb-brand__name { font-size: clamp(18px, 2.4vw, 26px); }
+
+/* The club's block mark: T, O, I and S, as `.blockmark` draws it in the game (sheet.css). */
+.pdb-mark {
+  display: grid;
+  grid-template-columns: repeat(2, 9px);
+  grid-template-rows: repeat(2, 9px);
+  gap: 2px;
+  flex: none;
+}
+
+.pdb-mark > span {
+  border: 1px solid var(--ink);
+  border-radius: 1px;
+}
+
+.pdb-mark > span:nth-child(1) { background: var(--mino-t); }
+.pdb-mark > span:nth-child(2) { background: var(--mino-o); }
+.pdb-mark > span:nth-child(3) { background: var(--mino-i); }
+.pdb-mark > span:nth-child(4) { background: var(--mino-s); }
+
+.pdb-nav {
+  display: flex;
+  align-items: center;
+  gap: 6px 14px;
+  flex-wrap: wrap;
+}
+
+.pdb .pdb-nav__link {
+  font-family: var(--display);
+  font-weight: 800;
+  font-stretch: 108%;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  text-decoration: none;
+  padding: 3px 0;
+  border-bottom: var(--edge) solid transparent;
+}
+
+.pdb .pdb-nav__link:hover,
+.pdb .pdb-nav__link[aria-current="page"] { border-bottom-color: var(--ink); }
+
+/* The two downloads are files, not places: set in the mono, and a touch quieter. */
+.pdb .pdb-nav__link--data {
+  font-family: var(--mono);
+  font-weight: 500;
+  font-size: 11px;
+  color: var(--ink-soft);
+}
+
+/* ── Page headings ────────────────────────────────────────────────────────── */
+
+.pdb-page-head {
+  display: grid;
+  gap: 6px;
+}
+
+.pdb-title {
+  margin: 0;
+  font-size: clamp(22px, 3.4vw, 34px);
+  overflow-wrap: anywhere;
+}
+
+.pdb-title__id { color: var(--ink-soft); }
+
+.pdb-lede,
+.pdb-byline {
+  margin: 0;
+  font-size: 14px;
+  color: var(--ink-soft);
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  overflow-wrap: anywhere;
+}
+
+/* ── Deal cards: the latest day on the front page, and a day's own page ───── */
+
+.pdb-deals {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 12px;
+}
+
+.pdb-deal {
+  display: grid;
+  gap: 4px;
+  align-content: start;
+  min-width: 0;
+}
+
+.pdb .pdb-deal__link {
+  display: grid;
+  gap: 4px;
+  text-decoration: none;
+}
+
+.pdb-deal__name {
+  font-weight: 600;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.pdb .pdb-deal__link:hover .pdb-deal__name { text-decoration: underline; }
+
+.pdb-deal__by,
+.pdb-deal__meta {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-soft);
+  overflow-wrap: anywhere;
+}
+
+/* On a day's page each tier is a card of its own; on the front page they sit inside one. */
+.pdb-deals--day > .pdb-deal {
+  padding: 10px;
+  border: var(--edge) solid var(--ink);
+  border-radius: var(--radius);
+  background: var(--cream);
+  box-shadow: var(--drop) var(--drop) 0 var(--ink);
+}
+
+.pdb-deal__actions { margin-top: 4px; }
+
+.pdb .pdb-deal__actions .btn { text-decoration: none; }
+
+.pdb-more { justify-self: start; }
+
+/* ── Board thumbnails: a card's and a deal's ──────────────────────────────── */
+
+/*
+ * The thumbnail keeps its board's own ratio — ten wide by however deep the
+ * puzzle is — so a shallow board reads as a shallow board. Its box is capped
+ * rather than its ratio fixed, so a fourteen-row board does not make one card
+ * twice the height of its row.
+ */
+.pdb-card__board,
+.pdb-deal__board {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  height: 112px;
+  padding: 6px;
+  border: 1px solid var(--ink-line);
+  border-radius: var(--radius-sm);
+  background: var(--cream-shade);
+}
+
+.pdb-card__board > svg,
+.pdb-deal__board > svg {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+}
+
+/* ── The filters and the grid ─────────────────────────────────────────────── */
+
+.pdb-results {
+  display: grid;
+  gap: 10px;
+}
+
+.pdb-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 12px;
+}
+
+.pdb .pdb-card {
+  display: grid;
+  gap: 4px;
+  align-content: start;
+  padding: 8px;
+  border: var(--edge) solid var(--ink);
+  border-radius: var(--radius);
+  background: var(--cream);
+  box-shadow: 3px 3px 0 var(--ink);
+  text-decoration: none;
+  min-width: 0;
+  /* Presses travel along the shadow, as every card and button in the game does. */
+  transition: transform 70ms ease, box-shadow 70ms ease, background-color 90ms ease;
+}
+
+.pdb .pdb-card:hover { background: var(--sun); }
+
+.pdb .pdb-card:active {
+  transform: translate(3px, 3px);
+  box-shadow: 0 0 0 var(--ink);
+}
+
+.pdb-card__name {
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.pdb-card__id {
+  font-family: var(--mono);
+  font-weight: 500;
+  font-size: 11px;
+  color: var(--ink-soft);
+}
+
+.pdb-card__meta,
+.pdb-card__by {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-soft);
+  overflow-wrap: anywhere;
+}
+
+.pdb-empty { padding: 8px 0; }
+
+/* ── One puzzle ───────────────────────────────────────────────────────────── */
+
+/*
+ * Board on the left, a rail for the facts, the answer and the days on the
+ * right — the replay's controls were drawn for a rail about this wide in the
+ * game. One column below the breakpoint, board first: on a phone the board is
+ * what the reader came to look at.
+ */
+.pdb-puzzle__body {
+  display: grid;
+  gap: var(--gutter);
+  align-items: start;
+}
+
+@media (min-width: 780px) {
+  .pdb-puzzle__body { grid-template-columns: minmax(0, 1fr) 260px; }
+}
+
+.pdb-rail {
+  display: grid;
+  gap: var(--gutter);
+  align-content: start;
+  min-width: 0;
+}
+
+.pdb-board {
+  display: flex;
+  justify-content: center;
+  min-width: 0;
+}
+
+.pdb-board > canvas { display: block; }
+
+.pdb-pieces {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.pdb-rating {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pdb-answer__body {
+  display: grid;
+  gap: 8px;
+}
+
+.pdb .pdb-blueprint {
+  justify-self: start;
+  text-decoration: none;
+}
+
+.pdb-dealt__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+}
+
+/* ── The days ─────────────────────────────────────────────────────────────── */
+
+.pdb-day-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+}
+
+.pdb-day {
+  display: grid;
+  gap: 4px;
+  padding: 10px 0;
+  border-bottom: 1px dotted var(--ink-line);
+}
+
+.pdb-day:last-child { border-bottom: none; }
+
+.pdb-day__link {
+  font-family: var(--display);
+  font-weight: 800;
+  font-stretch: 108%;
+  font-size: 13px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.pdb-deal-lines {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.pdb-deal-line {
+  font-family: var(--mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+/* ── Pager, footer, and the pages that are not pages ──────────────────────── */
+
+.pdb-pager {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.pdb-pager__next { margin-left: auto; }
+
+.pdb-foot {
+  padding-top: 10px;
+  border-top: 1px dotted var(--ink-line);
+  overflow-wrap: anywhere;
+}
+
+.pdb-missing { max-width: 520px; }
+
+.pdb .pdb-missing .btn { text-decoration: none; }
+
+.pdb-noscript {
+  max-width: 520px;
+  margin: 18vh auto 0;
+  padding: var(--sheet-pad);
+}
+
+/* ── Difficulty pips, copied from sheet.css, where the game's credits strip draws them ── */
+
+.pips { display: flex; align-items: center; gap: 3px; }
+.pips__dot {
+  width: 9px;
+  height: 9px;
+  border: 1px solid var(--ink);
+  border-radius: 1px;
+  background: transparent;
+}
+.pips__dot--on { background: var(--ink); }
+.pips__plus { font-family: var(--mono); font-size: 10px; margin-left: 2px; }

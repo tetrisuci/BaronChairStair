@@ -55,6 +55,15 @@ copy of the engine to verify puzzles with.
 
 ## What "the service" actually is — **planned**
 
+**Now** — db.tetrisatuci.org is a separate, read-only process (`activity/puzzledb/`).
+That departs from the paragraph below for a *reader* of the archive, not for the service
+that owns it. Its reasons are a reader's: SQLite refuses its writes, its restarts never
+drop a duel, strangers' traffic stays off the event loop that verifies runs, and the game
+needs no routing by hostname. It serves what players are dealt, corrections applied;
+`/api/public` is unchanged and remains the published record. Its app is a self-contained
+`createSiteApp`, which could be mounted here later only by delegating on the Host header
+(`activity/puzzledb/README.md`).
+
 **It is the activity server.** Not a new process.
 
 That server already has the three things a puzzle service needs, and they are
