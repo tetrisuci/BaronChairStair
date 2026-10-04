@@ -24,11 +24,17 @@ says the puzzles go live at the activity's next restart. So neither half can be 
 by the other being older. Do the activity first anyway, out of habit: that is the half
 with an ordering rule inside it, and it is the half worth having your full attention.
 
-**One exception, for as long as it holds:** while the top entry of `changelog.json`
-announces https://db.tetrisatuci.org and that site is not yet up and verified on this
-box, do not restart the bot. A restart announces the newest release in every server the
-next time `/puzzle` runs there, and an announcement cannot be withdrawn. Bring the site
-up first — [`activity/puzzledb/DEPLOY.md`](activity/puzzledb/DEPLOY.md), rule 2.
+**One exception, for as long as it holds:** while `changelog.json` carries the
+`beta 0.12` entry, which announces https://db.tetrisatuci.org, and that site is not yet
+up and verified on this box, do not restart the bot. A restart announces every release a
+server has not been told about — not only the newest, so a later release on top changes
+nothing — the next time `/puzzle` runs there, and an announcement cannot be withdrawn.
+Bring the site up first — [`activity/puzzledb/DEPLOY.md`](activity/puzzledb/DEPLOY.md),
+rule 2. From `activity/`:
+
+```sh
+bun -e 'const r = (await Bun.file("../changelog.json").json()).releases; console.log(r.some((x) => x.version === "beta 0.12") ? "carries beta 0.12" : "no beta 0.12")'   # "carries beta 0.12": the site must be verified first
+```
 
 ---
 
@@ -148,7 +154,7 @@ python3 -m unittest discover -s client     # 173 run, 0 fail; bare python3 skips
 ### Restarting, and making a new command appear
 
 *Before any restart, the exception near the top of this file: if `changelog.json`
-announces db.tetrisatuci.org and the site is not yet up on this box, stop.*
+carries `beta 0.12` and db.tetrisatuci.org is not yet up on this box, stop.*
 
 Find how the bot actually runs on this box. Look, do not guess:
 

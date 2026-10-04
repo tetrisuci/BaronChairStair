@@ -38,6 +38,12 @@ const PAGE = join(SITE, "client/main.ts");
 const BUN = process.execPath;
 /** Long enough for a cold start that builds the whole dataset on a slow machine. */
 const START_MS = 20_000;
+/**
+ * A process test's own limit: above the two START_MS waits the longest of them
+ * makes. Bun stops a test after 5 s by default, which would end a slow cold start
+ * with a timeout that names nothing.
+ */
+const PROCESS_TEST_MS = 2 * START_MS + 5_000;
 
 const fixtures: GameFixture[] = [];
 const scratch: string[] = [];
@@ -205,7 +211,7 @@ describe("as a process", () => {
     expect(text(loaded.stderr)).toBe("");
     expect(text(loaded.stdout)).toBe("");
     expect(loaded.exitCode).toBe(0);
-  });
+  }, PROCESS_TEST_MS);
 
   test("starts as a process on 127.0.0.1 from a bare environment and answers /health", async () => {
     const game = gameFixture({ journal: "delete" });
@@ -232,7 +238,7 @@ describe("as a process", () => {
     }
     // Stopped by its own handler, which exits cleanly, rather than killed by the signal.
     expect(await site.exited).toBe(0);
-  });
+  }, PROCESS_TEST_MS);
 
   test("refuses to share its port with a second copy of itself", async () => {
     // `development: false` alone turns on SO_REUSEPORT in Bun 1.3, and then a
@@ -258,7 +264,7 @@ describe("as a process", () => {
       process.kill(first.pid, "SIGTERM");
     }
     expect(await first.exited).toBe(0);
-  });
+  }, PROCESS_TEST_MS);
 
   test("refuses to start with a game secret in its environment, naming the variable and not its value", () => {
     const value = "planted-session-secret-value";
@@ -274,14 +280,14 @@ describe("as a process", () => {
     expect(text(refused.stderr)).toContain("[puzzledb] not starting:");
     expect(said).toContain("SESSION_SECRET is set in this process's environment");
     expect(said).not.toContain(value);
-  });
+  }, PROCESS_TEST_MS);
 
   test("refuses to start without DATABASE_PATH", () => {
     const refused = Bun.spawnSync([BUN, MAIN], { cwd: emptyDirectory(), env: bareEnvironment(), timeout: START_MS });
 
     expect(refused.exitCode).toBe(1);
     expect(text(refused.stderr)).toContain("DATABASE_PATH is not set");
-  });
+  }, PROCESS_TEST_MS);
 });
 
 // ── The source ────────────────────────────────────────────────────────────────

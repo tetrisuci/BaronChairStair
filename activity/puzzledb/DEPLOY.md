@@ -64,7 +64,9 @@ that line.
 the release note announcing it, `beta 0.12`, at the top of `changelog.json`. The bot
 reads that file once, when it starts, so its **next restart, for any reason, by
 anyone** announces the note in every server at the next `/puzzle` — and an
-announcement can never be withdrawn. The bot reads it from the checkout its code is
+announcement can never be withdrawn. It announces every release a server has not
+been told about, not only the newest, so this holds for as long as the file carries
+`beta 0.12`, whatever lands on top of it. The bot reads it from the checkout its code is
 in — `pgrep -af discord_bot.py` shows its command, and `ls -l /proc/<its PID>/cwd`
 where that command starts — and when that is this checkout, the activity's pull is
 all it takes. So:
@@ -77,10 +79,10 @@ all it takes. So:
   the checkout back before you leave the box (*Rolling back*): the note goes with
   it, and nothing is announced.
 
-What the bot's next restart would announce, from `activity/`:
+Whether the bot's next restart would announce the site, from `activity/`:
 
 ```sh
-bun -e 'console.log((await Bun.file("../changelog.json").json()).releases[0].version)'   # beta 0.12 once the site's commit is here
+bun -e 'const r = (await Bun.file("../changelog.json").json()).releases; console.log(r.some((x) => x.version === "beta 0.12") ? "carries beta 0.12" : "no beta 0.12")'   # "carries beta 0.12" once the site's commit is here
 ```
 
 ---
@@ -146,6 +148,17 @@ Either way, then:
 ```sh
 bun run build:puzzledb    # writes puzzledb/dist/ and nothing else
 ```
+
+**If the site is already running, restart it now**, so the server matches the page
+it serves: the build is live the moment it finishes, but the server keeps running
+the code it started with.
+
+```sh
+pm2 restart puzzle-db                          # under systemd: sudo systemctl restart puzzle-db
+pm2 logs puzzle-db --lines 5 --nostream        # a fresh "puzzledb —" line, and no "not starting"
+```
+
+On a first deploy there is nothing to restart yet; carry on below.
 
 **Skips are expected.** `data/solutions.json` holds the answer keys and is not in
 git, so a box without it skips the tests that need one. `0 fail` is the check. A
@@ -548,10 +561,10 @@ with no error anywhere. So roll the activity back by [`../DEPLOY.md`](../DEPLOY.
 *Before you start* — and then check that the note went with it:
 
 ```sh
-bun -e 'console.log((await Bun.file("../changelog.json").json()).releases[0].version)'   # anything but beta 0.12
+bun -e 'const r = (await Bun.file("../changelog.json").json()).releases; console.log(r.some((x) => x.version === "beta 0.12") ? "carries beta 0.12" : "no beta 0.12")'   # must print "no beta 0.12"
 ```
 
-Still `beta 0.12` means the commit you noted already carried the note: the site's
+Still `carries beta 0.12` means the commit you noted already carried the note: the site's
 commit reached this box before you did. Report that, and that the bot must not
 restart until the site is up.
 
@@ -596,7 +609,8 @@ reading while the files move.
 - **The site lists more puzzles than `/api/public`.** That route is the published
   record only, uncorrected; the site lists what players are dealt.
 - **An accepted or corrected puzzle shows here before the game serves it.** The site
-  shows the list the game will deal from its next restart.
+  shows the list the game will deal after its next restart, or after the next
+  `/archive sync` reloads it (a changed board still waits for the restart).
 - **`[puzzle] …` lines in the site's log.** The shared puzzle loader's own warnings,
   the same ones the game prints at boot, said once per rebuild.
 - **`[puzzledb] the newest pinned day is <D> and today is <T>: is DATABASE_PATH the

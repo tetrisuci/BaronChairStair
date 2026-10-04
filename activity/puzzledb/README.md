@@ -218,7 +218,8 @@ Two consequences look odd until you know them:
 
 - **It shows the game's next-boot list.** An accepted puzzle, a correction or a
   pulled `puzzles.json` appears here at the next rebuild, while the game itself
-  serves it only from its next restart.
+  serves it from its next restart, or sooner when Discord's `/archive sync` reloads
+  it (a puzzle whose board changed still waits for the restart).
 - **Yesterday appears once something has pinned today.** The game records a day the
   first time anything asks for it — a player, or the bot's recap, which asks every
   five minutes when `PUZZLE_RECAP=on`. Until then the newest finished day is the one

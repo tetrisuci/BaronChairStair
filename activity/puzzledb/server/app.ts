@@ -206,8 +206,9 @@ function addDataRoutes(app: Hono, deps: SiteDependencies): void {
  * One of the dataset's two downloads, or a bodyless 304 when the caller
  * already holds exactly these bytes.
  *
- * The tag is the bytes' own hash, so it changes exactly when they do — a
- * rebuild that came out the same keeps it.
+ * The tag is the bytes' own hash, so it changes exactly when they do. Every
+ * build stamps `about.built_at` into both, so each rebuild — a restart
+ * included — is a new tag; between rebuilds the same bytes keep it.
  */
 function download(c: Context, bytes: Uint8Array, headers: Readonly<Record<string, string>>): Response {
   const tag = etagOf(bytes);
