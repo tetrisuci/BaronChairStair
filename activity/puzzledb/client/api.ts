@@ -2,9 +2,10 @@
  * The page's one request: the whole archive, from `/puzzles.json`.
  *
  * Same origin, no credentials, no prefix and no token. The site's server
- * builds the file on every change to what players are dealt and serves it with
- * a minute of caching, so the page asks once per visit and filters, routes and
- * steps answers from then on without the network.
+ * builds the file on every change to what players are dealt and serves it
+ * revalidated on every use — no-cache with an ETag, so an unchanged archive
+ * costs a bodyless 304 — and the page asks once per visit, then filters,
+ * routes and steps answers from then on without the network.
  *
  * A failure becomes an `ApiError`, the type the game and the review tool
  * already throw, so a failed request reads the same wherever it happened: a

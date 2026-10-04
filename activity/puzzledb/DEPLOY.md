@@ -6,13 +6,21 @@ anyone. Every block runs as given, from `activity/`, once `/path/to/BaronChairSt
 and anything in `<angle brackets>` are filled in.
 
 **This file covers the site only.** The game is [`../DEPLOY.md`](../DEPLOY.md) and
-the bot is the repository root's [`DEPLOY.md`](../../DEPLOY.md). The site deploys and
-restarts without touching either, and shipping it needs **no game restart**. What
-the site is, and why, is in [`README.md`](README.md).
+the bot is the repository root's [`DEPLOY.md`](../../DEPLOY.md). What the site is,
+and why, is in [`README.md`](README.md).
+
+**The site shares its checkout with the game and the bot, so a pull is an activity
+deploy** whenever it brings anything for the activity: the activity's guide does it,
+from the pull to its verification, and the site's own steps follow (rule 1, below).
+The commit that brings this site does bring the activity something. It changes two
+of the game's own files, `server/limits.ts` and `server/public-routes.ts`, though
+not what the game does. The site's own steps restart neither the game nor the bot.
+The only ones that can touch the game are a cloudflared restart and a Caddy reload,
+both for the hostname, and each says so where it comes.
 
 | | |
 |---|---|
-| **pm2 name** | `puzzle-db` |
+| **Its name** | `puzzle-db`, as a pm2 app or a systemd unit |
 | **Runs as** | `bun --env-file=<abs>/activity/puzzledb/.env puzzledb/server/main.ts`, from `activity/`, as the game's OS user |
 | **Listens on** | `127.0.0.1:3002`, loopback only (`PUZZLEDB_PORT`) |
 | **Settings** | `activity/puzzledb/.env` — its own file, never `activity/.env`, and nothing in it is secret |
@@ -25,37 +33,54 @@ the site is, and why, is in [`README.md`](README.md).
 
 ## Two ordering rules
 
-**1. The game's database must already be on this checkout's schema.** The site reads
-it with the game's own readers, from this checkout. On a box whose game is older than
-the checkout, the site serves nothing and says why, once:
+**1. The activity's deploy comes first, because the pull is the game's.** The site
+runs from the game's checkout (*Before you start* says why), and that checkout holds
+the bot's code as well, so a pull moves all three. When it brings the activity
+anything, it is an activity deploy, and [`../DEPLOY.md`](../DEPLOY.md) does it, from
+its *Before you start* through its *Verification*. A bare pull would leave the game
+to boot the new server against its old page at its next restart, whoever causes it,
+with nothing checked and no error anywhere. *Checks, then the build* shows how to
+tell, and the site's own steps follow that deploy.
+
+On the commit that brings the site, the game's `server/limits.ts` and
+`server/public-routes.ts` take the rate limiter and the Blueprint link from two new
+modules the site shares, `server/rate-limit.ts` and `shared/blueprint/viewer.ts`.
+The game behaves exactly as before, and it is deployed all the same.
+
+A database the game has not migrated yet is the one gap the site catches by itself.
+It reads the database with the game's own readers, from this checkout, so when a
+table or column they need is missing it serves nothing and says why, once:
 
 ```
 [puzzledb] the database is older than this checkout (no such column: …). The game migrates it when it starts on this code: deploy the game first (activity/DEPLOY.md) (nothing to serve yet; retrying every 30 s)
 ```
 
-Deploy the game first. The site looks again every 30 seconds and picks the database
-up by itself once the game has migrated it; nothing needs restarting.
+The site looks again every 30 seconds and picks the database up by itself once the
+game has migrated it; nothing needs restarting. A game that is merely older on the
+same schema says nothing at all, which is why this is a rule and not an answer to
+that line.
 
 **2. The site first, verified — then the bot.** The commit that ships the site puts
-the release note announcing it at the top of `changelog.json`. The bot reads that
-file once, when it starts, so its **next restart, for any reason, by anyone**
-announces the note in every server at the next `/puzzle` — and an announcement can
-never be withdrawn. The bot reads it from the checkout its code is in —
-`pgrep -af discord_bot.py` shows its command, and `ls -l /proc/<its PID>/cwd` where
-that command starts — and when that is this checkout, a `git pull` is all it takes.
-So:
+the release note announcing it, `beta 0.12`, at the top of `changelog.json`. The bot
+reads that file once, when it starts, so its **next restart, for any reason, by
+anyone** announces the note in every server at the next `/puzzle` — and an
+announcement can never be withdrawn. The bot reads it from the checkout its code is
+in — `pgrep -af discord_bot.py` shows its command, and `ls -l /proc/<its PID>/cwd`
+where that command starts — and when that is this checkout, the activity's pull is
+all it takes. So:
 
-- pull only when you can bring the site up in the same sitting;
-- verify it publicly (*Verify it publicly*, below) before the bot restarts for any
-  reason;
-- if you cannot finish, take the site down and `git checkout <the commit you noted>`
-  before you leave the box (*Rolling back*): the note goes with it, and nothing is
-  announced.
+- start the activity's deploy only when you can bring the site up in the same
+  sitting;
+- verify the site publicly (*Verify it publicly*, below) before the bot restarts for
+  any reason;
+- if you cannot finish, take the site down and have the activity's own rollback put
+  the checkout back before you leave the box (*Rolling back*): the note goes with
+  it, and nothing is announced.
 
 What the bot's next restart would announce, from `activity/`:
 
 ```sh
-bun -e 'console.log((await Bun.file("../changelog.json").json()).releases[0].version)'
+bun -e 'console.log((await Bun.file("../changelog.json").json()).releases[0].version)'   # beta 0.12 once the site's commit is here
 ```
 
 ---
@@ -66,7 +91,7 @@ These read state and settings, and print no secrets.
 
 ```sh
 cd /path/to/BaronChairStair/activity
-git log --oneline -1          # note this — it is your rollback target
+git log --oneline -1          # note this before any pull — the rollback target, the activity's too
 bun --version
 bun -e 'import {Database} from "bun:sqlite"; console.log(typeof new Database(":memory:").serialize, typeof Map.groupBy)'   # function function
 pm2 list                      # every app by name. Never `pm2 restart all` or `pm2 stop all`: DIAYN shares this box
@@ -93,11 +118,32 @@ then cannot write.
 
 ## Checks, then the build
 
+First, what a pull would bring the activity besides the site (rule 1):
+
+```sh
+git fetch
+git diff --stat HEAD @{upstream} -- . ':!puzzledb' ':!tests/puzzledb-*'
+```
+
+**Anything listed makes the pull an activity deploy**, and on the commit that
+brings the site it lists the game's files and more. Deploy the activity by
+[`../DEPLOY.md`](../DEPLOY.md), from its *Before you start* through its
+*Verification*, then come back here. That deploy pulls, installs, type-checks and
+runs `bun test`, the site's tests included, so the build below is all that is left.
+
+**Nothing listed**, as for a later change to the site alone, and the pull is the
+site's:
+
 ```sh
 git pull                  # or however this box gets code
 bun install
 bunx tsc --noEmit         # must print nothing
 bun test                  # 0 fail. Skips are expected — see below
+```
+
+Either way, then:
+
+```sh
 bun run build:puzzledb    # writes puzzledb/dist/ and nothing else
 ```
 
@@ -165,6 +211,24 @@ Two things about pm2 decide the shape of this step, and both fail quietly:
   line included — and die with `node: …/puzzledb/.env: not found` before pm2 has
   started anything. So the arguments go in a file.
 
+**First, check that this user's pm2 comes back after a reboot.** `pm2 save`, below,
+only writes the list down. What reads it back at boot is the systemd unit that
+`pm2 startup` installs for a user, `pm2-<user>`, which runs `pm2 resurrect`. As the
+game's user:
+
+```sh
+systemctl is-enabled "pm2-$(id -un)"   # must print: enabled
+```
+
+Anything else, and look for the unit under another name before deciding there is
+none: `systemctl list-unit-files 'pm2*'` lists them, and
+`systemctl cat <that unit> | grep -E '^(User|Environment=PM2_HOME)='` says whose list
+one restores. If this user has one, carry on, and never run `pm2 startup` again: the
+root [`DEPLOY.md`](../../DEPLOY.md) says so. Nor is it a way to find out, since run
+as root it writes and enables a unit on the spot, without looking for one already
+there. If this user has none, a site started under its pm2 is gone after the next
+reboot and nothing says so: use *Or under systemd*, below, instead.
+
 From `activity/`, as the game's user:
 
 ```sh
@@ -196,9 +260,9 @@ ss -ltnp | grep ':3002'                       # 127.0.0.1:3002 — never 0.0.0.0
 pm2 logs puzzle-db --lines 20 --nostream      # the puzzledb — line, and no "not starting"
 ```
 
-Then `pm2 list`, and `pm2 save` only once it shows every app as you want it kept:
-`pm2 save` records all of them, DIAYN's included. Never `pkill -f`; stop a stray
-process by its exact PID.
+Then `pm2 list`, but hold `pm2 save` until the loopback check below has passed: a
+saved app is what pm2 brings back at the next boot, and a site that fails its checks
+should not come back. Never `pkill -f`; stop a stray process by its exact PID.
 
 ### Or under systemd
 
@@ -228,7 +292,8 @@ journalctl -u puzzle-db -n 20 --no-pager
 `command -v bun`, run as the game's user, gives the path for `ExecStart`. No
 `EnvironmentFile=`: the env file is Bun's to read, and one pointing at
 `activity/.env` would hand the site the game's secrets, which it refuses to start
-with.
+with. Every later step that stops, starts, restarts or reads the site through pm2
+gives the `systemctl` or `journalctl` form beside it.
 
 ---
 
@@ -254,7 +319,8 @@ curl -s -o /dev/null -w '%{http_code}\n' "127.0.0.1:3002/day/$TODAY"    # must p
 ```
 
 History must end **before** today, and today's page must be a `404`. If either is
-wrong, `pm2 stop puzzle-db` and report it. Do not put the site in front of anybody.
+wrong, `pm2 stop puzzle-db` (under systemd, `sudo systemctl stop puzzle-db`) and
+report it. Do not put the site in front of anybody.
 
 **The download** holds three tables and nothing else:
 
@@ -263,6 +329,9 @@ DL=$(mktemp -d)/tetrisatuci-puzzles.sqlite
 curl -s 127.0.0.1:3002/puzzles.sqlite -o "$DL"
 bun -e 'import {Database} from "bun:sqlite"; const db = new Database(process.argv[1], {readonly: true}); console.log(db.query("SELECT name FROM sqlite_master WHERE type = ?1 ORDER BY name").all("table").map((t) => t.name).join(" "))' "$DL"   # about day_puzzles puzzles
 ```
+
+**Only now, under pm2, `pm2 save`**, and only once `pm2 list` shows every app as
+you want it kept: `pm2 save` records all of them, DIAYN's included.
 
 ---
 
@@ -273,13 +342,37 @@ run on this box: a cloudflared connector on another machine cannot reach it. Wha
 does this box have?
 
 ```sh
-ps -o args= -C cloudflared | sed -E 's/(--token[ =])[^ ]+/\1<redacted>/'
-grep -ls '^ingress:' /etc/cloudflared/config.yml /etc/cloudflared/config.yaml ~/.cloudflared/config.yml ~/.cloudflared/config.yaml 2>/dev/null
+ps -ww -o user=,pid=,args= -C cloudflared | sed -E 's/(--token[ =])[^ ]+/\1<redacted>/'
+sudo grep -ls '^ingress:' ~<the user it runs as>/{.cloudflared,.cloudflare-warp,cloudflare-warp}/config.y{,a}ml {/etc,/usr/local/etc}/cloudflared/config.y{,a}ml 2>/dev/null
 ```
 
-A `--token` on the first line, or a `tunnel run` with no file from the second, is a
-**remotely managed** tunnel: use (a). A file from the second line is a **locally
-managed** one: use (b). No cloudflared at all: (c).
+The first line is each connector's own command line. The second lists the files
+cloudflared reads its routes from when it is given no `--config`, in the order it
+looks, and only those that have routes; `~` there is the home of the user it runs
+as, not yours. What each signal means:
+
+- **`--token` or `--token-file` on the first line** is how a **remotely managed**
+  tunnel runs: its routes live in Cloudflare, not on this box. Use (a).
+- **`--config <file>` on the first line** names the file a **locally managed**
+  tunnel reads its routes from, if that file has an `ingress:` section. Use (b),
+  with that file.
+- **Neither flag, and a file from the second line**: a locally managed tunnel,
+  reading the first file listed. Use (b), with that file.
+- **No cloudflared at all**: (c).
+
+**Anything else, and do not guess.** A token can also reach cloudflared through its
+environment, which the first line cannot show. This prints `token` if it did, which
+is (a), and never the token itself:
+
+```sh
+sudo grep -qzE '^TUNNEL_TOKEN(_FILE)?=' /proc/<its PID>/environ && echo token
+```
+
+If it prints nothing, open this box's tunnel in Cloudflare's Zero Trust dashboard,
+which knows which kind it is. A remotely managed tunnel lets you add a public
+hostname: (a). A locally managed one offers to migrate instead: that is (b) with a
+file none of this found, so stop and report it. **Never migrate the game's
+tunnel**: that moves the game's own routes off this box and into the dashboard.
 
 **(a) A remotely managed tunnel.** In Cloudflare's Zero Trust dashboard, open this
 box's tunnel and add a public hostname: subdomain `db`, domain `tetrisatuci.org`,
@@ -288,9 +381,9 @@ sends the route to the connector itself — nothing restarts and nothing on the 
 changes. The tetrisatuci.org zone must be on the same Cloudflare account as the
 tunnel.
 
-**(b) A locally managed tunnel.** Add this rule to the file the second line printed,
-**above** the last, catch-all rule (`- service: http_status:404` or the like), and
-leave the game's rule as it is:
+**(b) A locally managed tunnel.** Add this rule to that file, **above** the last,
+catch-all rule (`- service: http_status:404` or the like), and leave the game's rule
+as it is:
 
 ```yaml
   - hostname: db.tetrisatuci.org
@@ -338,7 +431,9 @@ location / {
 ```
 
 Then `sudo caddy validate --config /etc/caddy/Caddyfile && sudo systemctl reload caddy`,
-or `sudo nginx -t && sudo systemctl reload nginx`. Behind Cloudflare's proxy (an
+or `sudo nginx -t && sudo systemctl reload nginx`. A Caddy reload closes every
+WebSocket it proxies, so if the game is behind the same Caddy, reload it **at a
+quiet hour**: the game's duels go with them. Behind Cloudflare's proxy (an
 orange-cloud record) these lines would count every visitor by a Cloudflare address;
 use (a) or (b) there.
 
@@ -363,8 +458,8 @@ the whole time:
 
 - search for a title, open a puzzle, press **Show the answer** and step through it
   with the arrow keys, then open **Days** and one day;
-- the console must show **no Content-Security-Policy errors**. One 404 for
-  `/favicon.ico` is expected: there is no icon yet.
+- the console must show **no Content-Security-Policy errors**, and no 404s: the
+  page's icon is `/assets/favicon-<hash>.svg`, so nothing asks for `/favicon.ico`.
 
 Paste `https://db.tetrisatuci.org/puzzle/1?v=1` into a private Discord channel. It
 should unfurl with the puzzle's title and description; the `?v=1` gets past anything
@@ -394,8 +489,8 @@ neither. Once the activity is verified ([`../DEPLOY.md`](../DEPLOY.md)):
 ```sh
 cd /path/to/BaronChairStair/activity
 bun run build:puzzledb
-pm2 restart puzzle-db
-pm2 logs puzzle-db --lines 5 --nostream    # a fresh puzzledb — line
+pm2 restart puzzle-db                      # under systemd: sudo systemctl restart puzzle-db
+pm2 logs puzzle-db --lines 5 --nostream    # a fresh puzzledb — line; under systemd: journalctl -u puzzle-db -n 5 --no-pager
 ```
 
 Restarting it never touches the game. To tell whether a specific change reached the
@@ -413,29 +508,60 @@ Data needs none of this. An accepted puzzle, a correction, a publish or a rebuil
 
 ## Rolling back, or taking it down
 
-**Taking it down** never affects the game: `pm2 stop puzzle-db`, then remove the
-hostname — the dashboard route, the ingress rule (and a cloudflared restart), or the
-proxy block. For good: `pm2 delete puzzle-db`, check `pm2 list`, then `pm2 save`.
+**Taking it down** is `pm2 stop puzzle-db` (under systemd,
+`sudo systemctl stop puzzle-db`), and that step never affects the game. With nothing
+listening on 3002, db.tetrisatuci.org answers only `502`, so the hostname does no
+harm left in place while the site is down. Remove it when you want it gone, at a
+quiet hour wherever that touches the game:
 
-**This first deploy failed verification**, and the bot has not restarted: take the
-site down and put the checkout back, so the release note leaves with it.
+- **(a) the dashboard route**: at any time. Nothing restarts.
+- **(b) the ingress rule**: cloudflared reads its rules only when it starts, and
+  that restart drops every connection through the tunnel, the game's duels and open
+  activities included. Leave the rule until a quiet hour, and take it out with that
+  restart.
+- **(c) the proxy block**: with the proxy's next reload, at a quiet hour too if the
+  game is behind the same Caddy, whose reload closes the game's duels.
+
+For good: `pm2 delete puzzle-db`, check `pm2 list`, then `pm2 save`
+(`pm2 save --force` if puzzle-db was this user's only app: a plain `pm2 save` will
+not write an empty list). Under systemd: `sudo systemctl disable --now puzzle-db`.
+
+**This first deploy failed verification**, and the bot has not restarted. The site's
+own rollback is taking it down: the process, and the hostname if you want it gone,
+as above.
 
 ```sh
 pm2 delete puzzle-db
-cd /path/to/BaronChairStair/activity
-git checkout <the commit you noted>
+pm2 list    # every other app as you found it
+pm2 save    # or the next reboot brings puzzle-db back; --force if the list is now empty
 ```
 
-The game keeps running throughout: it runs the code it started with, which is the
-code you just checked out.
+Under systemd, `sudo systemctl disable --now puzzle-db` instead.
+
+That leaves the checkout where the activity's deploy put it, release note and all,
+so the bot's next restart would announce a site that is down. Putting the checkout
+back is the **activity's** rollback, never a step of the site's: the game runs the
+pulled code and serves the page built from it, and a bare `git checkout` would move
+neither, leaving the game's next restart to boot the old server against the new page
+with no error anywhere. So roll the activity back by [`../DEPLOY.md`](../DEPLOY.md),
+*Rolling back* — checkout, install, build and restart, to the commit you noted in
+*Before you start* — and then check that the note went with it:
+
+```sh
+bun -e 'console.log((await Bun.file("../changelog.json").json()).releases[0].version)'   # anything but beta 0.12
+```
+
+Still `beta 0.12` means the commit you noted already carried the note: the site's
+commit reached this box before you did. Report that, and that the bot must not
+restart until the site is up.
 
 **A later deploy broke the site.** Rolling the checkout back moves the game's code
-too, so do it only together with the activity's own rollback (`activity/DEPLOY.md`,
-*Rolling back*), to a commit that has the site in it, and then:
+too, so it is the activity's rollback (`activity/DEPLOY.md`, *Rolling back*), never
+the site's. Once the activity is back on a commit that has the site in it:
 
 ```sh
 bun install && bun run build:puzzledb
-pm2 restart puzzle-db
+pm2 restart puzzle-db                       # under systemd: sudo systemctl restart puzzle-db
 ```
 
 When only the site is wrong, take it down and report it instead.
@@ -447,9 +573,9 @@ When only the site is wrong, take it down and report it instead.
 Stop the site first and start it last:
 
 ```sh
-pm2 stop puzzle-db
+pm2 stop puzzle-db        # under systemd: sudo systemctl stop puzzle-db
 # ... restore the game's database and start the game ...
-pm2 start puzzle-db
+pm2 start puzzle-db       # under systemd: sudo systemctl start puzzle-db
 ```
 
 A reader holds the database's `-wal` and `-shm` files open, and files swapped under
@@ -498,10 +624,13 @@ reading while the files move.
 - **`[puzzledb] this process runs as uid <X>, but <path> belongs to uid <Y>`.** The
   site runs as the wrong user. Stop it and start it as the game's: a `-wal` or
   `-shm` file made by the wrong user can stop the game writing.
-- **`error: Failed to start server. Is port 3002 in use?`** Something already
-  listens on 3002, usually a second copy of the site. `ss -ltnp | grep ':3002'` names
-  it and `pgrep -af puzzledb/server/main.ts` lists copies; stop the extra one by its
-  pm2 name or its exact PID. Never `pkill -f`.
+- **`error: Failed to start server. Is port 3002 in use?`**, with
+  `code: "EADDRINUSE"` below it. Something already listens on 3002, usually a
+  second copy of the site, and this copy exits 1 rather than share the port. A
+  `now serving` line just above the error is that copy's own first build, which
+  runs before it asks for the port. `ss -ltnp | grep ':3002'` names the holder and
+  `pgrep -af puzzledb/server/main.ts` lists copies; stop the extra one by its pm2
+  name, its unit or its exact PID. Never `pkill -f`.
 - **pm2 says `puzzle-db` is online, but nothing listens on 3002 and its log is
   empty.** pm2 was given Bun as an interpreter, which pm2 6 and later wrap in a
   loader of their own. `pm2 delete puzzle-db`, then start it from the ecosystem file

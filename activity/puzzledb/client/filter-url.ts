@@ -4,9 +4,9 @@
  * A filtered list is something people send each other — "every unrated puzzle
  * by baron", "the short ones, hardest first" — so the filter lives in the
  * query string, where a copied link carries it and a refresh keeps it. It is
- * written with `history.replaceState` on every change rather than pushed, so
- * typing a search does not leave a history entry per keystroke between the
- * reader and the page they came from.
+ * written with `history.replaceState` once the typing pauses (`router.ts`)
+ * rather than pushed, so typing a search does not leave a history entry per
+ * keystroke between the reader and the page they came from.
  *
  * **Read back through the game's own sanitizer.** A query string is typed by
  * anyone, and `sanitizeArchiveFilter` already exists for exactly that: it

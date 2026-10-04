@@ -24,6 +24,12 @@ says the puzzles go live at the activity's next restart. So neither half can be 
 by the other being older. Do the activity first anyway, out of habit: that is the half
 with an ordering rule inside it, and it is the half worth having your full attention.
 
+**One exception, for as long as it holds:** while the top entry of `changelog.json`
+announces https://db.tetrisatuci.org and that site is not yet up and verified on this
+box, do not restart the bot. A restart announces the newest release in every server the
+next time `/puzzle` runs there, and an announcement cannot be withdrawn. Bring the site
+up first — [`activity/puzzledb/DEPLOY.md`](activity/puzzledb/DEPLOY.md), rule 2.
+
 ---
 
 ## Two directories, and one that lies to you
@@ -140,6 +146,9 @@ python3 -m unittest discover -s client     # 173 run, 0 fail; bare python3 skips
 ```
 
 ### Restarting, and making a new command appear
+
+*Before any restart, the exception near the top of this file: if `changelog.json`
+announces db.tetrisatuci.org and the site is not yet up on this box, stop.*
 
 Find how the bot actually runs on this box. Look, do not guess:
 

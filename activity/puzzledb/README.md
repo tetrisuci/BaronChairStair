@@ -12,8 +12,10 @@ folding it in:
 - **It is read-only by construction.** It opens the game's database with SQLite's
   own read-only flag, so a write is refused by SQLite rather than by a rule
   somebody has to remember.
-- **Its deploys never touch the game.** Restarting the game drops every live duel;
-  restarting this drops nothing but its own page for a second.
+- **Its own builds and restarts never touch the game.** Restarting the game drops
+  every live duel; restarting this drops nothing but its own page for a second. Its
+  code does live in the game's checkout, though, so a pull that brings the game
+  anything is the game's deploy first ([`DEPLOY.md`](DEPLOY.md), rule 1).
 - **Strangers' traffic stays off the event loop that verifies runs.**
 - **The game needs no routing by hostname.** A second hostname pointed at the
   game's port would also serve the game, `/review`, every `/api` route and the duel
@@ -35,7 +37,7 @@ promises, and why it is shaped the way it is.
 | `/puzzles.json` | Everything above as one document (shape below) |
 | `/puzzles.sqlite` | The same rows as a SQLite file, saved as `tetrisatuci-puzzles.sqlite` |
 | `/health` | `{"ok":true,"puzzles":…,"days":…,"throughDay":…,"builtAt":…,"checkedAt":…}`, or `503 {"ok":false,"checkedAt":…}` before the first build. Counts and times only, never an error's text |
-| `/assets/*`, `/fonts/*` | The built page's own files |
+| `/assets/*`, `/fonts/*` | The built page's own files: its script, stylesheet and icon, and its fonts with their OFL licence texts and README, which the OFL asks to travel with the fonts |
 
 **Everything else is a 404, and that is a decision.** Every miss gets the same 404
 document, byte for byte: a puzzle that is unpublished, written by a player, or never
@@ -43,7 +45,11 @@ existed, and a day that is today, in the future or before history, are
 indistinguishable, so nobody can ask the server what it is holding back. There is no
 catch-all static serving — Hono's static handler serves dotfiles from its root — so
 `/.env`, `/index.html` and the build's `petr.png` are as missing as anything else.
-Only GET and HEAD are answered; any other method gets `Not found`.
+A name no file can have under `/assets/` or `/fonts/` — an encoded NUL, or one past
+the system's length limit — is a miss too rather than a fault, and so is a page
+asked for under a `Host` header no URL can be made of: the same document, and
+nothing in the log. Only GET and HEAD are answered, a HEAD with the
+`Content-Length` its GET would send; any other method gets `Not found`.
 
 **Each page has one address.** `/puzzle/12`, never `/puzzle/012` or `/puzzle/12/`.
 The server writes each page's `<title>`, description and Open Graph tags into the
@@ -57,12 +63,15 @@ and `sort=difficulty`, `pieces` or `title`.
 **On every response:** a Content-Security-Policy that allows the page's own scripts,
 styles, fonts and images and nothing else (`default-src 'none'`, no inline script,
 `frame-ancestors 'none'`), `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`
-and `Referrer-Policy: strict-origin-when-cross-origin`. The data is cached for a
-minute, hashed assets for a year, fonts for a week, and documents are revalidated
-every time.
+and `Referrer-Policy: strict-origin-when-cross-origin`. Documents and both downloads
+are revalidated every time (`Cache-Control: no-cache`). Each download carries an
+`ETag` of its own bytes, so asking again costs a `304` with no body until those
+bytes change. Hashed assets are cached for a year, fonts for a week.
 
 **Limits:** 600 requests a minute per caller across everything, and 30 downloads of
-the SQLite file. Past either, `429 {"error":"Slow down a moment."}` with
+the SQLite file. `/puzzles.json` is as large and counts only against the first: the
+page fetches it once a visit, and a cap of thirty would lock out a whole campus
+arriving from one address. Past either, `429 {"error":"Slow down a moment."}` with
 `Retry-After`. A caller is the address the proxy in front names — `Cf-Connecting-Ip`,
 else the last `X-Forwarded-For` entry — always, because the process listens on
 127.0.0.1 only and every peer it can see is that proxy. There is no CORS:
@@ -107,7 +116,7 @@ Both are public and both are the archive, but they answer different questions.
 | Blueprint codes | A puzzle's own; else, for a club puzzle, the tracked archive's for the same board, queue, hold and target — only when that row's answer is the one served | The row's own |
 | `addedOn`, `solveCount` | Left out: live values exist only for published rows | Included |
 | Tier now, piece count, daily history | Included | Not included |
-| Freshness | Rebuilt within about 30 s of a change; cached 60 s | Read per request; cached 300 s |
+| Freshness | Rebuilt within about 30 s of a change; revalidated on every use (`ETag`, `304`) | Read per request; cached 300 s |
 | CORS | None | `*`, GET only |
 
 On a deploy box, which has no `data/solutions.json`, the tracked archive gives
