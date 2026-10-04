@@ -14,10 +14,16 @@
  *
  * - **No catch-all static serving and no single-page fallback.** Hono's
  *   static handler serves dotfiles inside its root — a probe answered `/.env`
- *   with 200 — and the build holds more than the page: `petr.png`, the fonts'
- *   README. So static files are served from two prefixes the page actually
- *   asks for, and `/.env`, `/petr.png` and `/index.html` are as missing as
- *   any path that never existed.
+ *   with 200 — and the build holds more than the page: `petr.png` and the
+ *   template itself. So static files are served from the two prefixes the
+ *   page actually asks for, and `/.env`, `/petr.png` and `/index.html` are as
+ *   missing as any path that never existed. `/fonts/*` does serve the fonts'
+ *   licence texts and README along with the fonts, on purpose: the OFL asks
+ *   that the licence travel with the font files.
+ * - **A path no file can have is a miss, not a fault.** `Bun.file` throws on
+ *   a NUL byte or a path past the system's limit rather than finding nothing,
+ *   and Hono's static handler does not catch it, so without a guard an
+ *   encoded NUL would answer 500 and write a stack trace to the log.
  * - **No CORS.** The page is same-origin and no other consumer is named;
  *   `/api/public` on the game server stays the club's cross-origin contract.
  * - **A miss says nothing about why.** A puzzle that is unpublished, written
@@ -58,7 +64,15 @@ import type { Dataset, RefreshStatus } from "./types";
 
 /** Requests a caller may make a minute, across everything: ample for reading, nothing for a loop. */
 export const PER_MINUTE = 600;
-/** Downloads of the whole database a caller may make a minute: the one heavy answer here. */
+/**
+ * Downloads of the whole database a caller may make a minute: the one heavy
+ * answer here that nobody needs twice.
+ *
+ * `/puzzles.json` is as large, and deliberately not under this budget: the
+ * page fetches it once per visit, so a cap of thirty would lock out a whole
+ * campus arriving from one NAT address. It answers a revalidation with a
+ * bodyless 304 instead, and stays under the per-minute budget like everything.
+ */
 export const DOWNLOADS_PER_MINUTE = 30;
 
 /**
@@ -98,8 +112,12 @@ const NO_STORE = Object.freeze({ "Cache-Control": "no-store" });
 /** Hashed file names change with their content, so a year is safe. Fonts keep their names. */
 const ASSET_CACHE = "public, max-age=31536000, immutable";
 const FONT_CACHE = "public, max-age=604800";
-/** A minute old at most: the refresher looks every thirty seconds. */
-const DATA_CACHE = "public, max-age=60";
+/**
+ * Revalidated on every use, never cached blind. Documents are always fresh, so
+ * a page holding even a minute-old `/puzzles.json` could call a puzzle missing
+ * that the server just answered 200 for. With the ETag, asking costs a 304.
+ */
+const DATA_CACHE = "no-cache";
 const NOT_BUILT = "The page is not built yet. /puzzles.json and /puzzles.sqlite still answer.";
 const UNAVAILABLE = Object.freeze({
   error: "The puzzle archive is not available yet. Try again in a minute.",
@@ -111,23 +129,37 @@ export function createSiteApp(deps: SiteDependencies): Hono {
   const limits = deps.limits ?? { perMinute: PER_MINUTE, downloadsPerMinute: DOWNLOADS_PER_MINUTE };
   const app = new Hono();
 
-  app.use("*", securityHeaders);
+  app.use("*", finishEveryAnswer);
   app.use("*", rateLimit({ max: limits.perMinute, windowMs: MINUTE }, deps.callerKey));
   app.use("/puzzles.sqlite", rateLimit({ max: limits.downloadsPerMinute, windowMs: MINUTE }, deps.callerKey));
   app.onError(answerFault);
 
   addDataRoutes(app, deps);
   for (const path of PAGE_PATHS) app.get(path, (c) => page(c, deps));
-  app.get("/assets/*", serveStatic({ root: deps.buildRoot, onFound: cachedFor(ASSET_CACHE) }));
-  app.get("/fonts/*", serveStatic({ root: deps.buildRoot, onFound: cachedFor(FONT_CACHE) }));
+  app.get("/assets/*", builtFiles(deps.buildRoot, ASSET_CACHE));
+  app.get("/fonts/*", builtFiles(deps.buildRoot, FONT_CACHE));
 
   app.notFound((c) => missing(c, deps.buildRoot));
   return app;
 }
 
-const securityHeaders: MiddlewareHandler = async (c, next) => {
+/**
+ * What every response gets once its handler has run: the security headers,
+ * and for a HEAD the length GET would have sent.
+ *
+ * Hono answers HEAD by running the GET route and dropping its body, and with
+ * no length set Bun then writes `Content-Length: 0`, which RFC 9110 forbids
+ * for a body that is not empty. So a HEAD reads its own body's length here,
+ * while it still has the body. Only HEAD pays for that, and nothing here is
+ * large. One middleware rather than two, so the route table stays the short
+ * list a test pins.
+ */
+const finishEveryAnswer: MiddlewareHandler = async (c, next) => {
   await next();
   for (const [name, value] of Object.entries(SECURITY_HEADERS)) c.res.headers.set(name, value);
+  if (c.req.method === "HEAD" && c.res.body !== null && !c.res.headers.has("Content-Length")) {
+    c.res.headers.set("Content-Length", String((await c.res.clone().arrayBuffer()).byteLength));
+  }
 };
 
 /**
@@ -145,18 +177,14 @@ function addDataRoutes(app: Hono, deps: SiteDependencies): void {
   app.get("/puzzles.json", (c) => {
     const dataset = deps.dataset();
     if (!dataset) return c.json(UNAVAILABLE, 503, { ...NO_STORE, "Retry-After": RETRY_AFTER });
-    return c.body(sent(dataset.json), 200, {
-      "Content-Type": "application/json; charset=utf-8",
-      "Cache-Control": DATA_CACHE,
-    });
+    return download(c, dataset.json, { "Content-Type": "application/json; charset=utf-8" });
   });
   app.get("/puzzles.sqlite", (c) => {
     const dataset = deps.dataset();
     if (!dataset) return c.json(UNAVAILABLE, 503, { ...NO_STORE, "Retry-After": RETRY_AFTER });
-    return c.body(sent(dataset.sqlite), 200, {
+    return download(c, dataset.sqlite, {
       "Content-Type": "application/vnd.sqlite3",
       "Content-Disposition": 'attachment; filename="tetrisatuci-puzzles.sqlite"',
-      "Cache-Control": DATA_CACHE,
     });
   });
   // Counts and times only. Why a build failed is for the log, which an
@@ -171,6 +199,44 @@ function addDataRoutes(app: Hono, deps: SiteDependencies): void {
       200,
       NO_STORE,
     );
+  });
+}
+
+/**
+ * One of the dataset's two downloads, or a bodyless 304 when the caller
+ * already holds exactly these bytes.
+ *
+ * The tag is the bytes' own hash, so it changes exactly when they do — a
+ * rebuild that came out the same keeps it.
+ */
+function download(c: Context, bytes: Uint8Array, headers: Readonly<Record<string, string>>): Response {
+  const tag = etagOf(bytes);
+  const fresh = { ETag: tag, "Cache-Control": DATA_CACHE };
+  if (holds(c.req.header("If-None-Match"), tag)) return c.body(null, 304, fresh);
+  return c.body(sent(bytes), 200, { ...headers, ...fresh });
+}
+
+/** Hashed once per array: a dataset's bytes never change, the refresher swaps whole datasets. */
+const etags = new WeakMap<Uint8Array, string>();
+
+function etagOf(bytes: Uint8Array): string {
+  let tag = etags.get(bytes);
+  if (tag === undefined) {
+    tag = `"${Bun.hash(bytes).toString(36)}"`;
+    etags.set(bytes, tag);
+  }
+  return tag;
+}
+
+/**
+ * Whether an `If-None-Match` names `tag`: any entry of the list, weak or
+ * strong (a GET compares them weakly), or `*`.
+ */
+function holds(ifNoneMatch: string | undefined, tag: string): boolean {
+  if (!ifNoneMatch) return false;
+  return ifNoneMatch.split(",").some((entry) => {
+    const held = entry.trim();
+    return held === "*" || held === tag || held === `W/${tag}`;
   });
 }
 
@@ -198,7 +264,10 @@ function sent(bytes: Uint8Array): Uint8Array<ArrayBuffer> {
 async function page(c: Context, deps: SiteDependencies): Promise<Response> {
   const template = await readTemplate(deps.buildRoot);
   if (template === null) return c.text(NOT_BUILT, 503, NO_STORE);
-  const route = parsePage(new URL(c.req.url).pathname);
+  // `URL.parse`, not `new URL`: a Host header no URL can be made of (`a b`,
+  // `[::1`) reaches the app as an unparseable URL, and a miss must never be a 500.
+  const pathname = URL.parse(c.req.url)?.pathname;
+  const route = pathname === undefined ? null : parsePage(pathname);
   if (route === null) return documentFor(c, template, NOT_FOUND_TEXT, 404);
   const dataset = deps.dataset();
   if (!dataset) return documentFor(c, template, UNAVAILABLE_TEXT, 503);
@@ -243,6 +312,33 @@ function lookupIn(dataset: Dataset): SiteLookup {
     puzzle: (id) => dataset.puzzleById.get(id),
     day: (day) => dataset.dayByNumber.get(day),
   };
+}
+
+/**
+ * The build's files under one prefix, cached for `cacheControl`, with every
+ * path no file can have answered as the miss it is.
+ *
+ * Caught where `Bun.file` throws rather than guessed at beforehand: Hono
+ * decodes the path twice on the way to the disk, so `%%300` arrives there as
+ * a NUL that no check of the request's own path would see. Any other error is
+ * a real fault and still reaches the error handler.
+ */
+function builtFiles(buildRoot: string, cacheControl: string): MiddlewareHandler {
+  const serve = serveStatic({ root: buildRoot, onFound: cachedFor(cacheControl) });
+  return async (c, next) => {
+    try {
+      return await serve(c, next);
+    } catch (error) {
+      if (unnameable(error)) return missing(c, buildRoot);
+      throw error;
+    }
+  };
+}
+
+/** What `Bun.file` throws for a name no file can have: a NUL, or past the system's path limit. */
+function unnameable(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return code === "ERR_INVALID_ARG_VALUE" || code === "ENAMETOOLONG";
 }
 
 function cachedFor(cacheControl: string): (path: string, c: Context) => void {

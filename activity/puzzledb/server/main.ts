@@ -118,12 +118,18 @@ function refresherFor(settings: SiteSettings): Refresher {
  * Loopback only, and GET-only in practice. Bun's own error stops the process
  * when the port is taken — "Is port 3002 in use?" — which is the one other
  * failure a retry cannot fix: it means a second puzzle database is running.
+ *
+ * `reusePort: false` is what makes that true. In Bun 1.3, `development: false`
+ * on its own also turns on SO_REUSEPORT, and a second copy — a foreground
+ * trial left in tmux, a pm2 app beside the systemd unit — would then bind
+ * beside the first and quietly take half the connections.
  */
 function listen(app: Hono, port: number): Server<undefined> {
   return Bun.serve({
     hostname: HOST,
     port,
     development: false,
+    reusePort: false,
     idleTimeout: IDLE_TIMEOUT_SECONDS,
     maxRequestBodySize: MAX_BODY_BYTES,
     // The server goes to Hono as its env: it is what knows the socket's peer.

@@ -234,6 +234,32 @@ describe("as a process", () => {
     expect(await site.exited).toBe(0);
   });
 
+  test("refuses to share its port with a second copy of itself", async () => {
+    // `development: false` alone turns on SO_REUSEPORT in Bun 1.3, and then a
+    // second copy — a foreground trial left in tmux, a pm2 app beside the
+    // systemd unit the guide also offers — binds beside the first and takes
+    // half of cloudflared's connections. The guide's "EADDRINUSE: a second
+    // site process" depends on it failing instead.
+    const game = gameFixture({ journal: "delete" });
+    fixtures.push(game);
+    const env = (port: string) => bareEnvironment({ PUZZLEDB_PORT: port, DATABASE_PATH: game.databasePath });
+    const first = Bun.spawn([BUN, MAIN], { cwd: emptyDirectory(), env: env("0"), stdout: "pipe", stderr: "pipe" });
+    try {
+      const banner = await waitFor(first.stdout, /^puzzledb — .* on (http:\/\/\S+)$/m, START_MS);
+      const second = Bun.spawnSync([BUN, MAIN], {
+        cwd: emptyDirectory(),
+        env: env(new URL(banner[1]!).port),
+        timeout: START_MS,
+      });
+
+      expect(second.exitCode).toBe(1);
+      expect(text(second.stderr)).toMatch(/in use/i);
+    } finally {
+      process.kill(first.pid, "SIGTERM");
+    }
+    expect(await first.exited).toBe(0);
+  });
+
   test("refuses to start with a game secret in its environment, naming the variable and not its value", () => {
     const value = "planted-session-secret-value";
 

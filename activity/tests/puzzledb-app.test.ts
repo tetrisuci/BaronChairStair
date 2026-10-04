@@ -21,16 +21,11 @@
 
 import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Hono } from "hono";
-import {
-  createSiteApp,
-  DOWNLOADS_PER_MINUTE,
-  PER_MINUTE,
-  SECURITY_HEADERS,
-  type SiteDependencies,
-} from "../puzzledb/server/app";
+import { createSiteApp, DOWNLOADS_PER_MINUTE, PER_MINUTE, type SiteDependencies } from "../puzzledb/server/app";
 import { buildDataset } from "../puzzledb/server/dataset";
 import { HEAD_PLACEHOLDER, injectHead, renderHead } from "../puzzledb/server/head";
 import { siteCallerKey } from "../puzzledb/server/main";
@@ -76,8 +71,26 @@ const TEMPLATE = [
 
 const APP_JS = "export const page = 'the archive';\n";
 const FONT = new Uint8Array([0x77, 0x4f, 0x46, 0x32, 0x00, 0x01, 0x02, 0x03]);
+/** What Vite copies beside the fonts from `client/public/fonts`: the OFL asks that a licence travel with them. */
+const FONT_LICENCE = "Copyright 2020 The Example Project Authors. SIL Open Font License, Version 1.1.\n";
+const FONTS_README = "# Fonts\n\nServed from here because Discord blocks the CDN.\n";
 const NOT_BUILT = "The page is not built yet. /puzzles.json and /puzzles.sqlite still answer.";
 const UNAVAILABLE_JSON = { error: "The puzzle archive is not available yet. Try again in a minute." };
+
+/**
+ * The four security headers, written out rather than imported from `app.ts`:
+ * a check that asked that module would agree with any change made there, a
+ * policy loosened to let an inline script run or a frame embed it included.
+ * The CSP is the page's XSS and framing backstop, so its every word is pinned.
+ */
+const EXPECTED_SECURITY_HEADERS = {
+  "Content-Security-Policy":
+    "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; " +
+    "connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+  "X-Content-Type-Options": "nosniff",
+  "X-Frame-Options": "DENY",
+  "Referrer-Policy": "strict-origin-when-cross-origin",
+} as const;
 
 const READY: RefreshStatus = Object.freeze({ ready: true, builtAt: NOW, checkedAt: NOW + 5_000, failing: null });
 
@@ -125,6 +138,8 @@ function buildRoot(template: string | null): string {
   writeFileSync(join(root, "index.html"), template);
   writeFileSync(join(root, "assets/app.js"), APP_JS);
   writeFileSync(join(root, "fonts/x.woff2"), FONT);
+  writeFileSync(join(root, "fonts/OFL-X.txt"), FONT_LICENCE);
+  writeFileSync(join(root, "fonts/README.md"), FONTS_README);
   writeFileSync(join(root, "petr.png"), new Uint8Array([0x89, 0x50, 0x4e, 0x47]));
   writeFileSync(join(root, ".env"), "SESSION_SECRET=planted-build-root-secret\n");
   return root;
@@ -163,6 +178,13 @@ function documentWith(text: PageText): string {
   return injectHead(TEMPLATE, renderHead(text));
 }
 
+/** All four security headers on `response`, each with exactly the value written above. */
+function expectSecurityHeaders(response: Response): void {
+  for (const [name, value] of Object.entries(EXPECTED_SECURITY_HEADERS)) {
+    expect(response.headers.get(name)).toBe(value);
+  }
+}
+
 async function bytesOf(response: Response): Promise<Buffer> {
   return Buffer.from(await response.arrayBuffer());
 }
@@ -190,14 +212,16 @@ describe("the data", () => {
       const json = await app.request("/puzzles.json");
       expect(json.status).toBe(200);
       expect(json.headers.get("Content-Type")).toBe("application/json; charset=utf-8");
-      expect(json.headers.get("Cache-Control")).toBe("public, max-age=60");
+      expect(json.headers.get("Cache-Control")).toBe("no-cache");
+      expect(json.headers.get("ETag")).toMatch(/^"[0-9a-z]+"$/);
       expect((await bytesOf(json)).equals(Buffer.from(dataset.json))).toBe(true);
 
       const sqlite = await app.request("/puzzles.sqlite");
       expect(sqlite.status).toBe(200);
       expect(sqlite.headers.get("Content-Type")).toBe("application/vnd.sqlite3");
       expect(sqlite.headers.get("Content-Disposition")).toBe('attachment; filename="tetrisatuci-puzzles.sqlite"');
-      expect(sqlite.headers.get("Cache-Control")).toBe("public, max-age=60");
+      expect(sqlite.headers.get("Cache-Control")).toBe("no-cache");
+      expect(sqlite.headers.get("ETag")).toMatch(/^"[0-9a-z]+"$/);
       expect((await bytesOf(sqlite)).equals(Buffer.from(dataset.sqlite))).toBe(true);
     }
 
@@ -205,6 +229,61 @@ describe("the data", () => {
     expect(head.status).toBe(200);
     expect(head.headers.get("Content-Type")).toBe("application/json; charset=utf-8");
     expect(await head.text()).toBe("");
+  });
+
+  test("lets a reader revalidate either download: 304 and no body while it holds these bytes, the bytes once they change", async () => {
+    // Revalidated, never cached blind: a page holding last minute's JSON would
+    // call a puzzle published since missing while the server's own document
+    // for it answers 200. A 304 costs a header, so asking every time is cheap.
+    const app = siteApp();
+    for (const path of ["/puzzles.json", "/puzzles.sqlite"]) {
+      const tag = (await app.request(path)).headers.get("ETag")!;
+      for (const method of ["GET", "HEAD"]) {
+        for (const held of [tag, `W/${tag}`, `"another", ${tag}`, "*"]) {
+          const again = await app.request(path, { method, headers: { "If-None-Match": held } });
+          expect(again.status).toBe(304);
+          expect(again.headers.get("ETag")).toBe(tag);
+          expect(again.headers.get("Cache-Control")).toBe("no-cache");
+          expectSecurityHeaders(again);
+          expect(await again.text()).toBe("");
+        }
+      }
+      expect((await app.request(path, { headers: { "If-None-Match": '"stale"' } })).status).toBe(200);
+    }
+
+    // A new build is new bytes, so a new tag, and a reader holding the old one gets the new data.
+    const db = openGameDatabase(game.databasePath);
+    let rebuilt: Dataset;
+    try {
+      rebuilt = buildDataset(readSnapshot(db, TODAY, FIRST_TIERED_DAY), fixtureSources(game), NOW + 60_000);
+    } finally {
+      db.close();
+    }
+    const newer = siteApp({ dataset: rebuilt });
+    for (const path of ["/puzzles.json", "/puzzles.sqlite"]) {
+      const held = (await app.request(path)).headers.get("ETag")!;
+      const answer = await newer.request(path, { headers: { "If-None-Match": held } });
+      expect(answer.status).toBe(200);
+      expect(answer.headers.get("ETag")).not.toBe(held);
+    }
+  });
+
+  test("answers HEAD with what GET would send, its length included", async () => {
+    // Hono answers HEAD by dropping GET's body, and with no length of its own
+    // Bun then writes Content-Length: 0 — which RFC 9110 forbids when GET's
+    // body is not empty, and which a link checker reads as an empty page.
+    const app = siteApp();
+    const puzzle = dataset.data.puzzles[0]!.id;
+    const paths = ["/", `/puzzle/${puzzle}`, "/days", "/puzzles.json", "/puzzles.sqlite", "/health"];
+    for (const path of [...paths, "/assets/app.js", "/fonts/x.woff2", "/no-such-page"]) {
+      const get = await app.request(path);
+      const length = (await get.arrayBuffer()).byteLength;
+      const head = await app.request(path, { method: "HEAD" });
+
+      expect(head.status).toBe(get.status);
+      expect(head.headers.get("Content-Length")).toBe(String(length));
+      expect(await head.text()).toBe("");
+    }
   });
 
   test("answers 503 with Retry-After and no-store before the first dataset, and the health check says only ok: false", async () => {
@@ -323,6 +402,16 @@ describe("the pages", () => {
 });
 
 describe("what else answers", () => {
+  test("serves the fonts' licence and README beside them, as the OFL asks", async () => {
+    const app = siteApp();
+    for (const [path, body] of [["/fonts/OFL-X.txt", FONT_LICENCE], ["/fonts/README.md", FONTS_README]] as const) {
+      const answer = await app.request(path);
+      expect(answer.status).toBe(200);
+      expect(answer.headers.get("Cache-Control")).toBe("public, max-age=604800");
+      expect(await answer.text()).toBe(body);
+    }
+  });
+
   test("serves built assets and fonts with long caching, and nothing else from the build", async () => {
     const app = siteApp();
     const never = await answerOf(app, "/no-such-page");
@@ -344,6 +433,31 @@ describe("what else answers", () => {
     }
   });
 
+  test("answers a name no file can have like any other miss, and logs nothing", async () => {
+    const error = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const app = siteApp();
+      const never = await answerOf(app, "/no-such-page");
+      // `Bun.file` throws, rather than missing, on a NUL byte or on a path past
+      // the system's limit — 1,024 bytes on macOS, 4,096 on Linux, so 5,000 is
+      // past both. And Hono decodes the path twice on the way to the disk, so
+      // `%%300` arrives there as a NUL as surely as `%00` does.
+      const unnameable = [
+        "/assets/%00",
+        "/fonts/x%00.woff2",
+        "/assets/%%300",
+        `/assets/${"a".repeat(5_000)}`,
+        `/assets/${"a/".repeat(2_500)}app.js`,
+      ];
+
+      for (const path of unnameable) expect(await answerOf(app, path)).toEqual(never);
+      // A thrown miss would have been logged whole, stack and checkout path included.
+      expect(error).not.toHaveBeenCalled();
+    } finally {
+      error.mockRestore();
+    }
+  });
+
   test("answers POST, PUT, PATCH, DELETE and OPTIONS with 404 everywhere", async () => {
     const app = siteApp();
     const paths = [...listedPages().slice(0, 4), "/puzzles.json", "/puzzles.sqlite", "/health"];
@@ -357,24 +471,30 @@ describe("what else answers", () => {
     }
   });
 
-  test("registers exactly these GET routes", () => {
-    const routes = siteApp().routes;
+  test("registers exactly these routes and middleware, and nothing else on any method", () => {
+    const table = siteApp().routes.map((route) => `${route.method} ${route.path}`);
 
-    expect(routes.filter((route) => route.method === "GET").map((route) => route.path).sort()).toEqual(
+    // The whole table, ALL entries too. Hono lists middleware as ALL, and
+    // lists `app.all()` and `app.mount()` the same way — and those answer
+    // every method — so waving ALL through as "middleware" would let a route
+    // that takes a POST land unseen. The three are the security headers and
+    // the per-minute limiter on everything, and the download limiter.
+    expect(table.sort()).toEqual(
       [
-        "/puzzles.json",
-        "/puzzles.sqlite",
-        "/health",
-        "/",
-        "/puzzle/:id{[0-9]+}",
-        "/days",
-        "/day/:day{[0-9]+}",
-        "/assets/*",
-        "/fonts/*",
+        "ALL /*",
+        "ALL /*",
+        "ALL /puzzles.sqlite",
+        "GET /puzzles.json",
+        "GET /puzzles.sqlite",
+        "GET /health",
+        "GET /",
+        "GET /puzzle/:id{[0-9]+}",
+        "GET /days",
+        "GET /day/:day{[0-9]+}",
+        "GET /assets/*",
+        "GET /fonts/*",
       ].sort(),
     );
-    // Everything else is middleware, on every method; no route takes a body.
-    expect(routes.filter((route) => route.method !== "GET" && route.method !== "ALL")).toEqual([]);
   });
 });
 
@@ -399,11 +519,7 @@ describe("headers and limits", () => {
     expect(answers.map((response) => response.status)).toEqual([
       200, 200, 200, 200, 200, 404, 404, 200, 429, 503, 503, 503,
     ]);
-    for (const response of answers) {
-      for (const [name, value] of Object.entries(SECURITY_HEADERS)) {
-        expect(response.headers.get(name)).toBe(value);
-      }
-    }
+    for (const response of answers) expectSecurityHeaders(response);
   });
 
   test("answers a fault with a plain 500 that keeps its headers, and logs it", async () => {
@@ -416,9 +532,7 @@ describe("headers and limits", () => {
 
       expect(response.status).toBe(500);
       expect(await response.text()).toBe("Something went wrong on the server");
-      for (const [name, value] of Object.entries(SECURITY_HEADERS)) {
-        expect(response.headers.get(name)).toBe(value);
-      }
+      expectSecurityHeaders(response);
       expect(error).toHaveBeenCalledTimes(1);
       expect(error.mock.calls[0]?.[0]).toBe("[puzzledb]");
     } finally {
@@ -493,5 +607,65 @@ describe("privacy over HTTP", () => {
 
     expect(paths.length).toBeGreaterThan(dataset.data.puzzles.length);
     expect(leaks).toEqual([]);
+  });
+});
+
+/**
+ * One request written straight onto a socket, and the response read back by
+ * its Content-Length: for what `app.request` cannot build and `fetch` will not
+ * send, such as a Host header no URL can be made of. Read by length, not until
+ * the server hangs up, because Bun keeps the connection open after the app's
+ * answers even when asked to close it.
+ */
+function rawRequest(port: number, lines: readonly string[]): Promise<{ head: string; body: string }> {
+  return new Promise((resolve, reject) => {
+    const socket = connect(port, "127.0.0.1");
+    const chunks: Buffer[] = [];
+    socket.on("data", (chunk: Buffer) => {
+      chunks.push(chunk);
+      const received = Buffer.concat(chunks);
+      const end = received.indexOf("\r\n\r\n");
+      if (end === -1) return;
+      const head = received.subarray(0, end).toString("latin1");
+      const body = received.subarray(end + 4);
+      if (body.length < Number(/^content-length:\s*(\d+)/im.exec(head)?.[1] ?? 0)) return;
+      socket.destroy();
+      resolve({ head, body: body.toString("utf8") });
+    });
+    socket.on("error", reject);
+    socket.write(`${lines.join("\r\n")}\r\n\r\n`);
+  });
+}
+
+/** The site behind a real `Bun.serve`, as `main.ts` wires it, for as long as `use` runs. */
+async function overSocket(use: (port: number) => Promise<void>): Promise<void> {
+  const app = siteApp();
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: (request, bun) => app.fetch(request, bun) });
+  try {
+    await use(server.port!);
+  } finally {
+    server.stop(true);
+  }
+}
+
+describe("over a socket", () => {
+  test("answers a Host no URL can be made of with the 404 document, never a 500", async () => {
+    // Bun builds the request's URL from the Host header as sent, so these reach
+    // the app as URLs nothing can parse. No proxy in the deploy guide forwards
+    // one, but a request straight to the port can.
+    const error = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await overSocket(async (port) => {
+        for (const host of ["a b", "[::1", "x:99999"]) {
+          const { head, body } = await rawRequest(port, [`GET /day/${TODAY - 1} HTTP/1.1`, `Host: ${host}`]);
+
+          expect(head.split("\r\n")[0]).toBe("HTTP/1.1 404 Not Found");
+          expect(body).toBe(documentWith(NOT_FOUND_TEXT));
+        }
+      });
+      expect(error).not.toHaveBeenCalled();
+    } finally {
+      error.mockRestore();
+    }
   });
 });

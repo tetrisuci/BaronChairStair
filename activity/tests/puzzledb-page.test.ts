@@ -18,7 +18,7 @@
  * puzzle, and a day that dealt one the archive no longer holds.
  */
 
-import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { Window } from "happy-dom";
@@ -45,7 +45,7 @@ import { createDaysView, createDayView, dealLine } from "../puzzledb/client/days
 import { filterFromQuery, queryFromFilter } from "../puzzledb/client/filter-url";
 import { SitePage } from "../puzzledb/client/page";
 import { createPuzzleView, type PuzzleView } from "../puzzledb/client/puzzle-view";
-import { isInternalClick } from "../puzzledb/client/router";
+import { isInternalClick, QUERY_WRITE_MS, REFUSED_RETRY_MS } from "../puzzledb/client/router";
 
 const ORIGIN = "https://db.test";
 const MAIN = resolve(import.meta.dir, "../puzzledb/client/main.ts");
@@ -259,7 +259,11 @@ function drivePuzzle(puzzle: SitePuzzle, options: { revealed?: boolean } = {}) {
   return { element: view.element, views, view };
 }
 
-async function openPage(url: string, load: () => Promise<SiteData> = () => Promise.resolve(DATA)) {
+async function openPage(
+  url: string,
+  load: () => Promise<SiteData> = () => Promise.resolve(DATA),
+  win: DomWindow = window as unknown as DomWindow,
+) {
   window.happyDOM.setURL(url);
   // `setURL` moves the location and leaves the history entry as it was, so
   // Back would return to wherever the previous test left it. This makes the
@@ -267,10 +271,129 @@ async function openPage(url: string, load: () => Promise<SiteData> = () => Promi
   window.history.replaceState(null, "", url);
   const root = document.createElement("div");
   document.body.append(root);
-  const page = new SitePage(root, load, window as unknown as DomWindow);
+  const page = new SitePage(root, load, win);
   opened.push(page);
   await page.start();
   return { root, page };
+}
+
+// ── The address bar's clock ──────────────────────────────────────────────────
+
+/** Timers that fire only when a test turns the clock, in the order they fall due. */
+interface HandClock {
+  readonly setTimeout: (callback: () => void, delay?: number) => number;
+  readonly clearTimeout: (id?: number) => void;
+  /** Moves time on by `ms`, firing every timer that falls due on the way. */
+  advance(ms: number): void;
+  /** How many timers are still waiting to fire. */
+  pending(): number;
+}
+
+function handClock(): HandClock {
+  let now = 0;
+  let lastId = 0;
+  const waiting = new Map<number, { readonly at: number; readonly callback: () => void }>();
+  // The earliest timer due by `until`; of two due together, the one set first, as a browser fires them.
+  const firstDue = (until: number) =>
+    [...waiting].filter(([, timer]) => timer.at <= until).sort(([a, x], [b, y]) => x.at - y.at || a - b)[0];
+  return {
+    setTimeout: (callback, delay = 0) => {
+      waiting.set(++lastId, { at: now + delay, callback });
+      return lastId;
+    },
+    clearTimeout: (id) => {
+      if (id !== undefined) waiting.delete(id);
+    },
+    advance(ms) {
+      const until = now + ms;
+      for (let due = firstDue(until); due; due = firstDue(until)) {
+        const [id, timer] = due;
+        waiting.delete(id);
+        now = timer.at;
+        timer.callback();
+      }
+      now = until;
+    },
+    pending: () => waiting.size,
+  };
+}
+
+/**
+ * This file's window, with a hand-turned clock for its timers.
+ *
+ * The page is handed this in place of the window itself, so the router's
+ * held-back address write runs when a test turns the clock rather than after a
+ * real quarter-second, and an error thrown from it reaches the test, where
+ * happy-dom's own timers would catch it and report it as a window event.
+ * Everything else is the window's own, bound to it, so the history, the
+ * location and every listener are the real ones.
+ */
+function windowOn(clock: HandClock): DomWindow {
+  const timers: Readonly<Record<PropertyKey, unknown>> = {
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout,
+  };
+  return new Proxy(window, {
+    get(target, key) {
+      if (key in timers) return timers[key];
+      const value: unknown = Reflect.get(target, key);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  }) as unknown as DomWindow;
+}
+
+/**
+ * Every address write the page makes from here on, as `replaceState /?q=two`,
+ * and a switch per method that refuses it the way WebKit does past a hundred
+ * in ten seconds: a SecurityError thrown from the call. The window's own
+ * methods are put back after the test.
+ */
+function recordHistory() {
+  const history = window.history;
+  const writes: string[] = [];
+  const refusing = { pushState: false, replaceState: false };
+  for (const method of ["pushState", "replaceState"] as const) {
+    const real = history[method];
+    Object.defineProperty(history, method, {
+      configurable: true,
+      value: (...args: Parameters<typeof real>) => {
+        if (refusing[method]) {
+          const message = `Attempt to use history.${method}() more than 100 times per 10 seconds`;
+          throw new window.DOMException(message, "SecurityError");
+        }
+        const url = new URL(String(args[2]), window.location.href);
+        writes.push(`${method} ${url.pathname}${url.search}`);
+        real.apply(history, args);
+      },
+    });
+  }
+  opened.push({
+    stop: () => {
+      Reflect.deleteProperty(history, "pushState");
+      Reflect.deleteProperty(history, "replaceState");
+    },
+  });
+  return { writes, refusing };
+}
+
+/**
+ * Everything a listener throws from here on. A browser does not let it reach
+ * whoever dispatched the event, and neither does happy-dom: it reports it as
+ * an `error` event on the window, so that event is where an escape shows.
+ */
+function errorsReported(): readonly unknown[] {
+  const errors: unknown[] = [];
+  const listener = (event: { readonly error?: unknown }) => void errors.push(event.error);
+  window.addEventListener("error", listener as never);
+  opened.push({ stop: () => window.removeEventListener("error", listener as never) });
+  return errors;
+}
+
+/** The page on a hand-turned clock, recording its address writes and anything its listeners throw. */
+async function openOnClock(url: string) {
+  const clock = handClock();
+  const { root, page } = await openPage(url, undefined, windowOn(clock));
+  return { root, page, clock, errors: errorsReported(), ...recordHistory() };
 }
 
 // ── The tests ────────────────────────────────────────────────────────────────
@@ -430,11 +553,12 @@ describe("browsing", () => {
     expect(filterFromQuery("?d=0-99&p=-4")).toEqual(DEFAULT_ARCHIVE_FILTER);
 
     // And the page keeps the address in step without adding a history entry per keystroke.
-    const { root } = await openPage(`${ORIGIN}/?by=roland&sort=title`);
+    const { root, clock } = await openOnClock(`${ORIGIN}/?by=roland&sort=title`);
     expect(gridOf(root)).toEqual(["/puzzle/33", "/puzzle/9"]);
     expect(find<HTMLInputElement>(root, '[aria-label="Author"]').value).toBe("roland");
     const entries = window.history.length;
     typeInto(find<HTMLInputElement>(root, '[aria-label="Search puzzles"]'), "two");
+    clock.advance(QUERY_WRITE_MS);
     expect(window.location.search).toBe("?q=two&by=roland&sort=title");
     expect(window.history.length).toBe(entries);
     expect(gridOf(root)).toEqual(["/puzzle/9"]);
@@ -792,6 +916,93 @@ describe("the page", () => {
       expect(window.getComputedStyle(window.document.body).overflow).toBe("auto");
     } finally {
       for (const sheet of sheets) sheet.remove();
+    }
+  });
+});
+
+describe("the address bar", () => {
+  const search = (root: ParentNode) => find<HTMLInputElement>(root, '[aria-label="Search puzzles"]');
+
+  test("writes the filter once the typing pauses, not once per keystroke", async () => {
+    const { root, clock, writes } = await openOnClock(`${ORIGIN}/`);
+    for (const typed of ["n", "no", "not", "notc", "notch"]) typeInto(search(root), typed);
+
+    expect(writes).toEqual([]);
+    clock.advance(QUERY_WRITE_MS - 1);
+    expect(writes).toEqual([]);
+    clock.advance(1);
+    expect(writes).toEqual(["replaceState /?q=notch"]);
+    expect(clock.pending()).toBe(0);
+  });
+
+  test("writes a filter still waiting onto the page it was typed on, before going to another", async () => {
+    const { root, clock, writes } = await openOnClock(`${ORIGIN}/`);
+    typeInto(search(root), "notch");
+    click(find(root, '.pdb-grid a[href="/puzzle/4"]'));
+
+    // So Back returns to the list as it was left, and the puzzle's own address carries no filter.
+    expect(writes).toEqual(["replaceState /?q=notch", "pushState /puzzle/4"]);
+    clock.advance(QUERY_WRITE_MS);
+    expect(writes).toHaveLength(2);
+  });
+
+  test("drops a filter still waiting when Back moves the page, rather than writing it onto the page arrived at", async () => {
+    const { root, clock, writes } = await openOnClock(`${ORIGIN}/`);
+    typeInto(search(root), "notch");
+    window.dispatchEvent(new window.Event("popstate"));
+
+    clock.advance(QUERY_WRITE_MS);
+    expect(writes).toEqual([]);
+  });
+
+  test("leaves nothing waiting once stopped", async () => {
+    const { root, page, clock, writes } = await openOnClock(`${ORIGIN}/`);
+    typeInto(search(root), "notch");
+    page.stop();
+
+    expect(clock.pending()).toBe(0);
+    clock.advance(QUERY_WRITE_MS);
+    expect(writes).toEqual([]);
+  });
+
+  test("keeps working when the browser refuses to update the address, and catches up once it allows it", async () => {
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const { root, clock, writes, refusing, errors } = await openOnClock(`${ORIGIN}/`);
+      refusing.replaceState = true;
+      typeInto(search(root), "notch");
+      clock.advance(QUERY_WRITE_MS);
+      typeInto(search(root), "notc");
+      clock.advance(QUERY_WRITE_MS);
+
+      // Nothing thrown out of the input listener, the list still follows the
+      // box, and the refusal is said once rather than on every attempt.
+      expect(errors).toEqual([]);
+      expect(writes).toEqual([]);
+      expect(gridOf(root)).toContain("/puzzle/4");
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]?.[0])).toStartWith("[puzzledb]");
+
+      refusing.replaceState = false;
+      clock.advance(REFUSED_RETRY_MS);
+      expect(writes).toEqual(["replaceState /?q=notc"]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test("loads the page outright when the browser refuses to move in place", async () => {
+    const { root, refusing, errors } = await openOnClock(`${ORIGIN}/`);
+    const assign = spyOn(window.location, "assign").mockImplementation(() => {});
+    try {
+      refusing.pushState = true;
+      const event = click(find(root, '.pdb-grid a[href="/puzzle/4"]'));
+
+      expect(event.defaultPrevented).toBe(true);
+      expect(assign).toHaveBeenCalledWith(`${ORIGIN}/puzzle/4`);
+      expect(errors).toEqual([]);
+    } finally {
+      assign.mockRestore();
     }
   });
 });

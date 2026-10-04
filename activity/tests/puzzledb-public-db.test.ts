@@ -112,9 +112,17 @@ function withDownload<T>(bytes: Uint8Array, read: (db: Database) => T): T {
   }
 }
 
+/**
+ * Every column a table has, generated and hidden ones included.
+ *
+ * `table_xinfo`, not `table_info`: the plain list leaves out generated
+ * columns, STORED and VIRTUAL alike, so a column computed from public ones
+ * would pass the exact-columns check without anybody adding it to the
+ * allowlist, and the per-cell scan would never select it.
+ */
 function columnsOf(db: Database, table: string): string[] {
   return db
-    .query<{ name: string }, []>(`PRAGMA table_info("${table}")`)
+    .query<{ name: string }, []>(`PRAGMA table_xinfo("${table}")`)
     .all()
     .map((row) => row.name);
 }
@@ -126,7 +134,10 @@ function tablesOf(db: Database): string[] {
     .map((row) => row.name);
 }
 
-/** Every non-null cell of the download, cast to text by SQLite — so an INTEGER id reads as its digits. */
+/**
+ * Every non-null cell of the download, generated columns' included, cast to
+ * text by SQLite — so an INTEGER id reads as its digits.
+ */
 function cellsAsText(bytes: Uint8Array): string[] {
   return withDownload(bytes, (db) =>
     tablesOf(db).flatMap((table) =>
@@ -210,6 +221,26 @@ describe("the allowlist", () => {
         expect(columnsOf(db, table)).toEqual([...columns]);
       }
     });
+  });
+
+  test("would refuse a generated column, which a plain column list leaves out", () => {
+    // The schema as it ships, plus one column computed from an allowlisted
+    // one. An INSERT cannot name a generated column, so it is the one kind
+    // that could be added to PUBLIC_SCHEMA without touching PUBLIC_COLUMNS,
+    // and a VIRTUAL one is not even in the file's bytes for the latin1 scan.
+    const db = new Database(":memory:");
+    try {
+      db.exec(PUBLIC_SCHEMA);
+      db.exec("ALTER TABLE about ADD COLUMN derived TEXT GENERATED ALWAYS AS ('discord:' || value) VIRTUAL");
+      db.run("INSERT INTO about (key, value) VALUES ('schema', 'planted-derived')");
+
+      // What the exact-columns check above compares, and so where it fails.
+      expect(columnsOf(db, "about")).toEqual([...ALLOWLIST.about, "derived"]);
+      // And what the per-cell scan reads: the computed value, though it is stored nowhere.
+      expect(cellsAsText(db.serialize())).toContain("discord:planted-derived");
+    } finally {
+      db.close();
+    }
   });
 
   test("documents itself: each CREATE TABLE in sqlite_master keeps its column comments", () => {

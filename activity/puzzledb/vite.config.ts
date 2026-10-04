@@ -23,9 +23,10 @@ import { resolve } from "node:path";
  * `/puzzle/` and 404. Absolute is the only base that works at every depth.
  *
  * `publicDir` is the game's, because `tokens.css` is reused as it is and asks
- * for its fonts at `/fonts/…`. That directory also holds `petr.png` and the
- * fonts' README; they are copied and never served, because the site's server
- * answers `/assets/*` and `/fonts/*` and nothing else from the build.
+ * for its fonts at `/fonts/…`. That copies `petr.png` too, which is never
+ * served: the site's server answers `/assets/*` and `/fonts/*` and nothing
+ * else from the build. Everything under `/fonts/` is served, the fonts' OFL
+ * licence texts and README included, which is what the OFL asks for.
  *
  * No sourcemaps: the build is served to strangers, and a map is a second copy
  * of every reused module sitting under `/assets/` for nobody's benefit — the
