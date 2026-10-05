@@ -12,7 +12,7 @@ import { attachPointerPlay } from "./game/pointer";
 import type { Handling } from "@shared/tetris/handling";
 import type { InputEvent } from "@shared/tetris/verify";
 import type { Connection } from "./discord";
-import type { DailyEntry, DailyResponse, GalleryLine, RushState, StoredRun } from "./api";
+import type { DailyEntry, DailyResponse, GalleryLine, RushState, SiteVisibility, StoredRun } from "./api";
 import type { ArchiveListing } from "@shared/puzzle";
 import { filterArchive } from "@shared/archive-filter";
 import { ApiError } from "./api";
@@ -64,6 +64,7 @@ import {
   createRushResultCard,
 } from "./ui/rush";
 import { createSettingsDialog } from "./ui/settings-dialog";
+import { createSiteVisibilityRow } from "./ui/site-visibility-row";
 import type { ShareFields } from "./ui/share";
 
 const COUNTDOWN_TICK_MS = 1000;
@@ -92,9 +93,15 @@ export class App {
   private readonly leaderboard = createLeaderboardPanel();
   private readonly dailyBoard = createDailyBoard(() => void this.enterLeaderboards());
   private readonly discoveryBoard = createDiscoveryBoard();
-  private readonly profile = createProfile();
+  /**
+   * Opens a db.tetrisatuci.org link. An arrow, so `connection` is read on the
+   * click rather than while the fields are still being built.
+   */
+  private readonly openSite = (url: string): void => this.connection.openLink(url);
+  private readonly profile = createProfile({ openSite: this.openSite });
   private readonly leaderboards = createLeaderboards({
     onPlayer: (id) => void this.enterProfile(id),
+    openSite: this.openSite,
   });
   private readonly solutionsMenu = createSolutionsMenu({
     onOpen: (line) => this.stepSolution(line),
@@ -133,7 +140,7 @@ export class App {
   private readonly input: InputRouter;
   private readonly settingsDialog;
   private readonly verdict;
-  private readonly walkthrough = createSolutionsPanel();
+  private readonly walkthrough = createSolutionsPanel(Date.now, this.openSite);
   /**
    * The pending auto-dismiss of the verdict badge, if one is running.
    *
@@ -267,6 +274,18 @@ export class App {
    * the one piece of state on the client that a run can change.
    */
   private cleared: ReadonlySet<number> = new Set();
+  /**
+   * Whether `/api/site-visibility` has been asked, or answered by the settings
+   * row. Asked once a session, not on every screen: the keys it carries do not
+   * change, and the one thing that does — hiding — is changed through the row,
+   * which hands its answer straight to `showSiteVisibility`.
+   */
+  private siteVisibilityKnown = false;
+  /**
+   * Bumped by every answer shown, so a session GET that lands after the row
+   * has saved a change cannot paint the old state back over it.
+   */
+  private siteVisibilityAnswers = 0;
 
   constructor(
     private readonly root: HTMLElement,
@@ -298,6 +317,13 @@ export class App {
         this.settings.resetToDefaults();
         this.settingsDialog.open(this.settings.value.handling, this.settings.value.keybinds);
       },
+      web: createSiteVisibilityRow({
+        guest: connection.guest,
+        load: () => connection.api.siteVisibility(),
+        save: (hidden) => connection.api.setSiteHidden(hidden),
+        open: this.openSite,
+        onChange: (visibility) => this.showSiteVisibility(visibility),
+      }),
     });
 
     this.verdict = createVerdictPanel({
@@ -640,6 +666,7 @@ export class App {
     // than merely stale.
     this.profile.loading();
     this.showScreen({ wide: true }, this.profile.element);
+    this.askSiteVisibility();
     try {
       // Back to the boards, not to wherever they were before: a profile opened
       // from a row is read *about* that row, and the reader is mid-comparison.
@@ -676,12 +703,45 @@ export class App {
     // moved, and showing yesterday's number for 200ms is better than showing
     // nothing for 200ms.
     this.showScreen({ wide: true }, this.leaderboards.element);
+    this.askSiteVisibility();
     try {
       const { categories, daily } = await this.connection.api.leaderboards();
       this.leaderboards.update(categories, this.connection.player.id, daily);
     } catch (error) {
       this.toast(error instanceof ApiError ? error.message : "Could not read the boards");
     }
+  }
+
+  /**
+   * Fetches where this player stands on db.tetrisatuci.org, once, for the
+   * links on the boards and the profile.
+   *
+   * Never awaited and never toasted: the links start out on pages that exist
+   * for everybody — every server's boards, no profile link — and a failure
+   * only leaves them there, which is a worse link and not a broken screen. It
+   * is asked again on the next visit. A guest has no page and no server, so
+   * there is nothing to ask.
+   */
+  private askSiteVisibility(): void {
+    if (this.connection.guest || this.siteVisibilityKnown) return;
+    this.siteVisibilityKnown = true;
+    const answersBefore = this.siteVisibilityAnswers;
+    this.connection.api
+      .siteVisibility()
+      .then((visibility) => {
+        if (this.siteVisibilityAnswers === answersBefore) this.showSiteVisibility(visibility);
+      })
+      .catch((cause: unknown) => {
+        this.siteVisibilityKnown = false;
+        console.error("[site-visibility] could not read it for the site links", cause);
+      });
+  }
+
+  private showSiteVisibility(visibility: SiteVisibility): void {
+    this.siteVisibilityKnown = true;
+    this.siteVisibilityAnswers += 1;
+    this.leaderboards.setServerKey(visibility.serverKey);
+    this.profile.setSiteVisibility(visibility);
   }
 
   private async openSolutions(id: number): Promise<void> {
@@ -1888,9 +1948,14 @@ export class App {
    * fetched gallery cannot disagree about how a line is loaded.
    */
   private showGallery(puzzle: PuzzlePrompt, lines: readonly GalleryLine[]): void {
-    this.walkthrough.show(lines, this.connection.player.id, (line) => {
-      this.playSolution(puzzle, line.placements);
-    });
+    this.walkthrough.show(
+      lines,
+      this.connection.player.id,
+      (line) => {
+        this.playSolution(puzzle, line.placements);
+      },
+      puzzle.id,
+    );
   }
 
   /**

@@ -1,11 +1,12 @@
 /**
- * The puzzle database over HTTP: four pages, two downloads, a health check
- * and the built page's own files — and nothing else.
+ * The puzzle database over HTTP: seven pages, two downloads, the pages'
+ * bodies, a health check and the built page's own files — and nothing else.
  *
  * | Path | Answers |
  * |---|---|
- * | `/`, `/days`, `/puzzle/:id`, `/day/:day` | the built page, with this page's head written in |
+ * | `/`, `/days`, `/puzzle/:id`, `/day/:day`, `/leaderboards`, `/players`, `/player/:key` | the built page, with this page's head written in |
  * | `/puzzles.json`, `/puzzles.sqlite` | the dataset's bytes, exactly as built |
+ * | `/data/*` | one page's body, exactly as built, or the one JSON miss |
  * | `/health` | counts and times, never an error's text |
  * | `/assets/*`, `/fonts/*` | files from the build, cached long |
  *
@@ -30,7 +31,10 @@
  *   by a player while those are withheld, or simply absent, and a day that is
  *   today, in the future or before history, all get the same 404 document,
  *   byte for byte. `pageText` decides from the dataset alone, so a stranger
- *   cannot ask this server what it is holding back.
+ *   cannot ask this server what it is holding back. A player who chose to
+ *   hide, a key nobody holds and a key from before a hide are one miss in the
+ *   same way, and so is every path under `/data/` the build made no body for:
+ *   a body exists exactly where its page does, and the rest share one JSON 404.
  *
  * The security headers go on every response — the 404s, 429s, 503s and 500s
  * included — set after the handler has run, the way Hono's own
@@ -57,6 +61,7 @@ import {
   pageText,
   parsePage,
   type SiteLookup,
+  type SitePlayerEntry,
   UNAVAILABLE_TEXT,
 } from "../wire";
 import { injectHead, renderHead } from "./head";
@@ -79,7 +84,8 @@ export const DOWNLOADS_PER_MINUTE = 30;
  * On every response.
  *
  * The policy allows exactly what the page uses: its own script, stylesheet,
- * fonts and images, and `fetch` back to this origin for `/puzzles.json`.
+ * fonts and images, and `fetch` back to this origin for `/puzzles.json` and
+ * the `/data/` bodies.
  * Inline styling done through the CSSOM — `el()`, the glyphs, the board's
  * canvas — is allowed under `style-src 'self'`; inline `<script>` and
  * `style=` attributes are not, and the build has neither. Nobody may frame
@@ -123,7 +129,24 @@ const UNAVAILABLE = Object.freeze({
   error: "The puzzle archive is not available yet. Try again in a minute.",
 });
 
-const PAGE_PATHS = ["/", "/puzzle/:id{[0-9]+}", "/days", "/day/:day{[0-9]+}"] as const;
+/**
+ * The page routes. `/player/:key` takes any segment and leaves the spelling to
+ * `parsePage`, which every page route reads the raw path through anyway: a
+ * second copy of the key's alphabet here could only disagree with it.
+ */
+const PAGE_PATHS = [
+  "/",
+  "/puzzle/:id{[0-9]+}",
+  "/days",
+  "/day/:day{[0-9]+}",
+  "/leaderboards",
+  "/players",
+  "/player/:key",
+] as const;
+
+/** Every miss under `/data/`, byte for byte: a page's body is JSON, so its miss is too. */
+const DATA_MISS = JSON.stringify({ error: "Not found" });
+const JSON_TYPE = "application/json; charset=utf-8";
 
 export function createSiteApp(deps: SiteDependencies): Hono {
   const limits = deps.limits ?? { perMinute: PER_MINUTE, downloadsPerMinute: DOWNLOADS_PER_MINUTE };
@@ -177,8 +200,9 @@ function addDataRoutes(app: Hono, deps: SiteDependencies): void {
   app.get("/puzzles.json", (c) => {
     const dataset = deps.dataset();
     if (!dataset) return c.json(UNAVAILABLE, 503, { ...NO_STORE, "Retry-After": RETRY_AFTER });
-    return download(c, dataset.json, { "Content-Type": "application/json; charset=utf-8" });
+    return download(c, dataset.json, { "Content-Type": JSON_TYPE });
   });
+  app.get("/data/*", (c) => body(c, deps));
   app.get("/puzzles.sqlite", (c) => {
     const dataset = deps.dataset();
     if (!dataset) return c.json(UNAVAILABLE, 503, { ...NO_STORE, "Retry-After": RETRY_AFTER });
@@ -203,7 +227,7 @@ function addDataRoutes(app: Hono, deps: SiteDependencies): void {
 }
 
 /**
- * One of the dataset's two downloads, or a bodyless 304 when the caller
+ * One of the dataset's byte arrays — a download or a body — or a bodyless 304 when the caller
  * already holds exactly these bytes.
  *
  * The tag is the bytes' own hash, so it changes exactly when they do. Every
@@ -215,6 +239,24 @@ function download(c: Context, bytes: Uint8Array, headers: Readonly<Record<string
   const fresh = { ETag: tag, "Cache-Control": DATA_CACHE };
   if (holds(c.req.header("If-None-Match"), tag)) return c.body(null, 304, fresh);
   return c.body(sent(bytes), 200, { ...headers, ...fresh });
+}
+
+/**
+ * One page's body, looked up by the path exactly as the browser sent it.
+ *
+ * Undecoded, for the reason `page` gives: `/data/day/%32%37%34.json` is not a
+ * second address for day 274's body. The build keyed every body by the path
+ * `bodyPathFor` gives its page, so a lookup is the whole of the routing, and
+ * anything it does not find — today, a puzzle withheld, a player who hid, a
+ * typo — is the same miss.
+ */
+function body(c: Context, deps: SiteDependencies): Response {
+  const dataset = deps.dataset();
+  if (!dataset) return c.json(UNAVAILABLE, 503, { ...NO_STORE, "Retry-After": RETRY_AFTER });
+  const pathname = URL.parse(c.req.url)?.pathname;
+  const bytes = pathname === undefined ? undefined : dataset.bodies.get(pathname);
+  if (bytes === undefined) return c.body(DATA_MISS, 404, { "Content-Type": JSON_TYPE });
+  return download(c, bytes, { "Content-Type": JSON_TYPE });
 }
 
 /** Hashed once per array: a dataset's bytes never change, the refresher swaps whole datasets. */
@@ -308,10 +350,21 @@ async function readTemplate(buildRoot: string): Promise<string | null> {
   }
 }
 
+/** Each dataset's players by key, built on its first player page and dropped with it. */
+const playersByKey = new WeakMap<Dataset, ReadonlyMap<string, SitePlayerEntry>>();
+
 function lookupIn(dataset: Dataset): SiteLookup {
   return {
     puzzle: (id) => dataset.puzzleById.get(id),
     day: (day) => dataset.dayByNumber.get(day),
+    player: (key) => {
+      let players = playersByKey.get(dataset);
+      if (players === undefined) {
+        players = new Map(dataset.data.players.map((player) => [player.key, player]));
+        playersByKey.set(dataset, players);
+      }
+      return players.get(key);
+    },
   };
 }
 

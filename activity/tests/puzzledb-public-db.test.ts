@@ -3,12 +3,21 @@
  * database, and the evidence that nothing personal does.
  *
  * Everything public — `/puzzles.json`, the `/puzzles.sqlite` download, every
- * page head — is read back out of one in-memory SQLite database built from an
- * allowlist, so its schema is the complete list of what can be public. These
- * tests pin that list as a literal, then hold a full build over the planted
- * fixture to it: no planted value, no Discord-shaped number, no `discord:`
- * attribution and no avatar URL — in the file's bytes, in any cell read as
- * text, or in the JSON.
+ * `/data/…` body, every page head — is read back out of one in-memory SQLite
+ * database built from an allowlist, so its schema is the complete list of what
+ * can be public. These tests pin that list as a literal, then hold a full build
+ * over the planted fixture to it: no planted value, no Discord-shaped number,
+ * no `discord:` attribution and no avatar URL — in the file's bytes, in any
+ * cell read as text, in the JSON, or in any body.
+ *
+ * Since the site began publishing players, some values are public for one row
+ * and forbidden for the next: a shown player's name beside a hidden one's, a
+ * named server beside one on the owner's hide list. So every scan here has a
+ * positive control beside it — the fixture's printable names and keys must be
+ * found — because a scan that finds nothing proves nothing if the build simply
+ * printed nobody. The fixture's quiet server is on the hide list in every build
+ * here but one, and that one shows its name is withheld by the list and not by
+ * accident.
  *
  * Values, not names. `tracked-archive.test.ts` checks the committed archive's
  * column names, which is the right check for a file built from a fixed schema
@@ -25,6 +34,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PublicPuzzle } from "../server/public-routes";
 import { blueprintLink } from "../shared/blueprint/viewer";
+import { buildBodies } from "../puzzledb/server/bodies";
 import { buildDataset } from "../puzzledb/server/dataset";
 import { FIRST_TIERED_DAY, POLICY } from "../puzzledb/server/policy";
 import {
@@ -35,8 +45,9 @@ import {
   readPublicDatabase,
   writePublicDatabase,
 } from "../puzzledb/server/public-db";
+import { readPlayerData } from "../puzzledb/server/public-db-players";
 import { openGameDatabase, readSnapshot } from "../puzzledb/server/snapshot";
-import type { Dataset, GameSnapshot } from "../puzzledb/server/types";
+import type { Dataset, GameSnapshot, Policy } from "../puzzledb/server/types";
 import { dateOfDay, SCHEMA_VERSION, type SitePuzzle } from "../puzzledb/wire";
 import {
   COMMUNITY_AUTHOR,
@@ -45,8 +56,11 @@ import {
   fixtureSources,
   gameFixture,
   type GameFixture,
+  MAY_PUBLISH,
   NOW,
   PLANTED,
+  PLAYERS,
+  SERVERS,
   TODAY,
 } from "./puzzledb-fixture";
 
@@ -76,7 +90,42 @@ const ALLOWLIST = {
   ],
   day_puzzles: ["day", "date", "tier", "puzzle_id"],
   about: ["key", "value"],
+  servers: ["key", "name"],
+  players: [
+    "key",
+    "name",
+    "days_solved",
+    "dailies",
+    "current_streak",
+    "best_streak",
+    "puzzles_cleared",
+    "lines_found",
+    "rush_runs",
+    "rush_best",
+    "rush_best_ms",
+    "rush_best_day",
+  ],
+  tier_boards: [
+    "day",
+    "tier",
+    "rank",
+    "server_key",
+    "player_key",
+    "puzzle_id",
+    "solved",
+    "time_ms",
+    "attack",
+    "target_attack",
+  ],
+  day_boards: ["day", "scope", "rank", "player_key", "solved", "time_ms", "easy", "medium", "hard", "extreme"],
+  rush_boards: ["day", "rank", "server_key", "player_key", "solved", "time_ms"],
+  standings: ["board", "scope", "rank", "player_key", "value", "detail", "time_ms", "day"],
+  puzzle_stats: ["puzzle_id", "hand_ins", "solves", "fastest_ms", "median_ms", "fastest_player_key"],
+  lines: ["puzzle_id", "position", "attack", "clears", "steps"],
 } as const;
+
+/** The fixture's policy: the owner's, with the quiet server on the hide list, as every privacy test has it. */
+const PRIVATE: Policy = { ...POLICY, hiddenServerKeys: new Set([SERVERS.quiet.key]) };
 
 /** Withheld while the policy keeps community puzzles off the site, and public once it lists them. */
 const WITHHELD_WITH_COMMUNITY = [COMMUNITY_AUTHOR, COMMUNITY_TITLE];
@@ -101,6 +150,16 @@ function latin1(bytes: Uint8Array): string {
 
 function jsonText(dataset: Dataset): string {
   return new TextDecoder().decode(dataset.json);
+}
+
+/** Every `/data/…` body of a build, as one text per body. */
+function bodyTexts(dataset: Dataset): string[] {
+  return [...dataset.bodies.values()].map((bytes) => new TextDecoder().decode(bytes));
+}
+
+/** Everything a build serves, as text: the JSON, the download's bytes, and every body. */
+function everythingServed(dataset: Dataset): string[] {
+  return [jsonText(dataset), latin1(dataset.sqlite), ...bodyTexts(dataset)];
 }
 
 function withDownload<T>(bytes: Uint8Array, read: (db: Database) => T): T {
@@ -193,7 +252,7 @@ beforeAll(() => {
   } finally {
     db.close();
   }
-  dataset = buildDataset(snapshot, fixtureSources(game), NOW);
+  dataset = buildDataset(snapshot, fixtureSources(game), NOW, PRIVATE);
 });
 
 afterAll(() => {
@@ -202,7 +261,7 @@ afterAll(() => {
 });
 
 describe("the allowlist", () => {
-  test("has exactly the tables puzzles, day_puzzles and about, with exactly these columns", () => {
+  test("has exactly the allowlisted tables, with exactly these columns", () => {
     expect(PUBLIC_COLUMNS).toEqual(ALLOWLIST);
     withDownload(dataset.sqlite, (db) => {
       const objects = db
@@ -214,7 +273,7 @@ describe("the allowlist", () => {
           !(object.type === "index" && object.name.startsWith("sqlite_autoindex_")),
       );
 
-      expect(tablesOf(db)).toEqual(["about", "day_puzzles", "puzzles"]);
+      expect(tablesOf(db)).toEqual(Object.keys(ALLOWLIST).sort());
       // No sqlite_sequence, view or trigger, and no index but those the primary keys make.
       expect(extras).toEqual([]);
       for (const [table, columns] of Object.entries(ALLOWLIST)) {
@@ -291,6 +350,21 @@ describe("no personal data (full fixture)", () => {
     expect(leaksIn(jsonText(dataset), WITHHELD_WITH_COMMUNITY)).toEqual([]);
   });
 
+  test("carries none of them in any /data/ body either", () => {
+    const bodies = bodyTexts(dataset);
+
+    // A body for every finished day, listed puzzle and shown player, and the leaderboards.
+    expect(bodies.length).toBe(dataset.data.days.length + dataset.data.puzzles.length + dataset.data.players.length + 1);
+    expect(bodies.flatMap((text) => leaksIn(text, WITHHELD_WITH_COMMUNITY))).toEqual([]);
+  });
+
+  test("does print what it exists to print: the shown players, their keys, the named servers", () => {
+    const served = everythingServed(dataset).join("\n");
+
+    expect(MAY_PUBLISH.filter((value) => !served.includes(value))).toEqual([]);
+    expect(dataset.data.players.map((player) => player.name)).toEqual([PLAYERS.unchosen.name, PLAYERS.visible.name]);
+  });
+
   test("has no cell holding any of them when read as text, which catches an id stored as INTEGER", () => {
     const cells = cellsAsText(dataset.sqlite);
 
@@ -299,20 +373,43 @@ describe("no personal data (full fixture)", () => {
   });
 
   test("hands over nothing but what it serves", () => {
-    const fields = ["builtAt", "data", "dayByNumber", "json", "puzzleById", "sqlite"];
+    const fields = ["bodies", "builtAt", "data", "dayByNumber", "json", "puzzleById", "sqlite"];
 
     expect(Object.keys(dataset).sort()).toEqual(fields);
   });
 
   test("with community listed, a display name is all a submission contributes", () => {
-    const listing = buildDataset(snapshot, fixtureSources(game), NOW, { ...POLICY, publishCommunity: true });
+    const listing = buildDataset(snapshot, fixtureSources(game), NOW, { ...PRIVATE, publishCommunity: true });
     const community = listing.puzzleById.get(COMMUNITY_ID);
 
     expect(community?.author).toBe(COMMUNITY_AUTHOR);
     expect(community?.title).toBe(COMMUNITY_TITLE);
-    expect(leaksIn(latin1(listing.sqlite))).toEqual([]);
-    expect(leaksIn(jsonText(listing))).toEqual([]);
+    expect(everythingServed(listing).flatMap((text) => leaksIn(text))).toEqual([]);
     expect(cellsAsText(listing.sqlite).flatMap((cell) => leaksIn(cell))).toEqual([]);
+  });
+});
+
+describe("the server hide list", () => {
+  test("keeps a listed server's name out of every byte, and leaves its key and the others' names", () => {
+    const quiet = SERVERS.quiet;
+
+    expect(everythingServed(dataset).filter((text) => text.includes(quiet.name!))).toEqual([]);
+    expect(dataset.data.servers).toContainEqual({ key: quiet.key, name: null });
+    expect(dataset.data.servers).toContainEqual({ key: SERVERS.club.key, name: SERVERS.club.name });
+    withDownload(dataset.sqlite, (db) => {
+      expect(db.query("SELECT name FROM servers WHERE key = ?1").get(quiet.key)).toEqual({ name: null });
+    });
+  });
+
+  test("is what withholds it: the owner's empty list prints the name Discord gave", () => {
+    const unlisted = buildDataset(snapshot, fixtureSources(game), NOW, POLICY);
+
+    expect(unlisted.data.servers).toContainEqual({ key: SERVERS.quiet.key, name: SERVERS.quiet.name });
+  });
+
+  test("shows a server with a Discord-shaped name, and one never named, as unnamed", () => {
+    expect(dataset.data.servers).toContainEqual({ key: SERVERS.digitRun.key, name: null });
+    expect(dataset.data.servers).toContainEqual({ key: SERVERS.unnamed.key, name: null });
   });
 });
 
@@ -328,6 +425,13 @@ describe("one allowlist", () => {
     expect(dataset.data).toEqual(fromFile.data);
     expect(fromFile.rows).toBe(dataset.data.puzzles.length);
     expect(fromFile.deals).toBe(dataset.data.days.flatMap((day) => day.deals).length);
+  });
+
+  test("cuts every body from the download, so a body can say nothing the file does not", () => {
+    const fromFile = withDownload(dataset.sqlite, (db) => buildBodies(readPublicDatabase(db), readPlayerData(db)));
+
+    expect([...fromFile.keys()]).toEqual([...dataset.bodies.keys()]);
+    for (const [path, bytes] of fromFile) expect(Buffer.from(bytes).equals(Buffer.from(dataset.bodies.get(path)!))).toBe(true);
   });
 
   test("reads days back grouped, deals in daily order, and links a code only where there is one", () => {
@@ -379,7 +483,7 @@ describe("one allowlist", () => {
   test("builds identical bytes from identical rows", () => {
     const first = writePublicDatabase(sampleRows());
     const second = writePublicDatabase(sampleRows());
-    const again = buildDataset(snapshot, fixtureSources(game), NOW);
+    const again = buildDataset(snapshot, fixtureSources(game), NOW, PRIVATE);
 
     expect(Buffer.from(second.sqlite).equals(Buffer.from(first.sqlite))).toBe(true);
     expect(second.data).toEqual(first.data);

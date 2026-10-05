@@ -13,6 +13,10 @@
  * - a club puzzle the archive has since lost, named by its number, because it
  *   was dealt, and leaving the tier out would say it was not.
  *
+ * Below the deal cards, a day's own page carries how the day went — the field,
+ * the boards and the rush (`day-boards.ts`) — drawn into a slot the page fills
+ * once the day's body arrives, so the deals are there at once.
+ *
  * **A day shows each puzzle as it is now.** An officer's correction or a
  * re-sync since may have changed what that day dealt, and there is no record
  * of the old text to show instead, so both views say so in a footnote rather
@@ -161,8 +165,8 @@ function dayPager(day: SiteDay, index: SiteIndex): HTMLElement {
   );
 }
 
-/** `/day/274`: one finished day, a card per tier. */
-export function createDayView(day: SiteDay, index: SiteIndex): HTMLElement {
+/** `/day/274`: one finished day, a card per tier, then `boards` — how it went — when given. */
+export function createDayView(day: SiteDay, index: SiteIndex, boards: HTMLElement | null = null): HTMLElement {
   return el(
     "div",
     { class: "pdb-stack" },
@@ -178,6 +182,7 @@ export function createDayView(day: SiteDay, index: SiteIndex): HTMLElement {
       ...day.deals.map((deal) => dealCard(deal, index, { actions: true })),
     ),
     el("p", { class: "note", text: AS_THEY_ARE_NOW }),
+    boards,
     dayPager(day, index),
   );
 }

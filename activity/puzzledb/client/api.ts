@@ -1,11 +1,13 @@
 /**
- * The page's one request: the whole archive, from `/puzzles.json`.
+ * The page's requests: the index, from `/puzzles.json`, once per visit, and
+ * one body from `/data/…` for each page that needs more than the index.
  *
  * Same origin, no credentials, no prefix and no token. The site's server
- * builds the file on every change to what players are dealt and serves it
- * revalidated on every use — no-cache with an ETag, so an unchanged archive
- * costs a bodyless 304 — and the page asks once per visit, then filters,
- * routes and steps answers from then on without the network.
+ * builds every file on every change to what is public and serves them
+ * revalidated on every use — no-cache with an ETag, so an unchanged file costs
+ * a bodyless 304. The index names every page, so filtering, routing and the
+ * tab's title never wait on the network; a body is what a day's boards, a
+ * player's runs, a puzzle's lines and the all-time boards are drawn from.
  *
  * A failure becomes an `ApiError`, the type the game and the review tool
  * already throw, so a failed request reads the same wherever it happened: a
@@ -34,9 +36,23 @@ const browserFetch: Fetcher = (input, init) => fetch(input, init);
 
 /** Reads the archive, or throws an `ApiError` that says why it could not. */
 export async function loadSiteData(fetcher: Fetcher = browserFetch): Promise<SiteData> {
+  return readSiteData(await fetchJson(DATA_PATH, fetcher));
+}
+
+/**
+ * Reads one page's body, unchecked: the page knows which body it asked for and
+ * checks its shape (`readBody`). A miss is an `ApiError` with status 404, which
+ * the page shows as the missing page it is.
+ */
+export async function loadBody(path: string, fetcher: Fetcher = browserFetch): Promise<unknown> {
+  return fetchJson(path, fetcher);
+}
+
+/** One same-origin JSON request, or an `ApiError` in the server's own words. */
+async function fetchJson(path: string, fetcher: Fetcher): Promise<unknown> {
   let response: Response;
   try {
-    response = await fetcher(DATA_PATH, { headers: { Accept: "application/json" } });
+    response = await fetcher(path, { headers: { Accept: "application/json" } });
   } catch (cause) {
     // Kept as the cause rather than logged here: the page logs the failure
     // once, with this attached, at the point it decides what to show.
@@ -61,5 +77,5 @@ export async function loadSiteData(fetcher: Fetcher = browserFetch): Promise<Sit
     const error = new ApiError("The archive answered with something that is not JSON.", response.status);
     throw Object.assign(error, { cause });
   }
-  return readSiteData(body);
+  return body;
 }

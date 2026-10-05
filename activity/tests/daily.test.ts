@@ -14,8 +14,10 @@ import {
   DEFAULT_TIME_ZONE,
   dailyTierOf,
   dayNumber,
+  dayStarts,
   nextResetAt,
   puzzleIndexForDay,
+  startOfDay,
 } from "../shared/daily";
 import { readFileSync } from "node:fs";
 import type { Puzzle } from "../shared/puzzle";
@@ -87,6 +89,104 @@ describe("daily rotation", () => {
     // 05:00 UTC on the 15th is still the evening of the 14th in Pacific.
     const instant = Date.UTC(2026, 0, 15, 5, 0);
     expect(dayNumber(instant, { timeZone: "UTC" })).toBe(dayNumber(instant) + 1);
+  });
+});
+
+// ── When a day begins, as an instant ─────────────────────────────────────────
+//
+// db.tetrisatuci.org cuts two millisecond columns — when a line was filed, when
+// a puzzle was first cleared — at the start of a day, in the game's own zone.
+// A start that is an hour out on a daylight-saving night would show a line
+// filed in the first hour of today, so these walk both of 2026's change nights.
+
+/** 2026-03-08 and 2026-11-01: the club's spring-forward and fall-back days. */
+const SPRING_FORWARD = 67;
+const FALL_BACK = 305;
+const HOUR = 3_600_000;
+
+describe("the instant a day begins", () => {
+  test("is the local midnight that starts it, either side of daylight saving", () => {
+    expect(pacific(startOfDay(15))).toBe("2026-01-15, 00:00");
+    expect(startOfDay(15)).toBe(Date.UTC(2026, 0, 15, 8));
+    expect(startOfDay(196)).toBe(Date.UTC(2026, 6, 15, 7));
+  });
+
+  test("makes the spring-forward day 23 hours long and the fall-back day 25", () => {
+    expect(startOfDay(SPRING_FORWARD)).toBe(Date.UTC(2026, 2, 8, 8));
+    expect(startOfDay(SPRING_FORWARD + 1) - startOfDay(SPRING_FORWARD)).toBe(23 * HOUR);
+    expect(startOfDay(FALL_BACK)).toBe(Date.UTC(2026, 10, 1, 7));
+    expect(startOfDay(FALL_BACK + 1) - startOfDay(FALL_BACK)).toBe(25 * HOUR);
+  });
+
+  test("agrees with dayNumber on both sides of every boundary for three years, in several zones", () => {
+    // Half-hour offsets and a half-hour daylight change included: Lord Howe
+    // moves its clocks by thirty minutes, which a whole-hour guess gets wrong.
+    const zones = [DEFAULT_TIME_ZONE, "UTC", "Asia/Kolkata", "Australia/Lord_Howe", "Europe/London"];
+    const wrong: string[] = [];
+    for (const timeZone of zones) {
+      for (let day = 1; day <= 3 * 366; day++) {
+        const start = startOfDay(day, { timeZone });
+        if (dayNumber(start, { timeZone }) !== day) wrong.push(`${timeZone} ${day} start`);
+        if (dayNumber(start - 1, { timeZone }) !== day - 1) wrong.push(`${timeZone} ${day} before`);
+      }
+    }
+
+    expect(wrong).toEqual([]);
+  });
+
+  test("is the reset the day before it was counting down to", () => {
+    for (const day of [15, 196, SPRING_FORWARD, SPRING_FORWARD + 1, FALL_BACK, FALL_BACK + 1]) {
+      const noonBefore = startOfDay(day - 1) + 12 * HOUR;
+      expect(nextResetAt(noonBefore)).toBe(startOfDay(day));
+    }
+  });
+
+  test("defaults to the club's zone, and moves with another", () => {
+    expect(startOfDay(15)).toBe(startOfDay(15, { timeZone: DEFAULT_TIME_ZONE }));
+    expect(startOfDay(15, { timeZone: "UTC" })).toBe(Date.UTC(2026, 0, 15));
+  });
+});
+
+describe("a run of day starts", () => {
+  test("holds one start per day, first to last inclusive, in order", () => {
+    const starts = dayStarts(SPRING_FORWARD - 2, FALL_BACK + 2);
+
+    expect(starts).toHaveLength(FALL_BACK - SPRING_FORWARD + 5);
+    expect(starts[0]).toBe(startOfDay(SPRING_FORWARD - 2));
+    expect(starts.at(-1)).toBe(startOfDay(FALL_BACK + 2));
+    expect(starts.every((start, i) => i === 0 || start > starts[i - 1]!)).toBe(true);
+    expect(dayStarts(10, 10)).toEqual([startOfDay(10)]);
+  });
+
+  test("is empty when the range is", () => {
+    expect(dayStarts(11, 10)).toEqual([]);
+  });
+
+  test("takes the zone it is given", () => {
+    expect(dayStarts(15, 16, { timeZone: "UTC" })).toEqual([Date.UTC(2026, 0, 15), Date.UTC(2026, 0, 16)]);
+  });
+
+  test("names the day of any instant as the site's SQL will: the last start at or before it", () => {
+    // `LINE_DAY` in the site's snapshot is MAX(index) over these starts where
+    // start <= found_at, plus the first day. Every quarter hour across both
+    // change nights, that must be the day the game was on.
+    const lo = SPRING_FORWARD - 3;
+    const timeZone = DEFAULT_TIME_ZONE;
+    const starts = dayStarts(lo, FALL_BACK + 3, { timeZone });
+    const lineDay = (instant: number) => starts.findLastIndex((start) => start <= instant) + lo;
+    const nights = [
+      [startOfDay(SPRING_FORWARD - 1), startOfDay(SPRING_FORWARD + 2)],
+      [startOfDay(FALL_BACK - 1), startOfDay(FALL_BACK + 2)],
+    ] as const;
+
+    const wrong: number[] = [];
+    for (const [from, to] of nights) {
+      for (let instant = from; instant < to; instant += 15 * 60_000) {
+        if (lineDay(instant) !== dayNumber(instant, { timeZone })) wrong.push(instant);
+      }
+    }
+
+    expect(wrong).toEqual([]);
   });
 });
 

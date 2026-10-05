@@ -29,10 +29,11 @@ import { createSiteApp, DOWNLOADS_PER_MINUTE, PER_MINUTE, type SiteDependencies 
 import { buildDataset } from "../puzzledb/server/dataset";
 import { HEAD_PLACEHOLDER, injectHead, renderHead } from "../puzzledb/server/head";
 import { siteCallerKey } from "../puzzledb/server/main";
-import { FIRST_TIERED_DAY } from "../puzzledb/server/policy";
+import { FIRST_TIERED_DAY, POLICY } from "../puzzledb/server/policy";
 import { openGameDatabase, readSnapshot } from "../puzzledb/server/snapshot";
-import type { Dataset, RefreshStatus } from "../puzzledb/server/types";
+import type { Dataset, Policy, RefreshStatus } from "../puzzledb/server/types";
 import {
+  bodyPathFor,
   NOT_FOUND_TEXT,
   type PageText,
   pageText,
@@ -49,8 +50,11 @@ import {
   fixtureSources,
   gameFixture,
   type GameFixture,
+  MAY_PUBLISH,
   NOW,
   PLANTED,
+  PLAYERS,
+  SERVERS,
   TODAY,
   UNPUBLISHED_ID,
 } from "./puzzledb-fixture";
@@ -92,6 +96,21 @@ const EXPECTED_SECURITY_HEADERS = {
   "Referrer-Policy": "strict-origin-when-cross-origin",
 } as const;
 
+/**
+ * The owner's policy, with the fixture's "Listed Quiet Club" on the hide list.
+ *
+ * Under the shipped, empty list that name is published by design; the fixture
+ * plants it so a test can prove a listed server's name reaches no byte, and
+ * every build here lists it so the privacy walk below can scan for it.
+ */
+const POLICY_LISTING_QUIET: Policy = Object.freeze({ ...POLICY, hiddenServerKeys: new Set([SERVERS.quiet.key]) });
+
+/** The body every miss under `/data/` gets, byte for byte. */
+const DATA_MISS = '{"error":"Not found"}';
+
+/** A key shaped exactly like a player's that nobody holds. */
+const NOBODYS_KEY = "zzzzzzzzzz";
+
 const READY: RefreshStatus = Object.freeze({ ready: true, builtAt: NOW, checkedAt: NOW + 5_000, failing: null });
 
 /** Withheld while the policy keeps player-written puzzles off the site. */
@@ -114,11 +133,15 @@ beforeAll(() => {
   game = gameFixture();
   const db = openGameDatabase(game.databasePath);
   try {
-    dataset = buildDataset(readSnapshot(db, TODAY, FIRST_TIERED_DAY), fixtureSources(game), NOW);
+    dataset = buildDataset(readSnapshot(db, TODAY, FIRST_TIERED_DAY), fixtureSources(game), NOW, POLICY_LISTING_QUIET);
   } finally {
     db.close();
   }
-  lookup = { puzzle: (id) => dataset.puzzleById.get(id), day: (day) => dataset.dayByNumber.get(day) };
+  lookup = {
+    puzzle: (id) => dataset.puzzleById.get(id),
+    day: (day) => dataset.dayByNumber.get(day),
+    player: (key) => dataset.data.players.find((player) => player.key === key),
+  };
   built = buildRoot(TEMPLATE);
   unbuilt = buildRoot(null);
 });
@@ -193,14 +216,22 @@ function iso(at: number): string {
   return new Date(at).toISOString();
 }
 
-/** Every listed page, and every listed day's page. */
+/** Every listed page: the lists, every puzzle, every finished day and every shown player. */
 function listedPages(): string[] {
   return [
     "/",
     "/days",
+    "/leaderboards",
+    "/players",
     ...dataset.data.puzzles.map((puzzle) => `/puzzle/${puzzle.id}`),
     ...dataset.data.days.map((day) => `/day/${day.day}`),
+    ...dataset.data.players.map((player) => `/player/${player.key}`),
   ];
+}
+
+/** Every body the build made, by the path its page asks for. */
+function bodyPaths(): string[] {
+  return [...dataset.bodies.keys()];
 }
 
 describe("the data", () => {
@@ -255,7 +286,12 @@ describe("the data", () => {
     const db = openGameDatabase(game.databasePath);
     let rebuilt: Dataset;
     try {
-      rebuilt = buildDataset(readSnapshot(db, TODAY, FIRST_TIERED_DAY), fixtureSources(game), NOW + 60_000);
+      rebuilt = buildDataset(
+        readSnapshot(db, TODAY, FIRST_TIERED_DAY),
+        fixtureSources(game),
+        NOW + 60_000,
+        POLICY_LISTING_QUIET,
+      );
     } finally {
       db.close();
     }
@@ -274,8 +310,9 @@ describe("the data", () => {
     // body is not empty, and which a link checker reads as an empty page.
     const app = siteApp();
     const puzzle = dataset.data.puzzles[0]!.id;
-    const paths = ["/", `/puzzle/${puzzle}`, "/days", "/puzzles.json", "/puzzles.sqlite", "/health"];
-    for (const path of [...paths, "/assets/app.js", "/fonts/x.woff2", "/no-such-page"]) {
+    const paths = ["/", `/puzzle/${puzzle}`, "/days", "/leaderboards", "/puzzles.json", "/puzzles.sqlite", "/health"];
+    const bodies = [bodyPathFor({ kind: "leaderboards" })!, "/data/nothing.json"];
+    for (const path of [...paths, ...bodies, "/assets/app.js", "/fonts/x.woff2", "/no-such-page"]) {
       const get = await app.request(path);
       const length = (await get.arrayBuffer()).byteLength;
       const head = await app.request(path, { method: "HEAD" });
@@ -305,6 +342,65 @@ describe("the data", () => {
     expect(health.status).toBe(503);
     expect(health.headers.get("Cache-Control")).toBe("no-store");
     expect(await health.json()).toEqual({ ok: false, checkedAt: iso(NOW) });
+  });
+
+  test("serves every body the build made, byte for byte, as JSON revalidated by its own tag", async () => {
+    const app = siteApp();
+    const paths = bodyPaths();
+    // One per finished day, listed puzzle and shown player, and the all-time boards.
+    const expected = dataset.data.days.length + dataset.data.puzzles.length + dataset.data.players.length + 1;
+    expect(paths).toHaveLength(expected);
+    expect(paths).toContain(bodyPathFor({ kind: "leaderboards" })!);
+
+    for (const path of paths) {
+      const answer = await app.request(path);
+      expect(answer.status).toBe(200);
+      expect(answer.headers.get("Content-Type")).toBe("application/json; charset=utf-8");
+      expect(answer.headers.get("Cache-Control")).toBe("no-cache");
+      const tag = answer.headers.get("ETag")!;
+      expect(tag).toMatch(/^"[0-9a-z]+"$/);
+      expect((await bytesOf(answer)).equals(Buffer.from(dataset.bodies.get(path)!))).toBe(true);
+
+      const again = await app.request(path, { headers: { "If-None-Match": tag } });
+      expect(again.status).toBe(304);
+      expect(await again.text()).toBe("");
+    }
+  });
+
+  test("answers every miss under /data/ with one JSON 404, byte for byte, whatever it missed", async () => {
+    const app = siteApp();
+    const first = await answerOf(app, "/data/nothing.json");
+    expect(first.status).toBe(404);
+    expect(first.body).toBe(DATA_MISS);
+    expect(new Map(first.headers).get("content-type")).toBe("application/json; charset=utf-8");
+
+    const unfinished = [`/data/day/${TODAY}.json`, `/data/day/${TODAY + 1}.json`, `/data/day/${FIRST_TIERED_DAY - 1}.json`];
+    const unlisted = [`/data/puzzle/${UNPUBLISHED_ID}.json`, `/data/puzzle/${COMMUNITY_ID}.json`, "/data/puzzle/9999.json"];
+    // A player who hid, a name that is a long number, the guest, and a key nobody holds: one miss.
+    const withheld = [PLAYERS.hidden.key, PLAYERS.digitRun.key, PLAYERS.guest.key, NOBODYS_KEY];
+    const spellings = [
+      "/data/",
+      "/data",
+      `/data/day/0${TODAY - 1}.json`,
+      `/data/day/${TODAY - 1}`,
+      `/data/day/${TODAY - 1}.json/`,
+      "/data/day/%32%37%34.json",
+      "/data/leaderboards.json.bak",
+      "/data/LEADERBOARDS.json",
+    ];
+    const paths = [...unfinished, ...unlisted, ...withheld.map((key) => `/data/player/${key}.json`), ...spellings];
+    for (const path of paths) {
+      expect({ path, ...(await answerOf(app, path)) }).toEqual({ path, ...first });
+    }
+  });
+
+  test("answers 503 for a body before the first dataset, as for the downloads", async () => {
+    const app = siteApp({ dataset: null });
+    const response = await app.request("/data/leaderboards.json");
+    expect(response.status).toBe(503);
+    expect(response.headers.get("Retry-After")).toBe("30");
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(await response.json()).toEqual(UNAVAILABLE_JSON);
   });
 
   test("reports health without error text, never cached", async () => {
@@ -369,20 +465,39 @@ describe("the pages", () => {
     }
   });
 
+  test("serves a shown player's page by their key, and every other key byte for byte like a missing page", async () => {
+    const app = siteApp();
+    const never = await answerOf(app, "/no-such-page");
+    const shown = dataset.data.players.map((player) => player.key);
+    expect(shown).toEqual(expect.arrayContaining([PLAYERS.visible.key, PLAYERS.unchosen.key]));
+
+    const page = await app.request(`/player/${PLAYERS.visible.key}`);
+    expect(page.status).toBe(200);
+    expect(await page.text()).toContain(`<title>${PLAYERS.visible.name} — Puzzle archive</title>`);
+
+    // A player who hid, a long-number name, the guest, nobody, and keys no player can have.
+    const keys = [PLAYERS.hidden.key, PLAYERS.digitRun.key, PLAYERS.guest.key, NOBODYS_KEY, "VSBPAYER22", "vsbpayer2", "0000000000"];
+    for (const key of keys) {
+      expect({ key, ...(await answerOf(app, `/player/${key}`)) }).toEqual({ key, ...never });
+    }
+  });
+
   test("treats /puzzle/007, /puzzle/12abc and /days/ as missing pages", async () => {
     const app = siteApp();
     const never = await answerOf(app, "/no-such-page");
 
     // A second spelling of a real page included: the page's own router reads
     // the path undecoded, so the server must too, or the two would disagree.
-    for (const path of ["/puzzle/007", "/puzzle/12abc", "/days/", "/PUZZLE/12", "/day/0", "/puzzle/%31%32"]) {
+    const spellings = ["/puzzle/007", "/puzzle/12abc", "/days/", "/PUZZLE/12", "/day/0", "/puzzle/%31%32"];
+    for (const path of [...spellings, "/leaderboards/", "/players/", "/player/", `/player/${PLAYERS.visible.key}/`]) {
       expect(await answerOf(app, path)).toEqual(never);
     }
   });
 
   test("serves a 503 page while there is no dataset, and a plain 503 while the page is not built", async () => {
     const empty = siteApp({ dataset: null });
-    for (const path of ["/", "/days", `/puzzle/${CORRECTED_ID}`, `/day/${TODAY - 1}`]) {
+    const pages = ["/", "/days", "/leaderboards", "/players", `/player/${PLAYERS.visible.key}`];
+    for (const path of [...pages, `/puzzle/${CORRECTED_ID}`, `/day/${TODAY - 1}`]) {
       const response = await empty.request(path);
       expect(response.status).toBe(503);
       expect(response.headers.get("Retry-After")).toBe("30");
@@ -460,7 +575,7 @@ describe("what else answers", () => {
 
   test("answers POST, PUT, PATCH, DELETE and OPTIONS with 404 everywhere", async () => {
     const app = siteApp();
-    const paths = [...listedPages().slice(0, 4), "/puzzles.json", "/puzzles.sqlite", "/health"];
+    const paths = [...listedPages().slice(0, 6), "/puzzles.json", "/puzzles.sqlite", "/health", ...bodyPaths().slice(0, 3)];
 
     for (const method of ["POST", "PUT", "PATCH", "DELETE", "OPTIONS"]) {
       for (const path of [...paths, "/assets/app.js", "/fonts/x.woff2", "/no-such-page"]) {
@@ -491,6 +606,10 @@ describe("what else answers", () => {
         "GET /puzzle/:id{[0-9]+}",
         "GET /days",
         "GET /day/:day{[0-9]+}",
+        "GET /leaderboards",
+        "GET /players",
+        "GET /player/:key",
+        "GET /data/*",
         "GET /assets/*",
         "GET /fonts/*",
       ].sort(),
@@ -584,8 +703,12 @@ describe("headers and limits", () => {
 describe("privacy over HTTP", () => {
   test("no body on any registered GET route carries a planted value, a Discord-shaped number, discord: or an avatar URL", async () => {
     const app = siteApp({ limits: { perMinute: 10_000, downloadsPerMinute: 10 } });
+    const withheldKeys = [PLAYERS.hidden.key, PLAYERS.digitRun.key, PLAYERS.guest.key, NOBODYS_KEY];
     const paths = [
       ...listedPages(),
+      ...bodyPaths(),
+      ...withheldKeys.flatMap((key) => [`/player/${key}`, `/data/player/${key}.json`]),
+      `/data/day/${TODAY}.json`,
       `/puzzle/${UNPUBLISHED_ID}`,
       `/day/${TODAY}`,
       "/puzzles.json",
@@ -607,6 +730,9 @@ describe("privacy over HTTP", () => {
 
     expect(paths.length).toBeGreaterThan(dataset.data.puzzles.length);
     expect(leaks).toEqual([]);
+    // The positive control: the walk reached the player data it was meant to scan.
+    const everything = (await Promise.all(paths.map(async (path) => (await bytesOf(await app.request(path))).toString("latin1")))).join("\n");
+    expect(MAY_PUBLISH.filter((value) => !everything.includes(value))).toEqual([]);
   });
 });
 

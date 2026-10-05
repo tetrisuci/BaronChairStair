@@ -17,7 +17,10 @@ import {
   readOverrides,
   writeOverride,
 } from "./puzzle-overrides";
+import { bestStreak, currentStreak } from "../shared/streaks";
 import { readPublishedArchive } from "./archive-rows";
+import { CREDITED, LIVE } from "./discovery-sql";
+import { migrateSiteIdentity, SiteIdentity, withFreshKey } from "./site-identity";
 import {
   acceptSubmission,
   countPendingSubmissions,
@@ -812,6 +815,17 @@ export interface SolutionCount {
   readonly missingGoal: number;
 }
 
+/** How the Store is opened, beyond where its file is. */
+export interface StoreOptions {
+  /**
+   * The zone the game deals days in, written into the database at every start
+   * for db.tetrisatuci.org to cut by (`server/site-identity.ts`). The game's
+   * server passes `config.timeZone`; a maintenance tool leaves it out, and the
+   * zone the game last recorded stays as it was.
+   */
+  readonly timeZone?: string;
+}
+
 export interface PastDays {
   /** The last day that has been dealt. Everything up to it is history. */
   readonly throughDay: number;
@@ -861,76 +875,22 @@ const RUN_COLUMNS = `
   runs.pieces_placed, runs.clears, runs.created_at
 `;
 
-/**
- * What a row has to be for its finder to be paid for it, as one clause.
- *
- * Written once because the board and a player's own standing must agree
- * exactly: a rank counted under a different predicate from the board it is a
- * rank *in* is not wrong in some rare case, it is wrong whenever they differ.
- * Every query using it aliases `puzzle_solutions` as `s`.
- *
- * The last clause is `countsAsAlternate` in SQL — solved it, *or* sent more
- * attack than it was asked for. `tests/alternate-solution.test.ts` runs the
- * function and this string against one table of cases, because a board cannot
- * call the function per row and two spellings of one rule drift.
- *
- * `attack > target_attack` is NULL, and so false, on a row filed before that
- * column existed. Those fall back to the solve, which is what they were
- * credited on when they were written — the honest answer rather than a
- * backfilled guess at a target that may since have moved.
- *
- * Note what is absent: `voided_at`. Credit outlives the board it was earned on
- * — see the column.
- */
-const CREDITED =
-  "s.source = 'player' AND s.found_by IS NOT NULL " +
-  "AND (s.solved_strict = 1 OR s.attack > s.target_attack)";
-
-/** The live rows: the ones still describing a board that exists. */
-const LIVE = "voided_at IS NULL";
-
-/**
- * The streak a player is on now, walking back from `today`.
- *
- * `days` arrives newest-first and already distinct. The rule is `Store.streak`'s
- * and is copied rather than shared because that one answers for a single player
- * over a `LIMIT 400` query and this one reduces every player at once — but the
- * *rule* must not differ, so it is written out here in the same shape.
- */
-function currentStreak(days: readonly number[], today: number): number {
-  let streak = 0;
-  let expected = today;
-  for (const day of days) {
-    if (day === expected) {
-      streak++;
-      expected--;
-    } else if (day === expected - 1 && streak === 0) {
-      // Today not yet played does not break a streak; a missed day does.
-      streak++;
-      expected = day - 1;
-    } else {
-      break;
-    }
-  }
-  return streak;
-}
-
-/** The longest run of consecutive days they ever put together. */
-function bestStreak(days: readonly number[]): number {
-  let best = 0;
-  let run = 0;
-  let previous: number | null = null;
-  // Newest-first, so consecutive means each day is one less than the last.
-  for (const day of days) {
-    run = previous !== null && day === previous - 1 ? run + 1 : 1;
-    previous = day;
-    if (run > best) best = run;
-  }
-  return best;
-}
+// `CREDITED` and `LIVE` live in `./discovery-sql`, and `currentStreak` and
+// `bestStreak` in `../shared/streaks`, so that db.tetrisatuci.org — which may
+// not import this module — runs the same rules rather than a copy of them.
 
 export class Store {
   private readonly db: Database;
+  private readonly identity: SiteIdentity;
+
+  /**
+   * Player and server keys, server names, the opt-out and the zone fact: what
+   * db.tetrisatuci.org reads instead of Discord ids. Its own module because
+   * this one is long enough; it shares this handle and so this transaction.
+   */
+  get siteIdentity(): SiteIdentity {
+    return this.identity;
+  }
 
   /**
    * The handle, for the read-only archive queries in `server/archive-rows.ts`.
@@ -949,8 +909,9 @@ export class Store {
    * @param pastDays the rotation to write history down from, for a caller whose
    *   archive does not come out of this database. `server/index.ts`'s does, so
    *   it opens the store bare and calls {@link pinPastDays} once it has one.
+   * @param options see {@link StoreOptions}.
    */
-  constructor(path: string, pastDays?: PastDays) {
+  constructor(path: string, pastDays?: PastDays, options: StoreOptions = {}) {
     mkdirSync(dirname(path), { recursive: true });
     this.db = new Database(path, { create: true });
     this.db.exec("PRAGMA journal_mode = WAL");
@@ -1039,6 +1000,12 @@ export class Store {
     // whatever their dailies earned them, which is the honest floor rather than
     // a guess.
     this.backfillClears();
+    // Additive only — two nullable columns and two new tables — so code from
+    // before it still runs on the database it leaves behind. Keys every player
+    // and every server already on file, which the site needs before it can
+    // publish a single row by anything but a Discord id.
+    migrateSiteIdentity(this.db, options.timeZone);
+    this.identity = new SiteIdentity(this.db, options.timeZone);
     // Last, because it writes rows rather than shapes, and it must find every
     // table it touches already built.
     if (pastDays) this.pinPastDays(pastDays);
@@ -1776,17 +1743,24 @@ export class Store {
     this.db.close();
   }
 
+  /**
+   * Writes a player's name and avatar as Discord last gave them.
+   *
+   * A new player is given their site key here, on first write, so nobody is
+   * ever on file without one. An existing player keeps theirs, and keeps their
+   * `site_hidden` choice: the conflict clause names only the three columns
+   * Discord owns, so a sign-in can never re-key or un-hide anybody.
+   */
   upsertPlayer(player: PlayerProfile): void {
-    this.db
-      .query(
-        `INSERT INTO players (id, username, avatar_url, updated_at)
-         VALUES (?1, ?2, ?3, ?4)
-         ON CONFLICT(id) DO UPDATE SET
-           username = excluded.username,
-           avatar_url = excluded.avatar_url,
-           updated_at = excluded.updated_at`,
-      )
-      .run(player.id, player.username, player.avatarUrl, Date.now());
+    const upsert = this.db.query(
+      `INSERT INTO players (id, username, avatar_url, updated_at, public_key)
+       VALUES (?1, ?2, ?3, ?4, ?5)
+       ON CONFLICT(id) DO UPDATE SET
+         username = excluded.username,
+         avatar_url = excluded.avatar_url,
+         updated_at = excluded.updated_at`,
+    );
+    withFreshKey((key) => upsert.run(player.id, player.username, player.avatarUrl, Date.now(), key));
   }
 
   /**
@@ -1806,6 +1780,7 @@ export class Store {
     result: RunResult,
   ): { run: StoredRun; isFirst: boolean } {
     this.upsertPlayer(player);
+    this.identity.ensureGuild(guildId);
     const changes = this.db
       .query(
         `INSERT INTO runs (day, player_id, guild_id, puzzle_id, solved, attack,
@@ -2243,6 +2218,7 @@ export class Store {
     result: RushResult,
   ): { run: StoredRushRun; isFirst: boolean } {
     this.upsertPlayer(player);
+    this.identity.ensureGuild(guildId);
     const changes = this.db
       .query(
         `INSERT INTO rush_runs (day, player_id, guild_id, solved, attempted,

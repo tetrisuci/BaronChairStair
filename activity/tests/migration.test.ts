@@ -416,6 +416,10 @@ describe("writing down what a day dealt", () => {
         "archive_puzzles",
         "day_puzzles",
         "day_rush",
+        // The servers db.tetrisatuci.org has a board for, by the random key it
+        // publishes and the name a sign-in last brought, never by Discord's id.
+        // Created on an old database, then filled from runs and rush runs.
+        "guilds",
         "players",
         "preferences",
         // Append-only, beside the current-state row above: one `updated_by` for
@@ -438,6 +442,9 @@ describe("writing down what a day dealt", () => {
         "puzzle_solutions",
         "runs",
         "rush_runs",
+        // One row today, the game's zone, rewritten at every start: the site
+        // cuts millisecond columns at a midnight it can only take from here.
+        "site_facts",
         "submissions",
       ]);
       // The runs rebuild happens on the same start; its indexes must survive it.
@@ -445,6 +452,10 @@ describe("writing down what a day dealt", () => {
         "archive_content_log_puzzle",
         // Partial, on published_at: the boot read's only question.
         "archive_published",
+        // UNIQUE, and the only thing that does more than hope two players never
+        // draw the same public key. A NULL key (a row older code wrote after a
+        // rollback) is allowed any number of times, as SQLite treats NULLs.
+        "players_public_key",
         "puzzle_override_log_puzzle",
         // One credit per discovery: `_live_key` is UNIQUE and is the whole
         // novelty test, so if it ever fails to appear the leaderboard silently

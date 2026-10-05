@@ -3,15 +3,18 @@
  *
  * Everything the site serves is read back out of a SQLite database built here,
  * in memory, from rows handed in — `/puzzles.json`, the `/puzzles.sqlite`
- * download and every page's title and description. So the schema below is the
+ * download, every `/data/…` body and every page's title and description. So the schema below is the
  * complete list of what can ever be public. It is a list of what goes *in*,
  * not of what to keep out; a list of exclusions goes stale the day somebody
  * adds a column to the game, and nobody notices until it has been served.
  *
  * **It never sees the game's database.** It is handed plain rows, which
- * `dataset.ts` builds from the corrected puzzle list and the finished days, and
- * holds no handle on anything else: nothing here could read a player table if
- * it tried. That is also why this is the one module that calls `serialize()`,
+ * `dataset.ts` builds from the corrected puzzle list, the finished days and the
+ * player snapshot's allowlisted columns, and holds no handle on anything else:
+ * nothing here could read a game table if it tried. Since schema 2 the tables
+ * include the boards and the players who have not hidden — their schema is in
+ * `public-db-players.ts`, merged into this one, so there is still one list.
+ * That is also why this is the one module that calls `serialize()`,
  * and only on its own `:memory:` database. `VACUUM INTO` and copying the game's
  * file were the obvious alternatives, and both publish whatever the file
  * holds, rows still waiting in the write-ahead log included — and a read-only
@@ -27,9 +30,9 @@
  *
  * **The JSON is read back, not built alongside.** {@link readPublicDatabase}
  * reads the rows out again, and that — not the rows handed in — is what becomes
- * the JSON and the page heads. A field cannot reach the JSON without first
- * being a column here, so the JSON and the download cannot disagree about what
- * is public.
+ * the JSON, the bodies and the page heads. A field cannot reach the JSON
+ * without first being a column here, so the JSON and the download cannot
+ * disagree about what is public.
  */
 
 import { Database, type SQLQueryBindings } from "bun:sqlite";
@@ -43,6 +46,15 @@ import {
   type SiteDay,
   type SitePuzzle,
 } from "../wire";
+import {
+  NO_PLAYER_ROWS,
+  PLAYER_COLUMNS,
+  PLAYER_SCHEMA,
+  PLAYER_TABLE_ROWS,
+  type PlayerData,
+  type PlayerRows,
+  readPlayerData,
+} from "./public-db-players";
 
 /** Every column of every public table, in the order a row lists its values. The allowlist. */
 export const PUBLIC_COLUMNS = Object.freeze({
@@ -66,6 +78,7 @@ export const PUBLIC_COLUMNS = Object.freeze({
   ] as const),
   day_puzzles: Object.freeze(["day", "date", "tier", "puzzle_id"] as const),
   about: Object.freeze(["key", "value"] as const),
+  ...PLAYER_COLUMNS,
 });
 
 type PublicTable = keyof typeof PUBLIC_COLUMNS;
@@ -115,6 +128,7 @@ CREATE TABLE about (
   key   TEXT PRIMARY KEY,
   value TEXT
 );
+${PLAYER_SCHEMA}
 PRAGMA user_version = ${SCHEMA_VERSION};
 `;
 
@@ -146,6 +160,12 @@ export interface PublicRows {
   readonly puzzles: readonly PuzzleRow[];
   readonly days: readonly DayRow[];
   readonly about: readonly AboutRow[];
+  /**
+   * The boards and the shown players. Optional only so that a test about the
+   * puzzle tables can build without them; a build always hands them in, and
+   * absent means every player table is empty, never that it is skipped.
+   */
+  readonly players?: PlayerRows;
 }
 
 export interface PublicDatabase {
@@ -153,6 +173,8 @@ export interface PublicDatabase {
   readonly sqlite: Uint8Array;
   /** The same rows read back out: the JSON, and everything a page head says. */
   readonly data: SiteData;
+  /** The player tables read back out, which the `/data/…` bodies are cut from. */
+  readonly players: PlayerData;
 }
 
 /**
@@ -167,8 +189,9 @@ export function writePublicDatabase(rows: PublicRows): PublicDatabase {
   try {
     db.exec(PUBLIC_SCHEMA);
     insertRows(db, rows);
-    const data = readPublicDatabase(db);
-    return Object.freeze({ sqlite: db.serialize(), data });
+    const players = deepFrozen(readPlayerData(db));
+    const data = siteData(db, players);
+    return Object.freeze({ sqlite: db.serialize(), data, players });
   } finally {
     db.close();
   }
@@ -178,10 +201,15 @@ function insertRows(db: Database, rows: PublicRows): void {
   const puzzles = insertInto(db, "puzzles");
   const days = insertInto(db, "day_puzzles");
   const about = insertInto(db, "about");
+  const players = rows.players ?? NO_PLAYER_ROWS;
   db.transaction(() => {
     for (const row of rows.puzzles) puzzles.run(...row);
     for (const row of rows.days) days.run(...row);
     for (const row of rows.about) about.run(...row);
+    for (const [table, field] of PLAYER_TABLE_ROWS) {
+      const insert = insertInto(db, table);
+      for (const row of players[field]) insert.run(...row);
+    }
   })();
 }
 
@@ -202,11 +230,22 @@ function columnList(table: PublicTable): string {
  *
  * Puzzles in id order with their JSON columns parsed; days ascending, each
  * with its deals in `DAILY_TIERS` order whatever order the rows went in; the
- * `about` rows typed. Frozen all the way down, because one built value is
- * shared by every request until the next build replaces it.
+ * `about` rows typed; the shown players and the servers, by name. Frozen all
+ * the way down, because one built value is shared by every request until the
+ * next build replaces it.
  */
 export function readPublicDatabase(db: Database): SiteData {
-  return deepFrozen({ about: readAbout(db), puzzles: readPuzzles(db), days: readDays(db) });
+  return siteData(db, readPlayerData(db));
+}
+
+function siteData(db: Database, players: PlayerData): SiteData {
+  return deepFrozen({
+    about: readAbout(db),
+    puzzles: readPuzzles(db),
+    days: readDays(db),
+    players: players.players,
+    servers: players.servers,
+  });
 }
 
 interface PuzzleCells {
@@ -313,11 +352,12 @@ function readAbout(db: Database): SiteAbout {
   };
 }
 
-/** Freezes a freshly read value and everything inside it. */
+/** Freezes a freshly read value and everything inside it, a map's values included. */
 function deepFrozen<T>(value: T): T {
   if (typeof value === "object" && value !== null && !Object.isFrozen(value)) {
     Object.freeze(value);
-    for (const inner of Object.values(value)) deepFrozen(inner);
+    const inner = value instanceof Map ? [...value.values()] : Object.values(value);
+    for (const each of inner) deepFrozen(each);
   }
   return value;
 }

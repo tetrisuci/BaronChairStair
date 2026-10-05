@@ -12,9 +12,12 @@ and why, is in [`README.md`](README.md).
 **The site shares its checkout with the game and the bot, so a pull is an activity
 deploy** whenever it brings anything for the activity: the activity's guide does it,
 from the pull to its verification, and the site's own steps follow (rule 1, below).
-The commit that brings this site does bring the activity something. It changes two
-of the game's own files, `server/limits.ts` and `server/public-routes.ts`, though
-not what the game does. The site's own steps restart neither the game nor the bot.
+The commit that brought this site did bring the activity something: two of the
+game's own files, though not what the game does. The commit that brings its player
+data (beta 0.13) brings the activity a great deal — a migration, two routes, a new
+setting and three links in the game's page — so it is an activity deploy with a
+build, and the site cannot publish a player until the game has run it. The site's
+own steps restart neither the game nor the bot.
 The only ones that can touch the game are a cloudflared restart and a Caddy reload,
 both for the hostname, and each says so where it comes.
 
@@ -60,6 +63,13 @@ game has migrated it; nothing needs restarting. A game that is merely older on t
 same schema says nothing at all, which is why this is a rule and not an answer to
 that line.
 
+Since beta 0.13 this is also how the site meets a game that has not yet started on
+the player-data code: the site reads the `guilds` and `site_facts` tables and two
+columns of `players` (`site_hidden`, `public_key`), and the game adds all four when
+it starts. Until then the line above names whichever it missed first. A site already
+running keeps serving its last good dataset meanwhile; a site started afresh serves
+503 until the game is up.
+
 **2. The site first, verified — then the bot.** The commit that ships the site puts
 the release note announcing it, `beta 0.12`, at the top of `changelog.json`. The bot
 reads that file once, when it starts, so its **next restart, for any reason, by
@@ -83,6 +93,32 @@ Whether the bot's next restart would announce the site, from `activity/`:
 
 ```sh
 bun -e 'const r = (await Bun.file("../changelog.json").json()).releases; console.log(r.some((x) => x.version === "beta 0.12") ? "carries beta 0.12" : "no beta 0.12")'   # "carries beta 0.12" once the site's commit is here
+```
+
+**Beta 0.13 has a gate of its own.** The commit that ships the site's player data puts
+`beta 0.13` on top, announcing the boards, the players' pages, players' lines going
+public and the new *Hide me on db.tetrisatuci.org* setting. The `beta 0.12` gate
+cannot stand in for it: the site that was up before the pull passes that gate while
+having none of the pages `beta 0.13` describes. So while the file carries
+`beta 0.13`, the bot does not restart until all of these hold — the `beta 0.12` gate
+first, then:
+
+- `curl -s -o /dev/null -w '%{http_code}\n' https://db.tetrisatuci.org/data/leaderboards.json`
+  prints `200` (the site from before the pull answers `404` there), and
+  <https://db.tetrisatuci.org/leaderboards> shows boards in a browser;
+- the setting works in Discord, on the deployed game: Settings → *On the web* loads
+  its switch; turning **Hide me on db.tetrisatuci.org** on makes your own
+  `/player/<key>` page a 404 within about a minute, and turning it off brings it back
+  (*Verify it publicly* has the commands).
+
+If `beta 0.12` has not been announced yet either, one restart announces both, once
+both gates pass. Both describe a site that is then up, so the combined message is
+true. The two notes together come to 1,869 characters of the bot's 1,900
+(`MAX_MESSAGE_CHARS`, `client/changelog.py`); lengthen `beta 0.13` and the bot drops
+`beta 0.12`'s text, the one with the site's address, for "…and 1 earlier update".
+
+```sh
+bun -e 'const r = (await Bun.file("../changelog.json").json()).releases; console.log(r.some((x) => x.version === "beta 0.13") ? "carries beta 0.13" : "no beta 0.13")'   # "carries beta 0.13": the player data and the setting must be verified first
 ```
 
 ---
@@ -321,6 +357,30 @@ curl -s 127.0.0.1:3002/puzzle/1 | grep -o '<title>[^<]*</title>'
 Expect `"ok":true` with the banner's counts; `HTTP/1.1 200 OK` and both headers; and
 `<title>#1 first — Puzzle archive</title>`.
 
+**The boards, and the page bodies:**
+
+```sh
+curl -s 127.0.0.1:3002/leaderboards | grep -o '<title>[^<]*</title>'                 # <title>Leaderboards — Puzzle archive</title>
+curl -s -o /dev/null -w '%{http_code}\n' 127.0.0.1:3002/data/leaderboards.json        # 200
+curl -s 127.0.0.1:3002/data/no-such-thing.json; echo                                   # {"error":"Not found"}
+curl -s 127.0.0.1:3002/puzzles.json | bun -e 'const d = await Bun.stdin.json(); console.log(`schema ${d.about.schema}: ${d.players.length} players listed, ${d.servers.length} servers (${d.servers.filter((s) => s.name === null).length} unnamed)`)'
+```
+
+Expect `schema 2`. Servers the game knew before this deploy have no name until a
+player signs in from them, so on the first deploy most or all may be unnamed; that
+fills in as people play.
+
+**Nothing shaped like a Discord id.** No run of seventeen digits may appear in the
+index or any body; each line must print `0`:
+
+```sh
+curl -s 127.0.0.1:3002/puzzles.json | grep -cE '[0-9]{17}'
+curl -s 127.0.0.1:3002/data/leaderboards.json | grep -cE '[0-9]{17}'
+```
+
+A `1` is a stop: `pm2 stop puzzle-db` (under systemd, `sudo systemctl stop puzzle-db`)
+and report it, without pasting the matching text anywhere.
+
 **The spoiler check.** The site must never show today. This works out today the way
 the game does — Bun reads the game's zone from `activity/.env` — then asks the site
 for the newest day it shows, and for today's page:
@@ -329,18 +389,27 @@ for the newest day it shows, and for today's page:
 TODAY=$(bun -e 'import {dayNumber} from "./shared/daily"; console.log(dayNumber(Date.now(), {timeZone: process.env.DAILY_RESET_TIMEZONE?.trim() || "America/Los_Angeles"}))')
 curl -s 127.0.0.1:3002/health | bun -e 'const {throughDay} = await Bun.stdin.json(); console.log(`today is day '"$TODAY"'; history runs through day ${throughDay}`)'
 curl -s -o /dev/null -w '%{http_code}\n' "127.0.0.1:3002/day/$TODAY"    # must print 404
+curl -s -o /dev/null -w '%{http_code}\n' "127.0.0.1:3002/data/day/$TODAY.json"    # must print 404
 ```
 
-History must end **before** today, and today's page must be a `404`. If either is
-wrong, `pm2 stop puzzle-db` (under systemd, `sudo systemctl stop puzzle-db`) and
+History must end **before** today, and today's page and today's boards must each be
+a `404`. The site also cuts by the game's own zone, which the game writes into its
+database at every start; it must name the same zone as `$TODAY` above was worked out
+in (America/Los_Angeles unless the game sets `DAILY_RESET_TIMEZONE`):
+
+```sh
+bun -e 'import {Database} from "bun:sqlite"; const db = new Database(process.argv[1], {readonly: true}); console.log(db.query("SELECT value FROM site_facts WHERE name = ?1").get("time_zone")?.value ?? "no zone recorded")' "$(grep -E '^DATABASE_PATH=' puzzledb/.env | cut -d= -f2-)"
+```
+
+If any of these is wrong, `pm2 stop puzzle-db` (under systemd, `sudo systemctl stop puzzle-db`) and
 report it. Do not put the site in front of anybody.
 
-**The download** holds three tables and nothing else:
+**The download** holds these eleven tables and nothing else:
 
 ```sh
 DL=$(mktemp -d)/tetrisatuci-puzzles.sqlite
 curl -s 127.0.0.1:3002/puzzles.sqlite -o "$DL"
-bun -e 'import {Database} from "bun:sqlite"; const db = new Database(process.argv[1], {readonly: true}); console.log(db.query("SELECT name FROM sqlite_master WHERE type = ?1 ORDER BY name").all("table").map((t) => t.name).join(" "))' "$DL"   # about day_puzzles puzzles
+bun -e 'import {Database} from "bun:sqlite"; const db = new Database(process.argv[1], {readonly: true}); console.log(db.query("SELECT name FROM sqlite_master WHERE type = ?1 ORDER BY name").all("table").map((t) => t.name).join(" "))' "$DL"   # about day_boards day_puzzles lines players puzzle_stats puzzles rush_boards servers standings tier_boards
 ```
 
 **Only now, under pm2, `pm2 save`**, and only once `pm2 list` shows every app as
@@ -471,12 +540,33 @@ the whole time:
 
 - search for a title, open a puzzle, press **Show the answer** and step through it
   with the arrow keys, then open **Days** and one day;
+- on that day, the boards under the deal cards: pick a server chip and check the
+  address gains `?server=`, then switch the tier tabs;
+- open **Leaderboards**, then **Players**, then one player's page;
 - the console must show **no Content-Security-Policy errors**, and no 404s: the
   page's icon is `/assets/favicon-<hash>.svg`, so nothing asks for `/favicon.ico`.
 
 Paste `https://db.tetrisatuci.org/puzzle/1?v=1` into a private Discord channel. It
 should unfurl with the puzzle's title and description; the `?v=1` gets past anything
 Discord cached while you were setting up, so change the number to try again.
+
+**The setting, end to end** — the `beta 0.13` gate's second half, and the only check
+here that needs the game. In Discord, open the activity, then Settings: the
+*On the web* section must show its switch rather than "Couldn't load this setting."
+Your own profile in the game links to your page while you are shown. Find your key
+without printing anything but keys and names — from `activity/`, with your own
+Discord username:
+
+```sh
+bun -e 'import {Database} from "bun:sqlite"; const db = new Database(process.argv[1], {readonly: true}); console.log(db.query("SELECT public_key AS key, site_hidden AS hidden FROM players WHERE username = ?1").all(process.argv[2]))' "$(grep -E '^DATABASE_PATH=' puzzledb/.env | cut -d= -f2-)" '<your username>'
+curl -s -o /dev/null -w '%{http_code}\n' https://db.tetrisatuci.org/player/<that key>   # 200 while you are shown
+```
+
+A player with nothing on a finished day yet has no page, so use an account that has
+played before today. Turn **Hide me on db.tetrisatuci.org** on: within about a
+minute the same `curl` prints `404`. Turn it off, and within about a minute it prints
+`200` again. Both ways is the test: a switch that only hides proves nothing about
+the way back.
 
 Last, `git status` from the repository root must be clean: `puzzledb/dist/`,
 `puzzledb/.env` and `puzzledb/ecosystem.config.cjs` are all ignored.
@@ -485,9 +575,11 @@ Last, `git status` from the repository root must be clean: `puzzledb/dist/`,
 
 ## Only now, restart the bot
 
-By its own name, as the root [`DEPLOY.md`](../../DEPLOY.md) describes —
+Once both gates in rule 2 pass — `beta 0.12`'s, and `beta 0.13`'s while the file
+carries it. By its own name, as the root [`DEPLOY.md`](../../DEPLOY.md) describes —
 never with `pm2 restart all`, which would take DIAYN down with it. That restart is
-what announces the site: the next `/puzzle` in each server carries the release note.
+what announces the site: the next `/puzzle` in each server carries every release note
+that server has not had.
 
 ---
 
@@ -515,7 +607,35 @@ grep -l "<a string only the change adds>" puzzledb/dist/assets/*.js
 ```
 
 Data needs none of this. An accepted puzzle, a correction, a publish or a rebuilt
-`puzzles.json` reaches the site by itself within about 30 seconds.
+`puzzles.json` reaches the site by itself within about 30 seconds, and so does a
+player hiding or showing themselves.
+
+---
+
+## Naming servers, and not naming one
+
+A server's name comes from the activity's sign-in, so it appears once somebody signs
+in from that server and changes when Discord's does. What the game holds, as counts
+only — never print `guild_id`:
+
+```sh
+bun -e 'import {Database} from "bun:sqlite"; const db = new Database(process.argv[1], {readonly: true}); console.log(db.query("SELECT COUNT(*) AS servers, COUNT(name) AS named FROM guilds").get())' "$(grep -E '^DATABASE_PATH=' puzzledb/.env | cut -d= -f2-)"
+```
+
+**Not naming a server** is `HIDDEN_SERVER_KEYS` in `puzzledb/server/policy.ts`, and
+which servers go on it is the owner's decision, never an implementer's
+(`CLAUDE.md`). The key is the ten characters after `?server=` when that server's
+chip is picked on the site, or the `public_key` beside its name here:
+
+```sh
+bun -e 'import {Database} from "bun:sqlite"; const db = new Database(process.argv[1], {readonly: true}); console.log(db.query("SELECT public_key AS key, name FROM guilds WHERE name IS NOT NULL ORDER BY name").all())' "$(grep -E '^DATABASE_PATH=' puzzledb/.env | cut -d= -f2-)"
+```
+
+The edit is a reviewed commit to the site alone: on the box it is the *Nothing listed*
+path of *Checks, then the build*, then `pm2 restart puzzle-db` (under systemd,
+`sudo systemctl restart puzzle-db`). The list is read when the site starts, so the
+restart is what applies it; the game is not touched. The listed server keeps its
+boards and shows as "Unnamed server".
 
 ---
 
@@ -567,6 +687,22 @@ bun -e 'const r = (await Bun.file("../changelog.json").json()).releases; console
 Still `carries beta 0.12` means the commit you noted already carried the note: the site's
 commit reached this box before you did. Report that, and that the bot must not
 restart until the site is up.
+
+**The player-data deploy (`beta 0.13`) failed verification**, and the bot has not
+restarted. The note must not reach a restart while the site cannot back it, so the
+checkout goes back, by the activity's rollback, as above — and with it the game's
+setting and links, which point at pages the old site does not have. The game's
+migration only added columns and tables, so the older code runs on the migrated
+database unchanged (`../DEPLOY.md`, *Rolling back*). Then rebuild and restart the
+site on the older checkout (the commands just below), and check:
+
+```sh
+bun -e 'const r = (await Bun.file("../changelog.json").json()).releases; console.log(r.some((x) => x.version === "beta 0.13") ? "carries beta 0.13" : "no beta 0.13")'   # must print "no beta 0.13"
+```
+
+Players whose results were published in the meantime stay in whatever copies were
+taken; a rollback cannot recall them, which is one more reason to start this deploy
+only when you can finish it.
 
 **A later deploy broke the site.** Rolling the checkout back moves the game's code
 too, so it is the activity's rollback (`activity/DEPLOY.md`, *Rolling back*), never
@@ -622,6 +758,18 @@ reading while the files move.
   finishes before the port opens; a longer 503 has its reason in the log.
 - **The owner warning on a box that shares the database through a group.** It is a
   warning, not a refusal. If the game can still write, nothing is wrong.
+- **"Unnamed server" on boards.** A server shows its name only once a player has
+  signed in from it since the game began keeping names, so right after this deploy
+  most servers are unnamed. A name holding a long number, or a key on
+  `HIDDEN_SERVER_KEYS`, reads the same.
+- **"a player" on boards.** A player who chose *Hide me on db.tetrisatuci.org*, or
+  whose username holds seventeen digits in a row. Their results stay, unlabelled, by
+  the owner's decision.
+- **A streak one lower than the game shows.** The site counts a streak as of the
+  newest finished day; the game counts today too, once it is solved.
+- **Discoveries counting more lines than the puzzle pages show.** The board counts
+  as the game does, voided lines and lines on puzzles the site does not list
+  included.
 
 ## Things that are wrong
 
@@ -629,6 +777,12 @@ reading while the files move.
   process's environment`.** Bun loaded the game's `.env`: the site was started
   without `--env-file=…/puzzledb/.env`, under a unit with an `EnvironmentFile=`, or
   from a shell that exports a secret. Start it as above.
+- **`[puzzledb] could not rebuild the public data (the game has not recorded its time
+  zone; start the game on this code first)`.** The database has the player-data
+  tables but no zone in `site_facts`: something on this code migrated it — a
+  maintenance tool opens it without a zone, on purpose — and the game has not
+  started on this code since. Deploy and start the game (`../DEPLOY.md`); the site
+  picks the zone up at its next check.
 - **`DATABASE_PATH is not set`.** The env file was never read — Bun skips a missing
   `--env-file` without a word — or never filled in. Check the path in the pm2 file
   or the unit, and `grep -E '^[A-Z_]+=' puzzledb/.env`.

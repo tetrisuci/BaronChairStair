@@ -7,14 +7,25 @@
  * **It cannot write.** The handle is SQLite's read-only kind, so SQLite itself
  * refuses an INSERT, a missing file is refused rather than created, and a
  * snapshot and a whole build leave the file byte for byte as they found it.
- * What it reads is pinned too: with every table but the four it needs dropped
- * from a copy, a build still succeeds. A future read of `runs` or `players`
- * fails here, loudly, long before it could reach anything public.
+ *
+ * **It reads only the columns it lists.** Schema 1 never named a player table,
+ * and this file proved it by dropping every one. Schema 2 publishes boards,
+ * so it must read those tables — and the proof becomes a list of columns
+ * instead: a copy with every other column and table stripped away builds the
+ * very same bytes, and stripping any one listed column breaks the build, so
+ * the list is neither short nor padded. `SELECT *` would adapt to a stripped
+ * copy and read whatever the real one holds, so the source may not say it. A
+ * future read of `avatar_url` or `preferences` fails here, loudly, long before
+ * it could reach anything public. Who a row belongs to is decided inside SQL,
+ * so the snapshot itself is scanned: no id, avatar, hidden name or hidden key
+ * is ever a JS value.
  *
  * **It cannot show a day that is not over.** Never today, never a later day
  * even when one is pinned, and yesterday only once something has pinned today
  * — so a site clock running ahead cannot pull the game's today into history.
- * History starts at the first tiered day.
+ * History starts at the first tiered day. The two columns that hold
+ * milliseconds and no day are cut at the game's own midnight, from the zone
+ * the game records, even when the site's clock is in a zone further west.
  *
  * And it must not hold on. A read transaction left open would pin the game's
  * write-ahead log, so the game's own writer checkpoints after a read, with a
@@ -25,9 +36,10 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { copyFileSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { startOfDay } from "../shared/daily";
 import { buildDataset } from "../puzzledb/server/dataset";
-import { FIRST_TIERED_DAY } from "../puzzledb/server/policy";
+import { FIRST_TIERED_DAY, POLICY } from "../puzzledb/server/policy";
 import {
   BUSY_TIMEOUT_MS,
   dataVersion,
@@ -36,6 +48,7 @@ import {
 } from "../puzzledb/server/snapshot";
 import type { DayPin, GameSnapshot } from "../puzzledb/server/types";
 import {
+  CLEARS,
   COMMUNITY_ID,
   CORRECTED_ID,
   DEFAULT_PINS,
@@ -43,26 +56,58 @@ import {
   fixtureSources,
   gameFixture,
   type GameFixture,
+  LINES,
   NOW,
+  PLANTED,
+  PLAYERS,
   PUBLISHED_ID,
+  SERVERS,
   TODAY,
+  TODAY_MARKS,
 } from "./puzzledb-fixture";
 
-/** The tables a build may read. Everything else in the game's database is somebody's. */
-const READ_SET = ["archive_puzzles", "day_puzzles", "puzzle_overrides", "submissions"];
+/**
+ * Tables read whole, through the game's own readers, as schema 1 read them.
+ * They hold puzzles and who corrected or submitted them; the policy and the
+ * public schema decide which of that is published.
+ */
+const READ_WHOLE = ["archive_puzzles", "day_puzzles", "puzzle_overrides", "submissions"];
 
-/** Tables that hold players, their play, or who did what. A build that reads one fails the read-set test. */
-const NEVER_READ = [
-  "archive_content_log",
-  "day_rush",
-  "players",
-  "preferences",
-  "puzzle_clears",
-  "puzzle_override_log",
-  "puzzle_solutions",
-  "runs",
-  "rush_runs",
-];
+/**
+ * Every column a build may read from the tables that hold players, their play
+ * and the site's facts. `players.id`, `guild_id`, `found_by` and `found_at`
+ * are read inside SQL — to join, group and cut — and never selected into JS;
+ * the snapshot scan below holds that half.
+ */
+const READ_COLUMNS: Readonly<Record<string, readonly string[]>> = {
+  players: ["id", "username", "site_hidden", "public_key"],
+  runs: ["day", "player_id", "guild_id", "puzzle_id", "slot", "solved", "total_ms", "attack", "target_attack"],
+  rush_runs: ["day", "player_id", "guild_id", "solved", "time_to_last_ms"],
+  puzzle_clears: ["player_id", "first_at"],
+  puzzle_solutions: [
+    "solution_id",
+    "puzzle_id",
+    "placements",
+    "attack",
+    "target_attack",
+    "clears",
+    "solved_strict",
+    "source",
+    "found_by",
+    "found_at",
+    "voided_at",
+  ],
+  guilds: ["guild_id", "public_key", "name"],
+  site_facts: ["name", "value"],
+};
+
+/** Tables a build never reads at all: preferences, the rush pools, every log. */
+const NEVER_READ = ["archive_content_log", "day_rush", "preferences", "puzzle_override_log"];
+
+/** The fixture's policy: the quiet server on the hide list, as every privacy test has it. */
+const PRIVATE = { ...POLICY, hiddenServerKeys: new Set([SERVERS.quiet.key]) };
+
+const SITE_SERVER = resolve(import.meta.dir, "../puzzledb/server");
 
 const built: GameFixture[] = [];
 const scratch: string[] = [];
@@ -123,17 +168,49 @@ function tablesIn(path: string): string[] {
   }
 }
 
-/** Drops every table but `keep` from a database, as a writer the site never is. Returns what went. */
-function keepOnly(path: string, keep: readonly string[]): string[] {
-  const doomed = tablesIn(path).filter((table) => !keep.includes(table));
+/**
+ * Strips a database to `whole` tables and `columns` of the rest, as a writer
+ * the site never is: every other table dropped, every other column gone.
+ * Rebuilt rather than `DROP COLUMN`, which refuses a column in a key or an
+ * index. Returns the tables that went entirely.
+ */
+function stripTo(path: string, whole: readonly string[], columns: Readonly<Record<string, readonly string[]>>): string[] {
+  const dropped: string[] = [];
   const db = new Database(path, { readwrite: true });
   try {
     db.exec("PRAGMA foreign_keys = OFF");
-    for (const table of doomed) db.exec(`DROP TABLE "${table}"`);
+    for (const table of tablesIn(path)) {
+      if (whole.includes(table)) continue;
+      const keep = columns[table];
+      if (keep) {
+        const list = keep.map((column) => `"${column}"`).join(", ");
+        db.exec(`CREATE TABLE "${table}__kept" AS SELECT ${list} FROM "${table}"`);
+      } else {
+        dropped.push(table);
+      }
+      db.exec(`DROP TABLE "${table}"`);
+      if (keep) db.exec(`ALTER TABLE "${table}__kept" RENAME TO "${table}"`);
+    }
   } finally {
     db.close();
   }
-  return doomed;
+  return dropped;
+}
+
+/** A one-file copy of a fixture's database, to strip or edit without touching the fixture. */
+function copyOf(game: GameFixture): string {
+  const copy = join(scratchDirectory(), "daily.sqlite");
+  copyFileSync(game.databasePath, copy);
+  return copy;
+}
+
+function edit(path: string, sql: string, ...values: (string | number)[]): void {
+  const db = new Database(path, { readwrite: true });
+  try {
+    db.run(sql, values);
+  } finally {
+    db.close();
+  }
 }
 
 /** What the game's own writer gets when it tries to fold the log back into the file. */
@@ -204,25 +281,57 @@ describe("read-only by construction", () => {
     expect(readdirSync(game.dir).sort()).toEqual(files);
   });
 
-  test("reads nothing but archive_puzzles, submissions, puzzle_overrides and day_puzzles", () => {
+  test("reads only the columns it lists: a copy stripped to them builds the very same bytes", () => {
     const game = fixture({ journal: "delete" });
-    // One file, so a copy of it is a copy of the whole database.
-    const copy = join(scratchDirectory(), "daily.sqlite");
-    copyFileSync(game.databasePath, copy);
-    const dropped = keepOnly(copy, READ_SET);
+    const stripped = copyOf(game);
+    const dropped = stripTo(stripped, READ_WHOLE, READ_COLUMNS);
 
-    const snapshot = snapshotOf(copy);
-    const dataset = buildDataset(snapshot, fixtureSources(game), NOW);
+    const full = buildDataset(snapshotOf(game.databasePath), fixtureSources(game), NOW, PRIVATE);
+    const snapshot = snapshotOf(stripped);
+    const lean = buildDataset(snapshot, fixtureSources(game), NOW, PRIVATE);
 
     expect(NEVER_READ.filter((table) => !dropped.includes(table))).toEqual([]);
-    // Each of the four was read, not merely survived.
+    expect(tablesIn(stripped)).toEqual([...READ_WHOLE, ...Object.keys(READ_COLUMNS)].sort());
+    // Each whole table was read, not merely survived.
     expect(snapshot.accepted.map((puzzle) => puzzle.id)).toEqual([COMMUNITY_ID]);
     expect(snapshot.overrides.map((override) => override.puzzleId)).toEqual([CORRECTED_ID]);
     expect(snapshot.published.map((puzzle) => puzzle.id)).toEqual([PUBLISHED_ID]);
-    expect(snapshot.pins.length).toBeGreaterThan(0);
-    expect(dataset.data.puzzles.length).toBeGreaterThan(0);
-    // And nothing put them back: no Store, no migration, no schema run.
-    expect(tablesIn(copy)).toEqual(READ_SET);
+    expect(snapshot.players.tierRuns.length).toBeGreaterThan(0);
+    // And the stripped columns changed nothing anybody is served.
+    expect(Buffer.from(lean.sqlite).equals(Buffer.from(full.sqlite))).toBe(true);
+    expect(Buffer.from(lean.json).equals(Buffer.from(full.json))).toBe(true);
+    expect(lean.bodies).toEqual(full.bodies);
+  });
+
+  test("needs every column it lists, so the list is not padded", () => {
+    const game = fixture({ journal: "delete" });
+    for (const [table, columns] of Object.entries(READ_COLUMNS)) {
+      for (const column of columns) {
+        const copy = copyOf(game);
+        const others = Object.keys(READ_COLUMNS).filter((other) => other !== table);
+        stripTo(copy, [...READ_WHOLE, ...others], { [table]: columns.filter((kept) => kept !== column) });
+        expect(() => snapshotOf(copy), `${table}.${column}`).toThrow(/no such column/);
+      }
+    }
+  });
+
+  test("never says SELECT *, which would read whatever a table holds", () => {
+    const sources = readdirSync(SITE_SERVER).filter((file) => /^snapshot.*\.ts$/.test(file));
+
+    expect(sources.sort()).toEqual(["snapshot-players.ts", "snapshot.ts"]);
+    for (const file of sources) {
+      expect(readFileSync(join(SITE_SERVER, file), "utf8")).not.toMatch(/SELECT\s+(?:DISTINCT\s+)?(?:\w+\.)?\*/i);
+    }
+  });
+
+  test("fails in SQLite's own words on a game not yet on this code, which the refresher reads as 'deploy the game first'", () => {
+    const game = fixture({ journal: "delete" });
+    const changes = ["DROP TABLE guilds", "DROP TABLE site_facts", "ALTER TABLE players DROP COLUMN site_hidden"];
+    for (const change of changes) {
+      const copy = copyOf(game);
+      edit(copy, change);
+      expect(() => snapshotOf(copy), change).toThrow(/no such (table|column)/i);
+    }
   });
 
   test("leaves no read transaction open", () => {
@@ -355,5 +464,72 @@ describe("finished days only", () => {
   test("reports the newest pinned day", () => {
     expect(snapshotOf(fixture().databasePath).newestPinnedDay).toBe(TODAY + 1);
     expect(snapshotOf(fixture({ withoutToday: true }).databasePath).newestPinnedDay).toBe(TODAY - 1);
+  });
+});
+
+describe("what it lets out about people", () => {
+  test("lets no id, avatar, hidden name, hidden key, filing time or mark of today into what it read about players", () => {
+    // The player half only: the puzzle half carries each correction's officer
+    // in memory, as schema 1 always has, and the public schema has no column
+    // for it — `puzzledb-public-db.test.ts` scans what is served for that.
+    const text = JSON.stringify(snapshotOf(fixture().databasePath).players);
+    // The quiet server's name is withheld by the build's hide list, not by SQL:
+    // it may sit in memory for a build, and the public-db test holds that it
+    // reaches no byte. Here, and only here, it is exempt.
+    const forbidden = PLANTED.filter((value) => value !== SERVERS.quiet.name);
+
+    expect(forbidden.filter((value) => text.includes(value))).toEqual([]);
+    expect(text).not.toMatch(/[0-9]{17}/);
+    // The positive control: the snapshot does carry the people it may name.
+    expect(text).toContain(PLAYERS.visible.name);
+    expect(text).toContain(PLAYERS.unchosen.key);
+  });
+
+  test("reads nothing filed today: no run, rush, line, clear or discovery", () => {
+    const { players } = snapshotOf(fixture().databasePath);
+    const text = JSON.stringify(players);
+
+    expect(players.cut).toBe(TODAY);
+    for (const mark of Object.values(TODAY_MARKS)) expect(text).not.toContain(String(mark));
+    expect([...players.tierRuns, ...players.rushRuns, ...players.rushRecords].filter((row) => row.day >= TODAY)).toEqual([]);
+    expect(players.lines.map((line) => line.puzzleId)).not.toContain(LINES.today.puzzleId);
+    // The visible player's first clear of #51 came 61 seconds into today.
+    expect(players.cleared.find((row) => row.playerKey === PLAYERS.visible.key)?.count).toBe(1);
+  });
+});
+
+describe("the game's zone", () => {
+  /**
+   * The fixture with its zone fact set to `zone`, and the visible player's
+   * line and first clear moved to just after the midnight that starts today
+   * in New York — which is still yesterday evening in Los Angeles.
+   */
+  function filedJustAfterNewYorkMidnight(zone: string): string {
+    const copy = copyOf(fixture({ journal: "delete" }));
+    const justAfter = startOfDay(TODAY, { timeZone: "America/New_York" }) + 61_000;
+    edit(copy, "UPDATE site_facts SET value = ?1 WHERE name = 'time_zone'", zone);
+    edit(copy, "UPDATE puzzle_solutions SET found_at = ?1 WHERE found_at = ?2", justAfter, LINES.visible.foundAt);
+    edit(copy, "UPDATE puzzle_clears SET first_at = ?1 WHERE first_at = ?2", justAfter, CLEARS[0]!.firstAt);
+    return copy;
+  }
+
+  test("cuts at the game's midnight, not the site's, when the site's clock is further west", () => {
+    // The game runs on New York time and has dealt today; the site's clock
+    // reads Los Angeles. What was filed after New York's midnight is today's
+    // for the game, whatever the hour is in Los Angeles.
+    const { players } = snapshotOf(filedJustAfterNewYorkMidnight("America/New_York"), TODAY);
+    const visible = (rows: readonly { playerKey: string | null }[]) =>
+      rows.filter((row) => row.playerKey === PLAYERS.visible.key);
+
+    expect(players.lines.map((line) => line.puzzleId)).not.toContain(LINES.visible.puzzleId);
+    expect(visible(players.discoveries)).toEqual([]);
+    expect(visible(players.cleared)).toEqual([]);
+  });
+
+  test("would have shown them by Los Angeles's midnight, which is what makes the test above mean anything", () => {
+    const { players } = snapshotOf(filedJustAfterNewYorkMidnight("America/Los_Angeles"), TODAY);
+
+    expect(players.lines.map((line) => line.puzzleId)).toContain(LINES.visible.puzzleId);
+    expect(players.cleared.some((row) => row.playerKey === PLAYERS.visible.key)).toBe(true);
   });
 });

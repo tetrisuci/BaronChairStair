@@ -125,10 +125,16 @@ Report these and stop; do not act on them unasked.
   than assuming; it defaults to `log`, which shows and enforces nothing. Turning it `on`
   needs the current bundle deployed first, or players are judged against a requirement
   their client never showed them.
-- **`PUBLISH_COMMUNITY_PUZZLES`, `FIRST_TIERED_DAY` and `FIRST_EXTREME_DAY`**
-  (`activity/puzzledb/server/policy.ts`). The first puts player-written puzzles and their
-  authors' Discord display names on the open web, with no consent step. The other two
-  decide which days the site presents as dealt, and come from the production box.
+- **`PUBLISH_COMMUNITY_PUZZLES`, `FIRST_TIERED_DAY`, `FIRST_EXTREME_DAY` and
+  `HIDDEN_SERVER_KEYS`** (`activity/puzzledb/server/policy.ts`). The first puts
+  player-written puzzles and their authors' Discord display names on the open web, with
+  no consent step. The next two decide which days the site presents as dealt, and come
+  from the production box. The last decides which Discord servers the site will not
+  name; adding a key to it or taking one off is the owner's call.
+- **A player's "Hide me on db.tetrisatuci.org"** (`players.site_hidden`). It is theirs
+  to set, in the activity's settings. Never write it on anybody's behalf — not to tidy a
+  board, not to test, not on a request relayed from somebody else — and never print a
+  hidden player's name or key while investigating anything.
 - **Rotating a secret**, or anything that signs users out.
 
 ## Never
