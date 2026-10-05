@@ -24,7 +24,7 @@ says the puzzles go live at the activity's next restart. So neither half can be 
 by the other being older. Do the activity first anyway, out of habit: that is the half
 with an ordering rule inside it, and it is the half worth having your full attention.
 
-**One exception, for as long as it holds:** while `changelog.json` carries the
+**Two exceptions, for as long as each holds.** First, while `changelog.json` carries the
 `beta 0.12` entry, which announces https://db.tetrisatuci.org, and that site is not yet
 up and verified on this box, do not restart the bot. A restart announces every release a
 server has not been told about — not only the newest, so a later release on top changes
@@ -34,6 +34,21 @@ rule 2. From `activity/`:
 
 ```sh
 bun -e 'const r = (await Bun.file("../changelog.json").json()).releases; console.log(r.some((x) => x.version === "beta 0.12") ? "carries beta 0.12" : "no beta 0.12")'   # "carries beta 0.12": the site must be verified first
+```
+
+**Second, beside it:** while `changelog.json` carries `beta 0.13`, which
+announces the site's leaderboards, players' pages and players' lines and the
+activity's new *Hide me on db.tetrisatuci.org* setting, do not restart the bot until
+that site is verified too — `https://db.tetrisatuci.org/data/leaderboards.json`
+answering `200`, and the setting tested in Discord, both ways. The `beta 0.12` gate
+alone is not enough: the site from before the pull passes it while having none of
+the pages `beta 0.13` describes. The checks are in
+[`activity/puzzledb/DEPLOY.md`](activity/puzzledb/DEPLOY.md), rule 2; if neither note
+has been announced, one restart announces both once both gates pass. From
+`activity/`:
+
+```sh
+bun -e 'const r = (await Bun.file("../changelog.json").json()).releases; console.log(r.some((x) => x.version === "beta 0.13") ? "carries beta 0.13" : "no beta 0.13")'   # "carries beta 0.13": the player data and the setting must be verified first
 ```
 
 ---
@@ -163,8 +178,10 @@ python3 -m unittest discover -s client     # 173 run, 0 fail; bare python3 skips
 
 ### Restarting, and making a new command appear
 
-*Before any restart, the exception near the top of this file: if `changelog.json`
-carries `beta 0.12` and db.tetrisatuci.org is not yet up on this box, stop.*
+*Before any restart, the exceptions near the top of this file: if `changelog.json`
+carries `beta 0.12` and db.tetrisatuci.org is not yet up on this box, or carries
+`beta 0.13` and the site's player data and the activity's setting are not yet
+verified, stop.*
 
 Find how the bot actually runs on this box. Look, do not guess:
 
