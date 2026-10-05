@@ -99,6 +99,7 @@ import puzzle_recap
 from puzzle_commands import puzzle_command
 import report_commands
 import archive_commands
+import sync_window
 
 log = logging.getLogger(__name__)
 
@@ -322,6 +323,16 @@ try:
 except sqlite3.Error as e:
     changelog_error = f"{type(e).__name__}: {e}"
     print(f"version announcements disabled: {changelog_error}", file=sys.stderr)
+
+# archive_sync_window, owned by client/sync_window.py: when /archive sync
+# last started, so a restart does not reopen its ten-minute window. Without
+# the table the window still holds, but only until the next restart.
+try:
+    sync_window.init_db(db)
+    archive_commands.sync_db = db
+except sqlite3.Error as e:
+    print(f"/archive sync window kept in memory only: {type(e).__name__}: {e}",
+          file=sys.stderr)
 
 # presence_samples, owned by client/presence_tracker.py. A schema mismatch
 # disables presence tracking instead of taking the whole bot down with it --

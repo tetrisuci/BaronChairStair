@@ -1,11 +1,12 @@
 """
 test_archive_commands.py
 ~~~~~~~~~~~~~~~~~~~~~~~~
-The gate on `/archive sync`, and the process handling under it.
+`/archive sync`: open to everybody, once every ten minutes, and the process
+handling under it.
 
-The gate is the whole reason this command needed writing carefully, so most of
-what follows is about refusing. A permission check that is never tested is a
-permission check that quietly stops checking.
+Anybody may run the command, so the window is the only thing that stops it
+being run in a loop, and most of what follows is about the window refusing.
+A limit that is never tested is a limit that quietly stops limiting.
 
 Importing `test_changelog_wiring` first is deliberate and is not a dependency
 between suites. That module owns `_install_stubs`, which fakes discord.py and
@@ -17,10 +18,10 @@ small as it is. This module then adds the two attributes it needs on top, since
 """
 
 import asyncio
-import io
 import contextlib
-import json
+import io
 import os
+import sqlite3
 import sys
 import tempfile
 import types
@@ -47,7 +48,7 @@ if not hasattr(_app_commands, "describe"):
     _app_commands.describe = lambda **_kwargs: (lambda fn: fn)
 
 import archive_commands  # noqa: E402
-import puzzle_admins  # noqa: E402
+import sync_window  # noqa: E402
 
 
 #: With real discord.py the decorator has replaced the function with a Command
@@ -89,98 +90,64 @@ class Interaction:
         self.followup = Followup()
 
 
-class TheGate(unittest.IsolatedAsyncioTestCase):
+#: A fixed wall clock, in UTC epoch seconds, so the timestamps are checkable.
+START = 1_700_000_000.0
+
+
+class Callback(unittest.IsolatedAsyncioTestCase):
+    """Drives the command with no subprocess, no network and a clock it owns."""
+
     def setUp(self):
-        self._dir = tempfile.TemporaryDirectory()
-        self.addCleanup(self._dir.cleanup)
-        self.path = Path(self._dir.name) / "puzzle-admins.json"
-        self.path.write_text(json.dumps({"admins": [{"id": "1001", "who": "x"}]}),
-                             encoding="utf-8")
-        # Point the module at the temporary allowlist rather than the club's.
-        self._real_path = puzzle_admins.ADMINS_PATH
-        puzzle_admins.ADMINS_PATH = self.path
-        self.addCleanup(setattr, puzzle_admins, "ADMINS_PATH", self._real_path)
-        # Nothing in this class should reach a subprocess.
+        self.now = START
+        self._swap("_now", lambda: self.now)
+        db = sqlite3.connect(":memory:")
+        self.addCleanup(db.close)
+        sync_window.init_db(db)
+        self.db = db
+        self._swap("sync_db", db)
+        # What this process remembers, apart from the database: a fresh bot.
+        self._swap("_started_here", None)
         self.calls: list[dict] = []
 
-        async def fake_sync(dry_run, by, cwd=None):
+        async def fake_sync(dry_run, by, cwd=None, on_start=None):
             self.calls.append({"dry_run": dry_run, "by": by})
+            on_start()  # the process launched
             return 0, "added 0, amended 0, unchanged 163"
 
-        self._real_sync = archive_commands.run_sync
-        archive_commands.run_sync = fake_sync
-        self.addCleanup(setattr, archive_commands, "run_sync", self._real_sync)
-        # Nor the network.
+        self._swap("run_sync", fake_sync)
         self.reloads = 0
 
         async def fake_reload():
             self.reloads += 1
             return "**Live now:** #167"
 
-        self._real_reload = archive_commands.reload_activity
-        archive_commands.reload_activity = fake_reload
-        self.addCleanup(setattr, archive_commands, "reload_activity", self._real_reload)
+        self._swap("reload_activity", fake_reload)
 
-    async def test_an_unlisted_user_is_refused(self):
+    def _swap(self, name, value):
+        self.addCleanup(setattr, archive_commands, name, getattr(archive_commands, name))
+        setattr(archive_commands, name, value)
+
+    def later(self, seconds):
+        self.now += seconds
+
+
+class AnybodyMaySync(Callback):
+    async def test_any_member_gets_through(self):
         interaction = Interaction(User(2002))
-        await CALLBACK(interaction)
-        self.assertEqual(len(interaction.response.messages), 1)
-        self.assertEqual(self.calls, [], "a refused user must not start a sync")
-
-    async def test_the_refusal_is_private(self):
-        # "You are not an officer" read out in the channel is a scolding with
-        # an audience; this repository answers refusals ephemerally.
-        interaction = Interaction(User(2002))
-        await CALLBACK(interaction)
-        self.assertTrue(interaction.response.messages[0]["ephemeral"])
-
-    async def test_the_refusal_answers_before_any_defer(self):
-        # Deferring first would make every later followup ephemeral too, and
-        # would post a visible "thinking" for a command about to be refused.
-        interaction = Interaction(User(2002))
-        await CALLBACK(interaction)
-        self.assertFalse(interaction.response.deferred)
-
-    async def test_the_refusal_says_how_to_be_added(self):
-        interaction = Interaction(User(2002))
-        await CALLBACK(interaction)
-        said = interaction.response.messages[0]["content"]
-        self.assertIn(puzzle_admins.ADMINS_PATH.name, said)
-
-    async def test_an_empty_allowlist_refuses_everybody(self):
-        self.path.write_text(json.dumps({"admins": []}), encoding="utf-8")
-        await CALLBACK(Interaction(User(1001)))
-        self.assertEqual(self.calls, [])
-
-    async def test_a_missing_allowlist_refuses_everybody(self):
-        self.path.unlink()
-        await CALLBACK(Interaction(User(1001)))
-        self.assertEqual(self.calls, [])
-
-    async def test_a_malformed_allowlist_refuses_everybody(self):
-        # The failure this module exists to avoid: a fat-fingered comma must
-        # not hand the archive to whoever types the command next.
-        self.path.write_text("{ not json", encoding="utf-8")
-        with contextlib.redirect_stderr(io.StringIO()):
-            await CALLBACK(Interaction(User(1001)))
-        self.assertEqual(self.calls, [])
-
-    async def test_a_listed_user_gets_through(self):
-        interaction = Interaction(User(1001))
         await CALLBACK(interaction)
         self.assertEqual(len(self.calls), 1)
         self.assertTrue(interaction.response.deferred, "the work is announced publicly")
         self.assertEqual(len(interaction.followup.sent), 1)
 
-    async def test_a_listed_user_added_while_the_bot_runs_gets_through(self):
-        # The reason the file is read per call rather than at import: adding an
-        # officer must not need a restart, which is the operation DEPLOY.md
-        # warns can leave two instances on one token.
-        await CALLBACK(Interaction(User(3003)))
-        self.assertEqual(self.calls, [])
-        self.path.write_text(json.dumps({"admins": ["1001", "3003"]}), encoding="utf-8")
-        await CALLBACK(Interaction(User(3003)))
-        self.assertEqual(len(self.calls), 1)
+    async def test_the_old_allowlist_is_gone(self):
+        # A puzzle-admins.json left on a box must be harmless and unread: no
+        # module reads it, and the command does not mention it.
+        here = Path(archive_commands.__file__).resolve().parent
+        self.assertFalse((here / "puzzle_admins.py").exists())
+        self.assertFalse((here.parent / "puzzle-admins.example.json").exists())
+        body = Path(archive_commands.__file__).read_text(encoding="utf-8")
+        self.assertNotIn("puzzle_admins", body)
+        self.assertNotIn("puzzle-admins", body)
 
     async def test_the_runner_is_told_who_asked(self):
         await CALLBACK(Interaction(User(1001, name="zhiyuan")))
@@ -197,7 +164,8 @@ class TheGate(unittest.IsolatedAsyncioTestCase):
         # `_fence_safe` works while the command forgets to call it is the
         # vacuous version of this test, and it is the version I wrote first:
         # deleting the call from the callback left the suite green.
-        async def poisoned(dry_run, by, cwd=None):
+        async def poisoned(dry_run, by, cwd=None, on_start=None):
+            on_start()
             return 0, '  #42 "``` @everyone see this" — content'
 
         archive_commands.run_sync = poisoned
@@ -224,37 +192,215 @@ class TheGate(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("Live now", interaction.followup.sent[0]["content"])
 
     async def test_a_sync_that_never_started_does_not_reload(self):
-        async def missing_bun(dry_run, by, cwd=None):
+        async def missing_bun(dry_run, by, cwd=None, on_start=None):
             return -1, "`bun` is not on this bot's PATH"
 
         archive_commands.run_sync = missing_bun
         await CALLBACK(Interaction(User(1001)))
         self.assertEqual(self.reloads, 0)
 
-    async def test_a_refused_user_does_not_reload_either(self):
-        await CALLBACK(Interaction(User(2002)))
-        self.assertEqual(self.reloads, 0)
 
-    async def test_a_second_sync_while_one_runs_is_refused(self):
+class OnceEveryTenMinutes(Callback):
+    async def test_a_second_sync_inside_the_window_is_refused(self):
+        await CALLBACK(Interaction(User(1001)))
+        self.later(60)
+        second = Interaction(User(1001))
+        await CALLBACK(second)
+        self.assertEqual(len(self.calls), 1, "a refused request must not start a sync")
+        self.assertEqual(self.reloads, 1)
+        self.assertEqual(len(second.response.messages), 1)
+
+    async def test_the_window_is_global_across_members_and_servers(self):
+        await CALLBACK(Interaction(User(1001)))
+        await CALLBACK(Interaction(User(2002)))
+        self.assertEqual(len(self.calls), 1)
+
+    async def test_a_dry_run_uses_the_window_too(self):
+        await CALLBACK(Interaction(User(1001)), dry_run=True)
+        await CALLBACK(Interaction(User(2002)))
+        self.assertEqual(len(self.calls), 1)
+
+    async def test_the_window_opens_after_ten_minutes(self):
+        await CALLBACK(Interaction(User(1001)))
+        self.later(600)
+        await CALLBACK(Interaction(User(2002)))
+        self.assertEqual(len(self.calls), 2)
+
+    async def test_the_refusal_is_private_and_answers_before_any_defer(self):
+        # Ephemeral, because it is about the person who asked; and before any
+        # defer, since deferring first would make every later followup
+        # ephemeral too and post a visible "thinking" for a refusal.
+        await CALLBACK(Interaction(User(1001)))
+        second = Interaction(User(2002))
+        await CALLBACK(second)
+        self.assertTrue(second.response.messages[0]["ephemeral"])
+        self.assertFalse(second.response.deferred)
+        self.assertEqual(second.followup.sent, [])
+
+    async def test_the_refusal_says_when_the_last_started_and_the_next_may(self):
+        await CALLBACK(Interaction(User(1001)))
+        self.later(90)
+        second = Interaction(User(2002))
+        await CALLBACK(second)
+        said = second.response.messages[0]["content"]
+        self.assertIn(f"<t:{int(START)}:R>", said)
+        self.assertIn(f"<t:{int(START) + 600}:R>", said)
+        self.assertIn(f"<t:{int(START) + 600}:t>", said)
+        self.assertNotIn("1001", said)
+        self.assertNotIn("2002", said)
+
+    async def test_the_window_starts_when_the_sync_starts_not_when_it_ends(self):
+        async def slow(dry_run, by, cwd=None, on_start=None):
+            self.calls.append({"dry_run": dry_run, "by": by})
+            on_start()
+            self.later(240)  # four minutes of syncing
+            return 0, "done"
+
+        archive_commands.run_sync = slow
+        await CALLBACK(Interaction(User(1001)))
+        self.later(360)  # ten minutes after it started, six after it ended
+        await CALLBACK(Interaction(User(2002)))
+        self.assertEqual(len(self.calls), 2)
+
+    async def test_a_sync_that_never_started_does_not_use_the_window(self):
+        async def missing_bun(dry_run, by, cwd=None, on_start=None):
+            return -1, "`bun` is not on this bot's PATH"
+
+        archive_commands.run_sync = missing_bun
+        await CALLBACK(Interaction(User(1001)))
+        archive_commands.run_sync = self._fake_that_counts()
+        await CALLBACK(Interaction(User(1001)))
+        self.assertEqual(len(self.calls), 1, "the retry is not refused")
+
+    async def test_a_refused_request_does_not_use_the_window(self):
+        # Asking again inside the window must not push the window back.
+        await CALLBACK(Interaction(User(1001)))
+        self.later(300)
+        await CALLBACK(Interaction(User(2002)))
+        self.later(300)
+        await CALLBACK(Interaction(User(2002)))
+        self.assertEqual(len(self.calls), 2)
+
+    async def test_the_window_survives_a_restart(self):
+        await CALLBACK(Interaction(User(1001)))
+        archive_commands._started_here = None  # a new process, same stats.db
+        await CALLBACK(Interaction(User(2002)))
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(sync_window.last_started(self.db), START)
+
+    async def test_a_start_stored_ahead_of_the_clock_does_not_hold_the_window(self):
+        # A clock that ran ahead and was stepped back leaves a start in the
+        # future in stats.db. No officer can override the window any more, so
+        # that row must not lock everybody out until the clock catches up.
+        sync_window.record_start(self.db, START + 7200)
+        await CALLBACK(Interaction(User(1001)))
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(sync_window.last_started(self.db), START, "the row is put right")
+
+        self.later(60)
+        second = Interaction(User(2002))
+        await CALLBACK(second)
+        said = second.response.messages[0]["content"]
+        self.assertEqual(len(self.calls), 1)
+        self.assertIn(f"<t:{int(START)}:R>", said)
+        self.assertIn(f"<t:{int(START) + 600}:R>", said)
+        self.assertNotIn(str(int(START + 7200)), said)
+
+    async def test_a_start_this_process_saw_ahead_of_the_clock_does_not_hold_it(self):
+        archive_commands.sync_db = None
+        archive_commands._started_here = START + 7200
+        await CALLBACK(Interaction(User(1001)))
+        self.assertEqual(len(self.calls), 1)
+
+    async def test_a_future_stored_start_cannot_hide_the_memory_window_when_writes_fail(self):
+        sync_window.record_start(self.db, START + 7200)
+        self.db.execute("PRAGMA query_only = ON")
+        errors = io.StringIO()
+        with contextlib.redirect_stderr(errors):
+            await CALLBACK(Interaction(User(1001)))
+            self.assertEqual(len(self.calls), 1, "the future row does not prevent a sync")
+            self.assertEqual(sync_window.last_started(self.db), START + 7200)
+
+            self.later(60)
+            second = Interaction(User(2002))
+            await CALLBACK(second)
+            self.assertEqual(len(self.calls), 1, "the new in-memory start holds the window")
+            self.assertTrue(second.response.messages[0]["ephemeral"])
+            self.assertFalse(second.response.deferred)
+            said = second.response.messages[0]["content"]
+            self.assertIn(f"<t:{int(START)}:R>", said)
+            self.assertIn(f"<t:{int(START) + 600}:R>", said)
+            self.assertNotIn(str(int(START + 7200)), said)
+
+            self.later(540)
+            await CALLBACK(Interaction(User(2002)))
+            self.assertEqual(len(self.calls), 2, "the memory window opens at ten minutes")
+            self.assertEqual(sync_window.last_started(self.db), START + 7200)
+
+        self.assertIn("cannot record the sync window", errors.getvalue())
+
+    async def test_with_no_database_the_window_still_holds_in_this_process(self):
+        archive_commands.sync_db = None
+        await CALLBACK(Interaction(User(1001)))
+        await CALLBACK(Interaction(User(2002)))
+        self.assertEqual(len(self.calls), 1)
+
+    async def test_a_completed_run_says_when_the_next_may_start(self):
+        interaction = Interaction(User(1001))
+        await CALLBACK(interaction)
+        said = interaction.followup.sent[0]["content"]
+        self.assertIn(f"<t:{int(START) + 600}:R>", said)
+
+    async def test_a_sync_that_never_started_does_not_promise_a_wait(self):
+        async def missing_bun(dry_run, by, cwd=None, on_start=None):
+            return -1, "`bun` is not on this bot's PATH"
+
+        archive_commands.run_sync = missing_bun
+        interaction = Interaction(User(1001))
+        await CALLBACK(interaction)
+        self.assertNotIn("<t:", interaction.followup.sent[0]["content"])
+
+    async def test_a_second_sync_while_one_runs_is_refused_privately(self):
         started = asyncio.Event()
         release = asyncio.Event()
 
-        async def slow_sync(dry_run, by, cwd=None):
+        async def held(dry_run, by, cwd=None, on_start=None):
+            on_start()
             started.set()
             await release.wait()
             return 0, "done"
 
-        archive_commands.run_sync = slow_sync
+        archive_commands.run_sync = held
         first = asyncio.create_task(CALLBACK(Interaction(User(1001))))
         await started.wait()
 
-        second = Interaction(User(1001))
+        second = Interaction(User(2002))
         await CALLBACK(second)
         self.assertIn("already running", second.response.messages[0]["content"])
+        self.assertTrue(second.response.messages[0]["ephemeral"])
         self.assertFalse(second.response.deferred)
 
         release.set()
         await first
+
+    def _fake_that_counts(self):
+        async def counted(dry_run, by, cwd=None, on_start=None):
+            self.calls.append({"dry_run": dry_run, "by": by})
+            on_start()
+            return 0, "done"
+
+        return counted
+
+
+class TheCommandSaysSo(unittest.TestCase):
+    def test_the_description_names_the_limit_and_fits(self):
+        command = archive_commands.archive_sync
+        description = getattr(command, "description", None)
+        if description is None:
+            # The stubbed decorator keeps the function, not the Command.
+            self.skipTest("needs the real discord.py")
+        self.assertIn("10 minutes", description)
+        self.assertLessEqual(len(description), 100, "Discord's ceiling")
 
 
 class ReadingTheResult(unittest.TestCase):
@@ -413,6 +559,58 @@ class StartingTheProcess(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("--dry-run", seen[0])
         self.assertIn("--dry-run", seen[1])
         self.assertNotIn("--publish", seen[1])
+
+    async def test_the_start_is_reported_once_the_process_launches(self):
+        # The window opens here, at the launch, and not when the sync ends.
+        started: list = []
+
+        class Launched:
+            returncode = 0
+
+            async def communicate(self):
+                self.seen = len(started)
+                return b"added 0", None
+
+        launched = Launched()
+
+        async def fake_exec(*argv, **kwargs):
+            return launched
+
+        real = asyncio.create_subprocess_exec
+        asyncio.create_subprocess_exec = fake_exec
+        try:
+            with tempfile.TemporaryDirectory() as here:
+                code, _ = await archive_commands.run_sync(
+                    dry_run=True, by="me", cwd=Path(here),
+                    on_start=lambda: started.append(True),
+                )
+        finally:
+            asyncio.create_subprocess_exec = real
+        self.assertEqual(code, 0)
+        self.assertEqual(started, [True])
+        self.assertEqual(launched.seen, 1, "reported before the output is awaited")
+
+    async def test_nothing_is_reported_started_when_it_could_not_launch(self):
+        started: list = []
+
+        async def fake_exec(*argv, **kwargs):
+            raise FileNotFoundError("no bun here")
+
+        real = asyncio.create_subprocess_exec
+        asyncio.create_subprocess_exec = fake_exec
+        try:
+            with tempfile.TemporaryDirectory() as here:
+                await archive_commands.run_sync(
+                    dry_run=False, by="me", cwd=Path(here),
+                    on_start=lambda: started.append(True),
+                )
+            await archive_commands.run_sync(
+                dry_run=False, by="me", cwd=Path("/nope/not/here"),
+                on_start=lambda: started.append(True),
+            )
+        finally:
+            asyncio.create_subprocess_exec = real
+        self.assertEqual(started, [])
 
     async def test_a_missing_bun_blames_bun(self):
         async def fake_exec(*argv, **kwargs):

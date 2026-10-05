@@ -41,7 +41,7 @@ for as long as you leave it there — and undo and redo are always one key away.
 | `/highlights` | Attach a `.ttrm` replay — get each player's biggest attack bursts, clear by clear |
 | `/report` | File a bug or a suggestion. No GitHub account needed |
 | `/activity graph`<br>`/activity now` | Who is online, right now or across the last week |
-| `/archive sync` | **Officers only.** Pull the club's spreadsheet in, and make its new puzzles playable |
+| `/archive sync` | Pull the club's spreadsheet in, and make its new puzzles playable. Anyone may run it, at most once every 10 minutes |
 
 The bot can also reply to each day's announcement with how the server did — who
 solved what, how fast, and the server's streak. That recap is **off unless
@@ -120,7 +120,7 @@ BaronChairStair/
 ├── client/
 │   ├── discord_bot.py       the bot: commands, schedulers, entry point
 │   ├── puzzle_commands.py   /puzzle, and the daily recap
-│   ├── archive_commands.py  /archive sync, behind an officer allowlist
+│   ├── archive_commands.py  /archive sync, open to anyone once every 10 minutes
 │   ├── report_commands.py   /report — files a GitHub issue for a player
 │   ├── teto_client.py       Python client for the engine bridge
 │   └── render.py            attack-burst highlight boards
@@ -188,8 +188,8 @@ inline. The ones that matter:
 - **`PUZZLE_RECAP`** — `on` turns on the daily recap. Off by default, because it
   pings every player it names.
 
-Who may run `/archive sync` is a file, not a variable: `puzzle-admins.json`,
-gitignored, copied from `puzzle-admins.example.json`.
+`/archive sync` needs no setting of its own: anyone may run it, at most once
+every 10 minutes.
 
 `.env` is gitignored and must stay that way.
 

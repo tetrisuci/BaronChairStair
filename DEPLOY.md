@@ -91,10 +91,11 @@ asks for a replay.
 subprocess inside the activity checkout — the `activity/` beside this file, or
 `PUZZLE_ACTIVITY_DIR` — so `bun` must be on the bot process's own PATH (a
 systemd unit takes that from its own `Environment=`, not from the shell profile
-Bun's installer edits), and that checkout needs its own `bun install`. Who may
-run it is the list of ids in `puzzle-admins.json` at the repository root, which
-is gitignored: copy `puzzle-admins.example.json` to start one. A missing or
-malformed list means nobody. Everything else runs on Python alone.
+Bun's installer edits), and that checkout needs its own `bun install`. Anyone
+may run it, at most once every 10 minutes; when it last started is kept in
+`stats.db`, so a restart does not reopen the window. Nothing to configure — a
+`puzzle-admins.json` left over from the old officer allowlist is no longer read
+and can be deleted. Everything else runs on Python alone.
 
 Use the interpreter that actually runs the bot, not a bare `python3` — a system
 interpreter usually has none of these installed:

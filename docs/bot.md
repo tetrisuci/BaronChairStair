@@ -115,7 +115,7 @@ else. `@mentions` and `#references` are defanged so a report cannot become a
 stranger's notification, the description is capped, and one player may file
 fifteen reports an hour, and one server sixty.
 
-### `/archive sync` — pull the spreadsheet in, officers only
+### `/archive sync` — pull the spreadsheet in, once every 10 minutes
 
 ```
 /archive sync [dry_run:True]
@@ -123,8 +123,10 @@ fifteen reports an hour, and one server sixty.
 
 Runs `bun run sync-archive --publish` against the club's sheet, reports what
 moved — what was added, what changed content, and what would not replay — and
-**makes it playable straight away**. Running it from Discord *is* the review: an
-officer on the allowlist has decided the sheet is ready. So the sync publishes
+**makes it playable straight away**. From Discord a sync is also a publish,
+and there is no review step: anyone may run it, so what the sheet holds is
+what players get. Edit access to the sheet is the gate; the 10-minute window
+limits how often a sync runs but reviews nothing. So the sync publishes
 every row it leaves waiting, then asks the activity to reload its puzzle pool
 in place — no restart, so nobody's duel drops and nobody is signed out.
 
@@ -153,13 +155,17 @@ A group of its own rather than `/puzzle sync`, for the same reason `/report` is
 top-level: Discord will not let a command be both invocable and a group, and
 `/puzzle` is the one people already type.
 
-**Who may run it is a file, not a role.** `puzzle-admins.json` at the
-repository root holds Discord user ids, one per officer, and is **gitignored** —
-this repository is public and its history is append-only, so an id committed by
-mistake could not be taken back. Copy `puzzle-admins.example.json` to start
-one. It is read fresh on every command, so adding somebody takes effect
-immediately with no restart, and a missing or malformed file means *nobody*
-rather than everybody. Anyone not on it is turned away privately.
+**Anyone may run it, once every 10 minutes.** It used to be limited to an
+allowlist of officers; now any member in any server may, and what bounds it is
+one window shared by every server and every member, dry runs included. The
+window opens when a sync actually starts — a refused request, or one that could
+not launch (no `bun`, no activity checkout), does not use it — and a second
+request while one is running is refused too. When the last sync started is kept
+in `stats.db` (`client/sync_window.py`), so restarting the bot does not reopen
+it. A refusal is private and says, in each reader's own timezone, when the last
+sync started and when the next may; the public reply under a sync says when the
+next may start. A `puzzle-admins.json` left on a box from the allowlist days is
+no longer read.
 
 Set `PUZZLE_ACTIVITY_DIR` only if the activity is not the `activity/` beside
 this repository; the sync runs with its working directory there, because Bun

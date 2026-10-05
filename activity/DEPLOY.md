@@ -374,10 +374,11 @@ person with SSH to this box is the officer, and that is the real trust root.
 **Queue** is the landing screen: puzzles players have sent, waiting on a
 verdict. Accepting one assigns it an id in the community band (100000 and up)
 and it joins the archive and the rotation **at the next restart**, or sooner if
-an officer runs Discord's `/archive sync` without `dry_run`: that reloads the
+somebody runs Discord's `/archive sync` without `dry_run`: that reloads the
 whole archive in place, accepted puzzles included. The tool mentions only the
-restart when you accept. Running a sync is the officers' call rather than a way
-to hurry one puzzle along: it also publishes whatever the club's sheet holds.
+restart when you accept. Anyone may run a sync, at most once every 10 minutes,
+but it is not a way to hurry one puzzle along: it also publishes whatever the
+club's sheet holds.
 
 **Archive** lists every puzzle, club and community, and corrects its metadata:
 title, author, goal, difficulty and set. Nothing else — a board, queue, hold,

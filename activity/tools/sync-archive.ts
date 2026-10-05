@@ -16,10 +16,13 @@
  * changes what the club plays tomorrow. Run it as often as you like.
  *
  * **`--publish` is the exception, and it is the bot's.** Discord's
- * `/archive sync` passes it: the officers on its allowlist decided that a sync
- * they run from Discord is the review, so every row this run leaves waiting is
- * published once the sync has committed. Run from a terminal without it, this
- * stays exactly as safe as it always was.
+ * `/archive sync` passes it, so every row this run leaves waiting is published
+ * once the sync has committed. There is no review step on that path: anyone may
+ * run the command, so what the sheet holds is what players get, and edit access
+ * to the sheet is the gate. The bot allows it at most once every 10 minutes
+ * (`client/sync_window.py`), which limits how often it runs and reviews
+ * nothing. Run from a terminal without it, this stays exactly as safe as it
+ * always was.
  *
  * Every puzzle is decoded and replayed through the real engine by
  * `decode-archive.ts`, the same module `build-puzzles.ts` uses, so a puzzle

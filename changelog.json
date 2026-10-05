@@ -2,6 +2,13 @@
   "$comment": "The project's version and its player-facing release notes. Newest first; order in this list IS the version order. Read by client/changelog.py — the bot's /puzzle announcement. Adding a release means putting it at the top. Keep `changes` to things a player can see.",
   "releases": [
     {
+      "version": "beta 0.14",
+      "changes": [
+        "**Anyone can run `/archive sync` now**, not only officers — it pulls new puzzles in from the club's sheet and makes them playable. It runs at most once every 10 minutes, shared by every server. Ask too soon and the bot tells you, privately, when the last sync started and when the next one can.",
+        "The ten-minute wait still holds if the bot's clock moves backwards and its database cannot save the new sync start."
+      ]
+    },
+    {
       "version": "beta 0.13",
       "changes": [
         "**db.tetrisatuci.org now shows how every finished day went**: each Discord server's daily boards, tier by tier, and rush board; the all-time boards, Discoveries among them; each puzzle's hand-ins, solves and times; and a page for each player with their solved days, streaks, best rush and lines found. Players appear by the name the game shows, and servers by their Discord name once somebody signs in from there. Today is never shown. The game keeps its own leaderboards, profile and solutions, now with links to the site.",
