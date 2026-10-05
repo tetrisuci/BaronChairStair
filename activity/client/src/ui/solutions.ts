@@ -18,12 +18,20 @@
  * empty and there is always something to compare against. Everybody else is in
  * the order they found it, because being first to a line is the thing worth
  * showing and it never changes afterwards.
+ *
+ * Under the list, a link to the puzzle's page on db.tetrisatuci.org, where
+ * every line found on a finished day is kept for anyone to step through. It
+ * belongs to the gallery that `show` drew, so it is drawn by `show` and taken
+ * away by `readingOnly`: this panel is one long-lived instance, and the reading
+ * screen arrives from the menu with a line of a puzzle `show` may never have
+ * seen. Community puzzles get no link, because the site does not list them.
  */
 
 import type { GalleryLine } from "../api";
 import type { SolutionPlayer } from "../game/solution-player";
 import { createReplay } from "./replay";
 import { el, panel, replaceChildren } from "./dom";
+import { type OpenLink, puzzleLinesPath, siteLink } from "./site-link";
 
 export interface SolutionsPanel {
   readonly element: HTMLElement;
@@ -34,7 +42,13 @@ export interface SolutionsPanel {
    *   the panel is built, so the caller never has to load a first line itself
    *   and the board and the highlighted row cannot start out disagreeing.
    */
-  show(lines: readonly GalleryLine[], selfId: string, onPick: (line: GalleryLine) => void): void;
+  show(
+    lines: readonly GalleryLine[],
+    selfId: string,
+    onPick: (line: GalleryLine) => void,
+    /** The puzzle these lines solve, for the site link. No id, no link. */
+    puzzleId?: number,
+  ): void;
   /**
    * Puts a line's stepper under the list.
    *
@@ -78,12 +92,27 @@ function summary(line: GalleryLine): string {
   return `${line.attack} atk · ${line.placements.length}p`;
 }
 
-export function createSolutionsPanel(now: () => number = Date.now): SolutionsPanel {
+export function createSolutionsPanel(
+  now: () => number = Date.now,
+  /** Opens a db.tetrisatuci.org link. Without it the panel draws no link. */
+  openSite?: OpenLink,
+): SolutionsPanel {
   const rows = el("div", { class: "board-list solutions__list" });
+  const site = el("p", { class: "solutions__site" });
   const steps = el("div", { class: "solutions__steps" });
   const replay = createReplay();
   // `selectable`: the walkthrough and the solved-by list exist to be read.
-  const element = panel("Solutions", { class: "solutions selectable" }, rows, steps);
+  const element = panel("Solutions", { class: "solutions selectable" }, rows, site, steps);
+
+  function drawSite(puzzleId: number | undefined): void {
+    const path = puzzleId === undefined ? null : puzzleLinesPath(puzzleId);
+    replaceChildren(
+      site,
+      path && openSite ? siteLink("Every line on db.tetrisatuci.org", path, openSite) : null,
+    );
+    site.hidden = site.childElementCount === 0;
+  }
+  drawSite(undefined);
 
   return {
     element,
@@ -96,8 +125,10 @@ export function createSolutionsPanel(now: () => number = Date.now): SolutionsPan
     },
     readingOnly() {
       replaceChildren(rows);
+      drawSite(undefined);
     },
-    show(lines, selfId, onPick) {
+    show(lines, selfId, onPick, puzzleId) {
+      drawSite(puzzleId);
       if (lines.length === 0) {
         // Only reachable when the archive has no answer on this box either —
         // `data/solutions.json` is untracked, so a deploy without it seeds no

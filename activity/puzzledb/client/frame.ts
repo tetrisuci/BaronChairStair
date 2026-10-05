@@ -1,12 +1,13 @@
 /**
  * The furniture around every page, and the two pages that are not pages.
  *
- * The header is the way home and the way out with the data: the two downloads
- * sit in the navigation itself, because "can I just have the whole thing" is a
- * first-class question for a public dataset and the answer should not be at
- * the bottom of an about box. The footer says how fresh the data is and which
- * days it covers, so a reader looking for yesterday can see at a glance
- * whether it has been recorded yet.
+ * The header is the way home, the way to the four list pages, and the way out
+ * with the data: the two downloads sit in the navigation itself, because "can
+ * I just have the whole thing" is a first-class question for a public dataset
+ * and the answer should not be at the bottom of an about box. The footer says
+ * how fresh the data is and which days it covers, so a reader looking for
+ * yesterday can see at a glance whether it has been recorded yet — and, since
+ * the site shows players, whose names these are and how to take yours off.
  *
  * The block mark is drawn by the stylesheet. The game's `blockMark` colours
  * its four squares with inline styles and is not exported; here the squares
@@ -30,6 +31,8 @@ interface NavItem {
 const NAV: readonly NavItem[] = [
   { label: "Puzzles", path: "/" },
   { label: "Days", path: "/days" },
+  { label: "Leaderboards", path: "/leaderboards" },
+  { label: "Players", path: "/players" },
   { label: "Download SQLite", path: SQLITE_PATH, download: true },
   { label: "JSON", path: JSON_PATH },
 ];
@@ -49,13 +52,13 @@ function link(text: string, href: string, options: LinkOptions = {}): HTMLAnchor
   return el("a", { class: options.class, text, attrs: { href, download: options.download ? true : null } });
 }
 
-/** The two downloads are set apart from the two pages, so the eye reads them as files rather than places. */
+/** The two downloads are set apart from the pages, so the eye reads them as files rather than places. */
 function navLink(item: NavItem): HTMLAnchorElement {
   const kind = item.path === SQLITE_PATH || item.path === JSON_PATH ? " pdb-nav__link--data" : "";
   return link(item.label, item.path, { download: item.download, class: `pdb-nav__link${kind}` });
 }
 
-/** The mark and name, home; then the two pages and the two downloads. */
+/** The mark and name, home; then the four list pages and the two downloads. */
 export function siteHeader(): HTMLElement {
   return el(
     "header",
@@ -74,13 +77,15 @@ export function siteHeader(): HTMLElement {
   );
 }
 
+/** The pages the header links to; a puzzle, a day or a player is reached from one of them. */
+const LISTED_IN_NAV: ReadonlySet<PageRoute["kind"]> = new Set(["browse", "days", "leaderboards", "players"]);
+
 /**
  * Marks the header link for the page on screen, for a screen reader and for
- * the stylesheet. Only the two list pages have one; a puzzle or a day is
- * reached from them rather than from the header.
+ * the stylesheet. Only the list pages have one.
  */
 export function markCurrent(header: HTMLElement, route: PageRoute | null): void {
-  const current = route && (route.kind === "browse" || route.kind === "days") ? pathOf(route) : null;
+  const current = route && LISTED_IN_NAV.has(route.kind) ? pathOf(route) : null;
   for (const anchor of header.querySelectorAll(".pdb-nav__link")) {
     if (anchor.getAttribute("href") === current) anchor.setAttribute("aria-current", "page");
     else anchor.removeAttribute("aria-current");
@@ -110,7 +115,10 @@ function daysCovered(about: SiteAbout): string {
   return `finished days ${about.firstDay}–${about.throughDay}`;
 }
 
-/** `Data as of 2026-10-02 12:05 · finished days 245–274 · tetrisatuci.org`. */
+/** What the footer says about the people on the site, on every page. */
+export const NAMES_NOTE = "Player names as the game shows them. Hide yours in the activity's settings.";
+
+/** `Data as of 2026-10-02 12:05 · finished days 245–274 · tetrisatuci.org`, and whose names these are. */
 export function siteFooter(about: SiteAbout): HTMLElement {
   const club = el("a", {
     text: "tetrisatuci.org",
@@ -119,11 +127,8 @@ export function siteFooter(about: SiteAbout): HTMLElement {
   return el(
     "footer",
     { class: "pdb-foot label" },
-    `Data as of ${dataAsOf(about.builtAt)}`,
-    " · ",
-    daysCovered(about),
-    " · ",
-    club,
+    el("span", {}, `Data as of ${dataAsOf(about.builtAt)}`, " · ", daysCovered(about), " · ", club),
+    el("span", { class: "pdb-foot__names", text: NAMES_NOTE }),
   );
 }
 
@@ -144,6 +149,12 @@ export function aboutPanel(about: SiteAbout): HTMLElement {
         "corrections included. Each maker's answer is here too, hidden until you ask for it.",
     }),
     el("p", { class: "note", text: history }),
+    el("p", {
+      class: "note",
+      text:
+        "Each finished day's boards, the all-time leaderboards, each puzzle's stats and the lines players " +
+        "found are here too — never who found a line. A player who chose to hide shows as \u201ca player\u201d.",
+    }),
     el("p", { class: "note", text: "Puzzles written by players are not listed." }),
     el(
       "p",
@@ -180,7 +191,9 @@ export function pager(label: string, previous: PagerLink | null, next: PagerLink
  *
  * One per kind and nothing more: an unpublished puzzle, a player's puzzle and
  * an id nobody used are missing in exactly the same words, as they are on the
- * server, and today, a future day and a day before history likewise.
+ * server, and today, a future day and a day before history likewise. A player
+ * gets no sentence of their own: one who hid and a key nobody holds are both
+ * "No such page", so the words cannot tell a reader which it was.
  */
 function missingSentence(route: PageRoute | null): string {
   if (route?.kind === "puzzle") return `No puzzle #${route.id} here`;

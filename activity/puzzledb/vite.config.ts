@@ -61,10 +61,15 @@ export default defineConfig({
     port: 3003,
     // The reused modules live outside this root; Vite refuses to serve them otherwise.
     fs: { allow: [activity] },
+    // `/data` is every page's body. The page asks for it with `Accept:
+    // application/json`, so Vite does not fall back to the HTML document and
+    // answers 404 instead, and a 404 body is the "No such page" view: without
+    // this line every page but the front opens and then disappears.
     proxy: {
       "/puzzles.json": SITE_SERVER,
       "/puzzles.sqlite": SITE_SERVER,
       "/health": SITE_SERVER,
+      "/data": SITE_SERVER,
     },
   },
 });
