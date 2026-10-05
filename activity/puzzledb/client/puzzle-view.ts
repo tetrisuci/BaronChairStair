@@ -40,8 +40,8 @@ import { pieceGlyph } from "../../client/src/render/piece-glyph";
 import { difficultyPips } from "../../client/src/ui/chrome";
 import { el, panel, replaceChildren, stat } from "../../client/src/ui/dom";
 import { createReplay, type Replay } from "../../client/src/ui/replay";
+import { BOARD_HEIGHT } from "@shared/puzzle";
 import { dayLabel, pathOf, type SiteLine, type SitePuzzle, type SitePuzzleBody } from "../wire";
-import { viewRows } from "./board-stage";
 import { type SiteIndex, titleOf } from "./data";
 import { pager } from "./frame";
 import { answerChips, answerChoices, answersIntro } from "./lines";
@@ -178,7 +178,7 @@ function answerPanel(puzzle: SitePuzzle, onView: (view: BoardView) => void): Ans
   const play = () => {
     const choice = choices()[chosen];
     if (!replay || !choice) return;
-    const player = new SolutionPlayer(puzzle, choice.steps, viewRows({ board: puzzle.board, solution: choice.steps }));
+    const player = new SolutionPlayer(puzzle, choice.steps, BOARD_HEIGHT);
     replay.bind(player, () => onView(player.view()));
   };
   const pick = (at: number) => {
@@ -264,7 +264,9 @@ export function createPuzzleView(
   handlers: PuzzleHandlers,
   options: { readonly revealed?: boolean } = {},
 ): PuzzleView {
-  const rows = viewRows(puzzle);
+  // The whole field, as the game draws it: every board at the same scale, and
+  // a shallow stack seen for what it is, a few rows at the bottom of twenty.
+  const rows = BOARD_HEIGHT;
   // Wrapped rather than passed by reference: a handler written as a method
   // shorthand would lose its receiver, and the failure would be a board that
   // never redraws rather than anything the compiler could see.

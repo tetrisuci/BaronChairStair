@@ -1,15 +1,9 @@
 /**
- * The board on a puzzle's page: how many rows it shows, and getting it onto
- * the canvas.
+ * The board on a puzzle's page: getting it onto the canvas.
  *
- * **Cropped, not twenty rows.** The game draws a full twenty-row field because
- * a player is about to stack into it. Here nobody is: the archive's boards run
- * one to fourteen rows deep with a median of six, and drawn at full height
- * almost every one is a strip of stack under a tall cream wall, with the cells
- * shrunk to fit a wall nobody needed. So the field is cut to the puzzle — its
- * stack or the highest square its answer reaches, whichever is taller — plus a
- * little headroom, never below a height that still reads as a Tetris board,
- * and never past the game's own twenty.
+ * The page shows the whole twenty-row field, as the game does (the caller
+ * passes `BOARD_HEIGHT`); this module only sizes and draws whatever row count
+ * the view carries.
  *
  * **Its own small painter**, rather than the review page's `BoardPainter`,
  * because that one is fixed at `BOARD_HEIGHT` rows. The order problem it
@@ -19,14 +13,7 @@
  * happens once both are in hand.
  */
 
-import { BOARD_HEIGHT } from "@shared/puzzle";
 import { BoardRenderer, type BoardView } from "../../client/src/render/board";
-import type { SitePuzzle } from "../wire";
-
-/** Fewer rows than this and the field stops reading as a board, however shallow the puzzle. */
-export const MIN_VIEW_ROWS = 8;
-/** Empty rows above the highest thing on the field, so a stack is never drawn touching the lid. */
-export const HEADROOM_ROWS = 3;
 
 /** Wide enough to be a board, for the instant before the column has been laid out. */
 const FALLBACK_WIDTH = 320;
@@ -34,23 +21,6 @@ const FALLBACK_WIDTH = 320;
 const MIN_HEIGHT = 260;
 /** Room for the site's header and the puzzle's heading above the board. */
 const HEIGHT_MARGIN = 220;
-
-/**
- * The rows to show for a puzzle: its stack or the highest answer square,
- * whichever is taller, plus headroom — at least {@link MIN_VIEW_ROWS}, at most
- * `BOARD_HEIGHT`.
- *
- * The answer counts because it can build above the starting stack, and a row
- * the reader is about to watch a piece land in has to be on the field.
- * Placements only ever stack up or clear down, so the highest square any step
- * occupies bounds every frame of the answer.
- */
-export function viewRows(puzzle: Pick<SitePuzzle, "board" | "solution">): number {
-  const squares = (puzzle.solution ?? []).flatMap((step) => step.cells);
-  const answerTop = Math.max(0, ...squares.map(([, y]) => y + 1));
-  const tallest = Math.max(puzzle.board.length, answerTop);
-  return Math.min(BOARD_HEIGHT, Math.max(MIN_VIEW_ROWS, tallest + HEADROOM_ROWS));
-}
 
 /**
  * The renderer for a canvas, or null when this browser has no 2D canvas.

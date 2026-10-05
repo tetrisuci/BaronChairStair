@@ -24,7 +24,7 @@ import { dirname, resolve } from "node:path";
 import { Window } from "happy-dom";
 import { type ArchiveFilter, DEFAULT_ARCHIVE_FILTER, filterArchive } from "../shared/archive-filter";
 import { DAILY_TIERS, type DailyTier } from "../shared/daily";
-import { BOARD_HEIGHT, COMMUNITY_ID_BASE, type SolutionStep } from "../shared/puzzle";
+import { BOARD_HEIGHT, COMMUNITY_ID_BASE } from "../shared/puzzle";
 import { ApiError } from "../client/src/api";
 import type { BoardView } from "../client/src/render/board";
 import {
@@ -44,7 +44,7 @@ import {
   UNAVAILABLE_TEXT,
 } from "../puzzledb/wire";
 import { loadBody, loadSiteData } from "../puzzledb/client/api";
-import { BoardStage, HEADROOM_ROWS, MIN_VIEW_ROWS, viewRows } from "../puzzledb/client/board-stage";
+import { BoardStage } from "../puzzledb/client/board-stage";
 import { createBrowseView } from "../puzzledb/client/browse";
 import { indexSiteData, listingOf, readSiteData, type SiteIndex } from "../puzzledb/client/data";
 import { createDaysView, createDayView, dealLine } from "../puzzledb/client/days";
@@ -796,19 +796,9 @@ describe("one puzzle", () => {
     expect(hrefs(drivePuzzle(NOTCH).element, ".pdb-pager a")).toEqual(["/puzzle/9"]);
   });
 
-  test("crops the board to the puzzle's height plus headroom, capped at 20", () => {
-    const cells: SolutionStep["cells"] = [[0, 9], [1, 9], [2, 9], [3, 9]];
-    const flatI: SolutionStep = { piece: "I", cells, clear: null, attack: 0 };
-
-    expect(viewRows({ board: ["GGG.GGGGGG"], solution: null })).toBe(MIN_VIEW_ROWS);
-    expect(viewRows({ board: TALL.board, solution: null })).toBe(9 + HEADROOM_ROWS);
-    // An answer that builds above the board needs the room it builds into.
-    expect(viewRows({ board: ["G........."], solution: [flatI] })).toBe(10 + HEADROOM_ROWS);
-    const deep = Array.from({ length: 19 }, () => "GGGGGGGGG.");
-    expect(viewRows({ board: deep, solution: null })).toBe(BOARD_HEIGHT);
-
-    expect(drivePuzzle(TALL).views[0]!.visibleRows).toBe(viewRows(TALL));
-    expect(drivePuzzle(NOTCH).views[0]!.visibleRows).toBe(MIN_VIEW_ROWS);
+  test("shows the whole twenty-row field, however shallow the board", () => {
+    expect(drivePuzzle(TALL).views[0]!.visibleRows).toBe(BOARD_HEIGHT);
+    expect(drivePuzzle(NOTCH).views[0]!.visibleRows).toBe(BOARD_HEIGHT);
   });
 
   test("sizes the canvas to those rows, whenever the board or the canvas arrives first", () => {
@@ -817,11 +807,11 @@ describe("one puzzle", () => {
     const canvas = document.createElement("canvas");
     document.body.append(canvas);
 
-    stage.show(rowsOf(MIN_VIEW_ROWS));
+    stage.show(rowsOf(BOARD_HEIGHT / 2));
     expect(canvas.style.height).toBe("");
     stage.attach(canvas);
     const short = Number.parseFloat(canvas.style.height);
-    stage.show(rowsOf(2 * MIN_VIEW_ROWS));
+    stage.show(rowsOf(BOARD_HEIGHT));
     const tall = Number.parseFloat(canvas.style.height);
 
     expect(short).toBeGreaterThan(0);
