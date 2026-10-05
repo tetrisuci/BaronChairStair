@@ -1,6 +1,7 @@
 /**
  * The site's boards, drawn: the all-time leaderboards, a finished day's
- * boards, a player's page and the list of players.
+ * boards and a player's page. The list of players is a table now, and its
+ * tests live beside it, in puzzledb-players-view.test.ts.
  *
  * Every view here is a function from a body the server built to elements, so
  * the bodies are written out by hand, each row there for one rule: two rows
@@ -30,6 +31,7 @@ import {
   type SiteLeaderboardsBody,
   type SitePlayerBody,
   type SiteStanding,
+  type SiteTierSummary,
   STANDING_BOARDS,
   type StandingBoard,
 } from "../puzzledb/wire";
@@ -38,7 +40,6 @@ import { indexSiteData, type SiteIndex, type ViewContext } from "../puzzledb/cli
 import { renderDayBoards } from "../puzzledb/client/day-boards";
 import { renderLeaderboards } from "../puzzledb/client/leaderboards";
 import { renderPlayer } from "../puzzledb/client/player-view";
-import { renderPlayers } from "../puzzledb/client/players";
 import { queryForServer, serverFromQuery } from "../puzzledb/client/server-chips";
 
 let window: Window;
@@ -153,6 +154,11 @@ function tierRow(
   return { tier, rank, serverKey, player, puzzleId: null, solved, timeMs, attack, targetAttack };
 }
 
+/** A tier nobody handed in. The per-tier summary is not this file's subject. */
+function noHandIns(tier: DailyTier): SiteTierSummary {
+  return { tier, handIns: 0, solves: 0, bestMs: null, bestDay: null, medianMs: null };
+}
+
 const ADA_BODY: SitePlayerBody = {
   builtAt: DATA.about.builtAt,
   totals: {
@@ -165,6 +171,8 @@ const ADA_BODY: SitePlayerBody = {
     { day: 273, tier: "hard", rank: 2, solved: true, timeMs: 142_300, puzzleId: null },
   ],
   rush: [{ day: 271, rank: 1, solved: 14, timeMs: 291_000 }],
+  tiers: DAILY_TIERS.map(noHandIns),
+  cleared: [],
 };
 
 // ── Driving it ───────────────────────────────────────────────────────────────
@@ -412,36 +420,13 @@ describe("a player's page", () => {
       totals: { ...ADA_BODY.totals, rushRuns: 0, rushBest: null, rushBestMs: null, rushBestDay: null },
       runs: [],
       rush: [],
+      tiers: DAILY_TIERS.map(noHandIns),
+      cleared: [],
     };
     const element = renderPlayer(empty, INDEX);
     expect(element.textContent).toContain("No daily hand-ins on finished days.");
     expect(element.textContent).toContain("No rushes on finished days.");
     const best = [...element.querySelectorAll(".stat")].find((row) => row.textContent?.startsWith("Best rush"));
     expect(best?.querySelector(".stat__value")?.textContent).toBe("—");
-  });
-});
-
-describe("the players", () => {
-  test("lists every listed player as a link, filtering as the reader types", () => {
-    const element = renderPlayers(INDEX);
-    const links = () => [...element.querySelectorAll("a.pdb-player")].map((link) => link.getAttribute("href"));
-    expect(links()).toEqual([`/player/${ADA.key}`, `/player/${BEA.key}`, `/player/${CY.key}`]);
-    expect(element.querySelector("a.pdb-player b")).toBeNull();
-    expect(element.textContent).toContain("41 days solved · best streak 21");
-
-    const filter = find(element, '[aria-label="Filter players"]') as HTMLInputElement;
-    filter.value = "BE";
-    filter.dispatchEvent(new window.Event("input") as unknown as Event);
-    expect(links()).toEqual([`/player/${BEA.key}`]);
-
-    filter.value = "nobody";
-    filter.dispatchEvent(new window.Event("input") as unknown as Event);
-    expect(links()).toEqual([]);
-    expect(element.textContent).toContain("No player matches");
-  });
-
-  test("says so when nobody is listed yet", () => {
-    const element = renderPlayers(indexSiteData({ ...DATA, players: [] }));
-    expect(element.textContent).toContain("No players on record yet.");
   });
 });

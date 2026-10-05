@@ -43,6 +43,7 @@ import {
   STANDING_BOARDS,
   UNAVAILABLE_TEXT,
 } from "../puzzledb/wire";
+import type { SitePlayersBody, SiteSolvesBody } from "../puzzledb/wire-profiles";
 import { loadBody, loadSiteData } from "../puzzledb/client/api";
 import { BoardStage } from "../puzzledb/client/board-stage";
 import { createBrowseView } from "../puzzledb/client/browse";
@@ -234,6 +235,24 @@ const ADA_BODY: SitePlayerBody = {
   },
   runs: [{ day: 274, tier: "easy", rank: 1, solved: true, timeMs: 61_000, puzzleId: TWO_STEP.id }],
   rush: [],
+  tiers: DAILY_TIERS.map((tier) =>
+    tier === "easy"
+      ? { tier, handIns: 1, solves: 1, bestMs: 61_000, bestDay: 274, medianMs: 61_000 }
+      : { tier, handIns: 0, solves: 0, bestMs: null, bestDay: null, medianMs: null },
+  ),
+  cleared: [TWO_STEP.id],
+};
+
+/** The players table: ada's numbers, by key. */
+const PLAYERS_BODY: SitePlayersBody = {
+  builtAt: BUILT,
+  rows: [{ key: ADA.key, puzzlesCleared: 5, linesFound: 1, rushBest: null, rushBestMs: null, servers: [CLUB.key] }],
+};
+
+/** The feed's steering: every day in the data had ada's easy solve in Club One (`dayBody`). */
+const SOLVES_BODY: SiteSolvesBody = {
+  builtAt: BUILT,
+  days: [274, 273, 251].map((number) => ({ day: number, tiers: { easy: 1, medium: 0, hard: 0, extreme: 0 }, servers: [CLUB.key] })),
 };
 
 const NOTCH_BODY: SitePuzzleBody = {
@@ -249,6 +268,8 @@ const BODIES: ReadonlyMap<string, unknown> = new Map<string, unknown>([
   ["/data/puzzle/4.json", NOTCH_BODY],
   ["/data/leaderboards.json", RUSH_RECORDS],
   [`/data/player/${ADA.key}.json`, ADA_BODY],
+  ["/data/players.json", PLAYERS_BODY],
+  ["/data/solves.json", SOLVES_BODY],
 ]);
 
 /** The server, as far as bodies go: what it built, and its 404 for anything else. */
@@ -979,6 +1000,14 @@ describe("the page", () => {
     expect(nav("Players").getAttribute("aria-current")).toBe("page");
     expect(nav("Leaderboards").hasAttribute("aria-current")).toBe(false);
     expect(find(root, "footer").textContent).toContain("Player names as the game shows them.");
+
+    // The feed comes after Players, and is marked on its own page as they are.
+    expect(linksSaying(find(root, "nav.pdb-nav"), "Solves")).toHaveLength(1);
+    click(nav("Solves"));
+    expect(document.title).toBe("Recent solves — Puzzle archive");
+    expect(nav("Solves").getAttribute("href")).toBe("/solves");
+    expect(nav("Solves").getAttribute("aria-current")).toBe("page");
+    expect(nav("Players").hasAttribute("aria-current")).toBe(false);
   });
 
   test("carries the downloads, and how fresh the data is, on every page", async () => {
@@ -1049,19 +1078,69 @@ describe("the bodies", () => {
       asked.push(path);
       return serverBodies(path);
     };
-    const { root } = await openPage(`${ORIGIN}/players`, undefined, undefined, counting);
+    const { root } = await openPage(`${ORIGIN}/days`, undefined, undefined, counting);
     expect(asked).toEqual([]);
-    expect(hrefs(root, "a.pdb-player")).toEqual([`/player/${ADA.key}`]);
 
-    click(find(root, "a.pdb-player"));
+    // The players table is a body page now: its numbers are one body, asked for once a visit.
+    click(find(root, 'nav.pdb-nav a[href="/players"]'));
+    await settle();
+    expect(asked).toEqual(["/data/players.json"]);
+    expect(hrefs(root, "a.pdb-player-link")).toEqual([`/player/${ADA.key}`]);
+
+    click(find(root, "a.pdb-player-link"));
     await settle();
     expect(document.title).toBe("ada — Puzzle archive");
     expect(root.textContent).toContain("Puzzles cleared");
     window.history.back();
     await settle();
+    expect(hrefs(root, "a.pdb-player-link")).toEqual([`/player/${ADA.key}`]);
     window.history.forward();
     await settle();
-    expect(asked).toEqual([`/data/player/${ADA.key}.json`]);
+    expect(asked).toEqual(["/data/players.json", `/data/player/${ADA.key}.json`]);
+  });
+
+  test("feeds /solves from its steering and the day bodies, each kept for the rest of the visit", async () => {
+    const asked: string[] = [];
+    const counting: BodyLoader = (path) => {
+      asked.push(path);
+      return serverBodies(path);
+    };
+    const { root } = await openPage(`${ORIGIN}/solves`, undefined, undefined, counting);
+    await settle();
+    expect(document.title).toBe("Recent solves — Puzzle archive");
+    expect(asked).toEqual(["/data/solves.json", "/data/day/274.json", "/data/day/273.json", "/data/day/251.json"]);
+    expect(root.querySelectorAll(".pdb-feed-day")).toHaveLength(3);
+    expect(hrefs(root, ".pdb-feed-row a[href^='/player/']")).toContain(`/player/${ADA.key}`);
+
+    // The day the feed already read draws from this visit's copy.
+    click(find(root, '.pdb-feed-day__head a[href="/day/274"]'));
+    await settle();
+    expect(root.querySelector(".pdb-day-boards")).not.toBeNull();
+    expect(asked).toHaveLength(4);
+  });
+
+  test("stops the feed's press once the reader leaves /solves, asking for no further day", async () => {
+    const held = heldBodies();
+    const { root } = await openPage(`${ORIGIN}/solves?server=${CLUB.key}&tier=easy`, undefined, undefined, held.loader);
+    // Twenty days the steering cannot rule out, none of which will draw.
+    const days = Array.from({ length: 20 }, (_, at) => 274 - at);
+    const steering: SiteSolvesBody = {
+      builtAt: BUILT,
+      days: days.map((day) => ({ day, tiers: { easy: 1, medium: 0, hard: 0, extreme: 0 }, servers: [CLUB.key] })),
+    };
+    held.answer("/data/solves.json", steering);
+    await settle();
+    const firstBatch = held.asked.filter((path) => path.startsWith("/data/day/"));
+    expect(firstBatch).toHaveLength(7);
+
+    click(find(root, 'nav.pdb-nav a[href="/days"]'));
+    await settle();
+    for (const path of firstBatch) {
+      const day = Number(path.split("/")[3]!.split(".")[0]);
+      held.answer(path, { ...dayBody(day, ADA), tiers: [] });
+    }
+    await settle();
+    expect(held.asked.filter((path) => path.startsWith("/data/day/"))).toEqual(firstBatch);
   });
 
   test("drops a body that arrives after the reader has moved on", async () => {
@@ -1195,6 +1274,40 @@ describe("the bodies", () => {
       const { root } = await openPage(`${ORIGIN}/puzzle/4#lines`);
       expect(scrolled).toEqual(["lines"]);
       expect(root.querySelector(".replay")).toBeNull();
+    } finally {
+      scroll.mockRestore();
+    }
+  });
+
+  test("lands a profile's Lines found on the Discoveries board, once the boards have come", async () => {
+    const scrolled: string[] = [];
+    const scroll = spyOn(window.HTMLElement.prototype, "scrollIntoView").mockImplementation(function (this: HTMLElement) {
+      scrolled.push(this.id);
+    });
+    try {
+      const held = heldBodies();
+      const { root } = await openPage(`${ORIGIN}/player/${ADA.key}`, undefined, undefined, held.loader);
+      held.answer(`/data/player/${ADA.key}.json`, ADA_BODY);
+      await settle();
+
+      click(find(root, 'a[href="/leaderboards#discoveries"]'));
+      await settle();
+      // The board is not there yet, so there is nothing to scroll to.
+      expect(scrolled).toEqual([]);
+
+      held.answer("/data/leaderboards.json", RUSH_RECORDS);
+      await settle();
+      expect(scrolled).toEqual(["discoveries"]);
+    } finally {
+      scroll.mockRestore();
+    }
+  });
+
+  test("scrolls to nothing for an anchor no element carries", async () => {
+    const scroll = spyOn(window.HTMLElement.prototype, "scrollIntoView").mockImplementation(() => {});
+    try {
+      await openPage(`${ORIGIN}/leaderboards#nosuch"]`);
+      expect(scroll).not.toHaveBeenCalled();
     } finally {
       scroll.mockRestore();
     }

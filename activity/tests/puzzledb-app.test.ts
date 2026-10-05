@@ -347,8 +347,8 @@ describe("the data", () => {
   test("serves every body the build made, byte for byte, as JSON revalidated by its own tag", async () => {
     const app = siteApp();
     const paths = bodyPaths();
-    // One per finished day, listed puzzle and shown player, and the all-time boards.
-    const expected = dataset.data.days.length + dataset.data.puzzles.length + dataset.data.players.length + 1;
+    // One per finished day, listed puzzle and shown player, the all-time boards, the players table and the feed's.
+    const expected = dataset.data.days.length + dataset.data.puzzles.length + dataset.data.players.length + 3;
     expect(paths).toHaveLength(expected);
     expect(paths).toContain(bodyPathFor({ kind: "leaderboards" })!);
 
@@ -609,6 +609,7 @@ describe("what else answers", () => {
         "GET /leaderboards",
         "GET /players",
         "GET /player/:key",
+        "GET /solves",
         "GET /data/*",
         "GET /assets/*",
         "GET /fonts/*",

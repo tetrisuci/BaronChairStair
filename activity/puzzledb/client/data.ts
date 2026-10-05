@@ -6,9 +6,10 @@
  * days, the listed players and the servers — so every page can be named, and
  * every list drawn, from this index without a request, and every lookup a view
  * makes is a map read rather than a scan. What a page shows beyond the index —
- * a day's boards, a player's runs, a puzzle's lines, the all-time boards — is
- * one body from `/data/…`, fetched as the page opens and checked here at the
- * door the same shallow way the index is ({@link readBody}).
+ * a day's boards, a player's runs, a puzzle's lines, the all-time boards, the
+ * players table's numbers, the solves feed's steering — is one body from
+ * `/data/…`, fetched as the page opens and checked here at the door the same
+ * shallow way the index is ({@link readBody}).
  *
  * The one piece of translation here is {@link listingOf}, and it matters more
  * than it looks: the browse filters are the game's own (`shared/archive-
@@ -29,6 +30,7 @@ import type {
   SitePuzzleBody,
   SiteServer,
 } from "../wire";
+import type { SitePlayersBody, SiteSolvesBody } from "../wire-profiles";
 
 /** One finished day a puzzle was dealt on, and the tier that day dealt it as. */
 export interface DealtOn {
@@ -111,9 +113,11 @@ export function readSiteData(value: unknown): SiteData {
 /** The fields each body must have at its top, each an object (`{}`) or a list (`[]`). */
 const BODY_FIELDS = {
   day: { boards: "{}", tiers: "[]", rush: "[]" },
-  player: { totals: "{}", runs: "[]", rush: "[]" },
+  player: { totals: "{}", runs: "[]", rush: "[]", tiers: "[]", cleared: "[]" },
   puzzle: { lines: "[]" },
   leaderboards: { boards: "{}" },
+  players: { rows: "[]" },
+  solves: { days: "[]" },
 } as const;
 
 type BodyKind = keyof typeof BODY_FIELDS;
@@ -124,6 +128,8 @@ interface BodyOf {
   player: SitePlayerBody;
   puzzle: SitePuzzleBody;
   leaderboards: SiteLeaderboardsBody;
+  players: SitePlayersBody;
+  solves: SiteSolvesBody;
 }
 
 /**

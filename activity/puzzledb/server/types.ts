@@ -104,6 +104,15 @@ export interface SnapshotCount extends SnapshotPlayer {
 }
 
 /**
+ * A puzzle a shown player first cleared before the cut, listed or not; the
+ * build drops the ones the site does not list. SQL lets no other player's
+ * out, labelled or not: a whole set of clears is as good as a name.
+ */
+export interface SnapshotClear extends SnapshotPlayer {
+  readonly puzzleId: number;
+}
+
+/**
  * A credited, live line filed on a finished day, already re-projected.
  * Nothing in it says who filed it or when; rows arrive in publication order —
  * by puzzle, then by the day it was filed, then as filed within the day.
@@ -141,6 +150,8 @@ export interface PlayerSnapshot {
   readonly dailyDays: readonly SnapshotDailyDays[];
   /** Distinct puzzles first cleared before the game-zone midnight that starts the cut. */
   readonly cleared: readonly SnapshotCount[];
+  /** Shown players' first clears before that same midnight, by key then puzzle. */
+  readonly clearedPuzzles: readonly SnapshotClear[];
   /** Credited lines per finder, voided included and any puzzle, as the game counts them. */
   readonly discoveries: readonly SnapshotCount[];
   readonly lines: readonly SnapshotLine[];

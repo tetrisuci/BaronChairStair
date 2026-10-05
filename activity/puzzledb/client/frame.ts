@@ -1,7 +1,7 @@
 /**
  * The furniture around every page, and the two pages that are not pages.
  *
- * The header is the way home, the way to the four list pages, and the way out
+ * The header is the way home, the way to the five list pages, and the way out
  * with the data: the two downloads sit in the navigation itself, because "can
  * I just have the whole thing" is a first-class question for a public dataset
  * and the answer should not be at the bottom of an about box. The footer says
@@ -33,6 +33,7 @@ const NAV: readonly NavItem[] = [
   { label: "Days", path: "/days" },
   { label: "Leaderboards", path: "/leaderboards" },
   { label: "Players", path: "/players" },
+  { label: "Solves", path: "/solves" },
   { label: "Download SQLite", path: SQLITE_PATH, download: true },
   { label: "JSON", path: JSON_PATH },
 ];
@@ -58,7 +59,7 @@ function navLink(item: NavItem): HTMLAnchorElement {
   return link(item.label, item.path, { download: item.download, class: `pdb-nav__link${kind}` });
 }
 
-/** The mark and name, home; then the four list pages and the two downloads. */
+/** The mark and name, home; then the five list pages and the two downloads. */
 export function siteHeader(): HTMLElement {
   return el(
     "header",
@@ -78,7 +79,7 @@ export function siteHeader(): HTMLElement {
 }
 
 /** The pages the header links to; a puzzle, a day or a player is reached from one of them. */
-const LISTED_IN_NAV: ReadonlySet<PageRoute["kind"]> = new Set(["browse", "days", "leaderboards", "players"]);
+const LISTED_IN_NAV: ReadonlySet<PageRoute["kind"]> = new Set(["browse", "days", "leaderboards", "players", "solves"]);
 
 /**
  * Marks the header link for the page on screen, for a screen reader and for

@@ -220,9 +220,10 @@ export const LINES = Object.freeze({
 /** `firstAt` is `puzzle_clears.first_at`, the column the site counts "puzzles cleared" by. */
 export type PlantedClear = Readonly<{ player: PlayerRole; puzzleId: number; firstAt: number }>;
 
-/** First clears on both sides of today's midnight. */
+/** First clears on both sides of today's midnight, and one of a puzzle the site withholds, which it counts and never lists. */
 export const CLEARS: readonly PlantedClear[] = Object.freeze([
   { player: "visible", puzzleId: CORRECTED_ID, firstAt: YESTERDAY_NOON + 6_666 },
+  { player: "visible", puzzleId: COMMUNITY_ID, firstAt: YESTERDAY_NOON + 9_999 },
   { player: "unchosen", puzzleId: 50, firstAt: YESTERDAY_NOON + 7_777 },
   { player: "hidden", puzzleId: 6, firstAt: YESTERDAY_NOON + 8_888 },
   { player: "visible", puzzleId: 51, firstAt: JUST_AFTER_MIDNIGHT },

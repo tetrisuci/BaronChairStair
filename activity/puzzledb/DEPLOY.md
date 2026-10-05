@@ -362,6 +362,9 @@ Expect `"ok":true` with the banner's counts; `HTTP/1.1 200 OK` and both headers;
 ```sh
 curl -s 127.0.0.1:3002/leaderboards | grep -o '<title>[^<]*</title>'                 # <title>Leaderboards — Puzzle archive</title>
 curl -s -o /dev/null -w '%{http_code}\n' 127.0.0.1:3002/data/leaderboards.json        # 200
+curl -s 127.0.0.1:3002/solves | grep -o '<title>[^<]*</title>'                       # <title>Recent solves — Puzzle archive</title>
+curl -s -o /dev/null -w '%{http_code}\n' 127.0.0.1:3002/solves/                        # 404: one spelling per page
+for b in players solves; do curl -s -o /dev/null -w "$b %{http_code} %{content_type}\n" "127.0.0.1:3002/data/$b.json"; done   # each 200 application/json; charset=utf-8
 curl -s 127.0.0.1:3002/data/no-such-thing.json; echo                                   # {"error":"Not found"}
 curl -s 127.0.0.1:3002/puzzles.json | bun -e 'const d = await Bun.stdin.json(); console.log(`schema ${d.about.schema}: ${d.players.length} players listed, ${d.servers.length} servers (${d.servers.filter((s) => s.name === null).length} unnamed)`)'
 ```
@@ -375,7 +378,7 @@ index or any body; each line must print `0`:
 
 ```sh
 curl -s 127.0.0.1:3002/puzzles.json | grep -cE '[0-9]{17}'
-curl -s 127.0.0.1:3002/data/leaderboards.json | grep -cE '[0-9]{17}'
+for b in leaderboards players solves; do curl -s "127.0.0.1:3002/data/$b.json" | grep -cE '[0-9]{17}'; done
 ```
 
 A `1` is a stop: `pm2 stop puzzle-db` (under systemd, `sudo systemctl stop puzzle-db`)
@@ -404,12 +407,12 @@ bun -e 'import {Database} from "bun:sqlite"; const db = new Database(process.arg
 If any of these is wrong, `pm2 stop puzzle-db` (under systemd, `sudo systemctl stop puzzle-db`) and
 report it. Do not put the site in front of anybody.
 
-**The download** holds these eleven tables and nothing else:
+**The download** holds these twelve tables and nothing else:
 
 ```sh
 DL=$(mktemp -d)/tetrisatuci-puzzles.sqlite
 curl -s 127.0.0.1:3002/puzzles.sqlite -o "$DL"
-bun -e 'import {Database} from "bun:sqlite"; const db = new Database(process.argv[1], {readonly: true}); console.log(db.query("SELECT name FROM sqlite_master WHERE type = ?1 ORDER BY name").all("table").map((t) => t.name).join(" "))' "$DL"   # about day_boards day_puzzles lines players puzzle_stats puzzles rush_boards servers standings tier_boards
+bun -e 'import {Database} from "bun:sqlite"; const db = new Database(process.argv[1], {readonly: true}); console.log(db.query("SELECT name FROM sqlite_master WHERE type = ?1 ORDER BY name").all("table").map((t) => t.name).join(" "))' "$DL"   # about day_boards day_puzzles lines player_clears players puzzle_stats puzzles rush_boards servers standings tier_boards
 ```
 
 **Only now, under pm2, `pm2 save`**, and only once `pm2 list` shows every app as
@@ -533,6 +536,8 @@ does so itself, and Caddy and nginx need the lines above.
 curl -sI https://db.tetrisatuci.org/ | grep -iE '^(HTTP|content-security-policy|x-frame-options)'
 curl -s https://db.tetrisatuci.org/puzzle/1 | grep -o '<title>[^<]*</title>'
 curl -s https://db.tetrisatuci.org/health; echo
+curl -s -o /dev/null -w '%{http_code}\n' https://db.tetrisatuci.org/solves/      # 404
+for b in players solves; do curl -s -o /dev/null -w "$b %{http_code} %{content_type}\n" "https://db.tetrisatuci.org/data/$b.json"; done   # each 200 application/json; charset=utf-8
 ```
 
 Then, in a browser at <https://db.tetrisatuci.org/>, with the developer console open
@@ -542,7 +547,11 @@ the whole time:
   with the arrow keys, then open **Days** and one day;
 - on that day, the boards under the deal cards: pick a server chip and check the
   address gains `?server=`, then switch the tier tabs;
-- open **Leaderboards**, then **Players**, then one player's page;
+- open **Leaderboards**, then **Players**: press a column's heading and check the
+  address gains `?sort=`; then one player's page, which shows *By tier*, a
+  *Calendar* and *Puzzles cleared*;
+- open **Solves**: pick a tier and check the address gains `?tier=`, then press
+  **Show older days** if it is offered;
 - the console must show **no Content-Security-Policy errors**, and no 404s: the
   page's icon is `/assets/favicon-<hash>.svg`, so nothing asks for `/favicon.ico`.
 
@@ -770,6 +779,12 @@ reading while the files move.
 - **Discoveries counting more lines than the puzzle pages show.** The board counts
   as the game does, voided lines and lines on puzzles the site does not list
   included.
+- **A player's *Puzzles cleared* list shorter than their *Puzzles cleared* count.**
+  The count is the game's, any puzzle; the list holds only puzzles the site lists,
+  and the page says how many more there are.
+- **No solves from today in *Solves*, and no rushes at all.** The feed shows finished
+  days only, like every page, and daily solves only: each day's page has its rush
+  board.
 
 ## Things that are wrong
 

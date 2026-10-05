@@ -25,6 +25,7 @@ import {
   pathOf,
   SCHEMA_VERSION,
   SITE_NAME,
+  SOLVES_TEXT,
   UNAVAILABLE_TEXT,
   type PageRoute,
   STANDING_BOARDS,
@@ -86,6 +87,28 @@ function descriptionOf(puzzle: SitePuzzle): string {
 }
 
 describe("the page routes", () => {
+  test("reads /solves, the feed of every solve", () => {
+    expect(parsePage("/solves")).toEqual({ kind: "solves" });
+    expect(pathOf({ kind: "solves" })).toBe("/solves");
+  });
+
+  test("reads no other spelling of /solves", () => {
+    // Each must be the shared 404 on the server. The feed's filters are in the
+    // query string, which never reaches `parsePage`, so `/solves/1` is not a page.
+    const strays = [
+      "/solves/",
+      "/Solves",
+      "/SOLVES",
+      "/solves/1",
+      "/solves.json",
+      "/solves.html",
+      "/solves%2F",
+      "/solve",
+    ];
+
+    expect(strays.filter((path) => parsePage(path) !== null)).toEqual([]);
+  });
+
   test("reads /leaderboards, /players and /player/<key>", () => {
     expect(parsePage("/leaderboards")).toEqual({ kind: "leaderboards" });
     expect(parsePage("/players")).toEqual({ kind: "players" });
@@ -187,10 +210,20 @@ describe("the page routes", () => {
       { kind: "leaderboards" },
       { kind: "players" },
       { kind: "player", key: KEY },
+      { kind: "solves" },
     ];
 
     for (const route of routes) expect(parsePage(pathOf(route))).toEqual(route);
-    for (const path of ["/", "/days", "/puzzle/42", "/day/251", "/leaderboards", "/players", `/player/${KEY}`]) {
+    for (const path of [
+      "/",
+      "/days",
+      "/puzzle/42",
+      "/day/251",
+      "/leaderboards",
+      "/players",
+      `/player/${KEY}`,
+      "/solves",
+    ]) {
       expect(pathOf(parsePage(path)!)).toBe(path);
     }
   });
@@ -405,9 +438,45 @@ describe("page text", () => {
     expect(pageText({ kind: "players" }, NOTHING)).toEqual({
       title: "Players — Puzzle archive",
       description:
-        "The players of the Tetris at UCI daily, by the name the game shows, " +
-        "each with a page of their finished days.",
+        "The players of the Tetris at UCI daily, by the name the game shows: days solved, " +
+        "streaks, puzzles cleared, lines found and best rush, each with a page of their finished days.",
     });
+  });
+
+  test("names the solves feed, which exists whatever the data holds", () => {
+    expect(pageText({ kind: "solves" }, NOTHING)).toBe(SOLVES_TEXT);
+    expect(SOLVES_TEXT).toEqual({
+      title: "Recent solves — Puzzle archive",
+      description:
+        "Every daily solve on a finished day of the Tetris at UCI daily, newest first, " +
+        "by tier, server and puzzle.",
+    });
+    // The server's head for every visit, so no handler may edit it for the next.
+    expect(Object.isFrozen(SOLVES_TEXT)).toBe(true);
+  });
+
+  test("gives every kind of page a path and a text, each description within the limit", () => {
+    // Keyed by kind and typed as a whole record, so a kind added to `PageRoute`
+    // without a line here is a type error rather than a page nobody checked.
+    const everyKind: { readonly [K in PageRoute["kind"]]: Extract<PageRoute, { kind: K }> } = {
+      browse: { kind: "browse" },
+      days: { kind: "days" },
+      puzzle: { kind: "puzzle", id: 42 },
+      day: { kind: "day", day: 274 },
+      leaderboards: { kind: "leaderboards" },
+      players: { kind: "players" },
+      player: { kind: "player", key: KEY },
+      solves: { kind: "solves" },
+    };
+    const day: SiteDay = { day: 274, date: "2026-10-01", deals: [{ tier: "hard", puzzleId: 42 }] };
+    const lookup = lookupOf([sitePuzzle()], [day], [sitePlayer()]);
+
+    for (const route of Object.values(everyKind)) {
+      const text = pageText(route, lookup);
+      expect(parsePage(pathOf(route))).toEqual(route);
+      expect(text).not.toBeNull();
+      expect(Array.from(text!.description).length).toBeLessThanOrEqual(DESCRIPTION_LIMIT);
+    }
   });
 
   test("names a player's page by their name, days solved and best streak", () => {
@@ -454,16 +523,23 @@ describe("the data a page fetches beside the index", () => {
     expect(bodyPathFor({ kind: "leaderboards" })).toBe("/data/leaderboards.json");
   });
 
+  test("names a body for the players table and one for the solves feed", () => {
+    // The table's extra numbers are wanted on one page only, so they are a body
+    // of their own rather than a heavier index; the feed's body only steers it
+    // to the day bodies it already has.
+    expect(bodyPathFor({ kind: "players" })).toBe("/data/players.json");
+    expect(bodyPathFor({ kind: "solves" })).toBe("/data/solves.json");
+  });
+
   test("names none for the pages the index alone can draw", () => {
     expect(bodyPathFor({ kind: "browse" })).toBeNull();
     expect(bodyPathFor({ kind: "days" })).toBeNull();
-    expect(bodyPathFor({ kind: "players" })).toBeNull();
   });
 
   test("puts each body at its page's own path, under /data and ending .json", () => {
     // A body's path is its page's path with a prefix and a suffix, so a body
     // can exist only where `parsePage` already said a page might.
-    for (const path of ["/day/274", "/puzzle/42", `/player/${KEY}`, "/leaderboards"]) {
+    for (const path of ["/day/274", "/puzzle/42", `/player/${KEY}`, "/leaderboards", "/players", "/solves"]) {
       const route = parsePage(path)!;
       expect(bodyPathFor(route)).toBe(`/data${path}.json`);
     }

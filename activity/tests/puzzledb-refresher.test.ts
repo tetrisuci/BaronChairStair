@@ -151,6 +151,7 @@ const NO_PLAYERS: PlayerSnapshot = Object.freeze({
   rushRecords: [],
   dailyDays: [],
   cleared: [],
+  clearedPuzzles: [],
   discoveries: [],
   lines: [],
   servers: [],
