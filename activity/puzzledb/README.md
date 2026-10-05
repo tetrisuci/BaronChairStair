@@ -262,8 +262,8 @@ in the repository's `CLAUDE.md`:
 
 | | |
 |---|---|
-| `FIRST_TIERED_DAY = 245` | History starts here. Earlier `day_puzzles` rows are the backfill the game wrote for days nobody was dealt tiers |
-| `FIRST_EXTREME_DAY = 251` | Days before it show three tiers. An earlier extreme row is a top-up added later, not something anybody was dealt |
+| `FIRST_TIERED_DAY = 247` | History starts here. Earlier `day_puzzles` rows are the backfill the game wrote for days nobody was dealt tiers |
+| `FIRST_EXTREME_DAY = 252` | Days before it show three tiers. An earlier extreme row is a top-up added later, not something anybody was dealt |
 | `PUBLISH_COMMUNITY_PUZZLES = false` | Puzzles players wrote, and their Discord display names, stay off the open web |
 
 They are constants rather than settings on purpose. Each decides what strangers can

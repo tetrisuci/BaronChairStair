@@ -603,7 +603,7 @@ reading while the files move.
 - **Yesterday is missing from history.** It appears once something has pinned
   today: within five minutes when the bot's recap is on (`PUZZLE_RECAP=on`),
   otherwise when the first player opens the day.
-- **History starts at day 245, and days before 251 show three tiers.** Earlier rows
+- **History starts at day 247, and days before 252 show three tiers.** Earlier rows
   are the backfill nobody was dealt, and an earlier extreme row is a top-up added
   later. Both numbers are in `puzzledb/server/policy.ts`, and the owner's to change.
 - **The site lists more puzzles than `/api/public`.** That route is the published
