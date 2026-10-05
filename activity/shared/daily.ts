@@ -115,6 +115,43 @@ export function nextResetAt(now: Date | number = Date.now(), options: DayOptions
 }
 
 /**
+ * The instant a day begins: local midnight on its date, as a timestamp.
+ *
+ * The inverse of {@link dayNumber} at the boundary — `dayNumber(startOfDay(d))`
+ * is `d` and a millisecond earlier is `d - 1` — and the same instant
+ * {@link nextResetAt} counted down to the day before. It exists for
+ * db.tetrisatuci.org, which has to cut columns that hold milliseconds and no
+ * day (when a line was filed, when a puzzle was first cleared) at the start of
+ * a finished day, and must do it in the game's zone rather than its own: a
+ * start taken an hour late on a daylight-saving night would publish an hour of
+ * today.
+ *
+ * The date is plain arithmetic from {@link EPOCH_UTC}, where no day is ever 23
+ * or 25 hours long; only the midnight is the zone's.
+ */
+export function startOfDay(day: number, options: DayOptions = {}): number {
+  const timeZone = options.timeZone ?? DEFAULT_TIME_ZONE;
+  const date = new Date(EPOCH_UTC + (day - 1) * MS_PER_DAY);
+  return localMidnight(date.getUTCFullYear(), date.getUTCMonth() + 1, date.getUTCDate(), timeZone);
+}
+
+/**
+ * Every day's start from `first` to `last`, both included, in order; empty when
+ * `last` is before `first`.
+ *
+ * Shaped for SQL rather than for JS: the site hands it to SQLite as a JSON
+ * array and names a timestamp's day as the last index whose start is at or
+ * before it, plus `first`. That keeps the zone out of SQL — SQLite has no time
+ * zones — while letting a GROUP BY over a millisecond column happen there, where
+ * the rows it groups must stay.
+ */
+export function dayStarts(first: number, last: number, options: DayOptions = {}): number[] {
+  const starts: number[] = [];
+  for (let day = first; day <= last; day++) starts.push(startOfDay(day, options));
+  return starts;
+}
+
+/**
  * Index into a puzzle list for a given day. Each pass through the list uses its
  * own shuffle, so day 1 of the second cycle is not day 1 again.
  *

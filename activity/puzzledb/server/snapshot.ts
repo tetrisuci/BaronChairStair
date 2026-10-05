@@ -1,10 +1,11 @@
 /**
- * The only SQL the puzzle database runs against the game's database.
+ * The SQL the puzzle database runs against the game's database, and the one
+ * transaction it all runs in.
  *
  * Every other part of the site works from what this module hands back, and it
  * touches the game's file in exactly two ways: it opens it, read-only, and it
- * reads four tables in one short transaction. Both are what make the site safe
- * to run beside a game that is in the middle of somebody's duel.
+ * reads it in one short transaction. Both are what make the site safe to run
+ * beside a game that is in the middle of somebody's duel.
  *
  * **Read-only by construction, not by care.** `{ readonly: true }` is SQLite's
  * own read-only open, so an INSERT is refused by SQLite rather than by a rule
@@ -14,28 +15,34 @@
  * the file the moment it is made, and the second pins any day it is asked
  * about. Either would turn a reader into a writer.
  *
- * **Four tables, read by the readers the game already has.** The accepted
+ * **The puzzles, read by the readers the game already has.** The accepted
  * puzzles, the corrections and the published rows come through the game's own
  * functions — `readAcceptedPuzzles`, `readOverrides`, `readPublishedArchive` —
  * so what the site lists cannot drift from how the game reads the same rows.
- * The days are the one query of this module's own, {@link FINISHED_DAYS_SQL}.
- * Players, runs, rushes, clears, preferences and every log are never named
- * here, and `tests/puzzledb-snapshot.test.ts` drops them from a copy to prove
- * a build does not need them.
+ * The days are a query of this module's own, {@link FINISHED_DAYS_SQL}.
  *
- * **One deferred transaction, and a short one.** The five reads see a single
+ * **The players, by an explicit list of columns.** Since schema 2 the site
+ * publishes how finished days went, so it reads the player tables — through
+ * `snapshot-players.ts` alone, which names every column it touches and decides
+ * in SQL who may be named. Preferences, avatars, input logs and every log are
+ * still never named anywhere, and `tests/puzzledb-snapshot.test.ts` strips each
+ * column outside the list from a copy to prove a build does not need it.
+ *
+ * **One deferred transaction, and a short one.** The reads see a single
  * moment of the database, so a publish landing between two of them cannot
  * produce a dataset that is half before it and half after. A deferred BEGIN
  * takes no write lock, and the transaction is over before anything is built
  * from what it read — `PuzzleArchive.load` reads files and takes its time — so
  * a game checkpointing its write-ahead log waits on this reader for no longer
- * than five SELECTs take, and never on a build.
+ * than its SELECTs take, and never on a build. A club-year of runs is a few
+ * thousand rows, so that is milliseconds.
  */
 
 import { Database } from "bun:sqlite";
 import { readPublishedArchive } from "../../server/archive-rows";
 import { readOverrides } from "../../server/puzzle-overrides";
 import { readAcceptedPuzzles } from "../../server/submissions";
+import { readPlayers } from "./snapshot-players";
 import type { DayPin, GameSnapshot } from "./types";
 
 /**
@@ -108,9 +115,9 @@ export function dataVersion(db: Database): number {
  *
  * `clockToday` is the club's day by the site's own clock, and `firstTieredDay`
  * where the policy starts history; together they bound
- * {@link FINISHED_DAYS_SQL}. What comes back is frozen, plain data that holds
- * no handle, so it outlives the transaction it was read in — which is over
- * before this returns.
+ * {@link FINISHED_DAYS_SQL} and every player read. What comes back is frozen,
+ * plain data that holds no handle, so it outlives the transaction it was read
+ * in — which is over before this returns.
  */
 export function readSnapshot(
   db: Database,
@@ -125,6 +132,7 @@ export function readSnapshot(
         published: Object.freeze(readPublishedArchive(db)),
         pins: finishedDays(db, clockToday, firstTieredDay),
         newestPinnedDay: newestPinnedDay(db),
+        players: readPlayers(db, clockToday, firstTieredDay),
       }),
   );
   return read.deferred();

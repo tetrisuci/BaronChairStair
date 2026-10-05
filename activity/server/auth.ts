@@ -184,25 +184,82 @@ export async function fetchUser(accessToken: string): Promise<PlayerProfile> {
   return toProfile((await response.json()) as DiscordUser);
 }
 
+/** A server the player was confirmed to be in, and what Discord calls it. */
+export interface VerifiedGuild {
+  readonly id: string;
+  /**
+   * Cleaned by {@link cleanGuildName}, or null when Discord sent nothing
+   * usable. Only db.tetrisatuci.org reads it; the session keeps the id alone.
+   */
+  readonly name: string | null;
+}
+
 /**
- * Confirms the player is actually in the guild they claim to be playing in.
+ * The longest server name kept, in code points.
+ *
+ * Discord's own limit is a hundred characters, so this clips nothing Discord
+ * would have allowed. It is here for the day an answer is not what Discord
+ * documents: the name goes into a database that a public website prints, and
+ * a name of any length is a page of any width.
+ */
+const MAX_GUILD_NAME_CODE_POINTS = 100;
+
+/**
+ * Control characters, and the ones that set text direction.
+ *
+ * The first can break a line or a chip in two. The second — embeddings,
+ * overrides and isolates — would reach past the name's own end on the site's
+ * page and turn the text after it round. Every other format character stays,
+ * the zero-width joiner above all: it is what holds an emoji family together.
+ */
+const UNPRINTABLE = /[\p{Cc}‪-‮⁦-⁩]/gu;
+
+/**
+ * A server's name as Discord sent it, made safe to store for publication.
+ *
+ * Trimmed, stripped of {@link UNPRINTABLE} characters and clipped by code
+ * point, so a clip never leaves half an emoji behind. Anything that is not a
+ * string, or nothing once cleaned, is null: the site then says "Unnamed
+ * server", which is true, rather than printing whatever arrived.
+ *
+ * Deliberately not applied here: the site's rule against a run of seventeen
+ * digits, and its list of servers not to name. Both are the site's to apply at
+ * publication, so the game stores what Discord said and changing either rule
+ * never needs a game deploy.
+ */
+function cleanGuildName(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const printable = raw.replace(UNPRINTABLE, "").trim();
+  const clipped = Array.from(printable).slice(0, MAX_GUILD_NAME_CODE_POINTS).join("").trimEnd();
+  return clipped === "" ? null : clipped;
+}
+
+/**
+ * Confirms the player is actually in the guild they claim to be playing in,
+ * and keeps the name Discord gives it in the same answer.
  *
  * Anything that cannot be confirmed — no claim, a missing `guilds` scope, a
  * Discord hiccup — resolves to null, which puts the player on the global
- * leaderboard rather than someone else's.
+ * leaderboard rather than someone else's. A confirmed server with no usable
+ * name is still confirmed: the name is for the website, the membership is for
+ * the game, and the second must never wait on the first.
+ *
+ * The icon is never kept. Its URL embeds the server's id, which is the one
+ * thing about a server the site must not print.
  */
 export async function verifyGuild(
   accessToken: string,
   claimedGuildId: string | null,
-): Promise<string | null> {
+): Promise<VerifiedGuild | null> {
   if (!claimedGuildId) return null;
   try {
     const response = await fetch(CURRENT_USER_GUILDS_ENDPOINT, {
       headers: { Authorization: `Bearer ${accessToken}` },
     });
     if (!response.ok) return null;
-    const guilds = (await response.json()) as { id?: string }[];
-    return guilds.some((guild) => guild.id === claimedGuildId) ? claimedGuildId : null;
+    const guilds = (await response.json()) as { id?: unknown; name?: unknown }[];
+    const guild = guilds.find((candidate) => candidate.id === claimedGuildId);
+    return guild ? { id: claimedGuildId, name: cleanGuildName(guild.name) } : null;
   } catch {
     // A leaderboard scoped a little too broadly beats blocking the game.
     return null;

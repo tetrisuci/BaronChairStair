@@ -46,7 +46,7 @@ import {
   type RefresherDependencies,
 } from "../puzzledb/server/refresher";
 import { dataVersion, openGameDatabase, readSnapshot } from "../puzzledb/server/snapshot";
-import type { Dataset, DayPin, GameSnapshot } from "../puzzledb/server/types";
+import type { Dataset, DayPin, GameSnapshot, PlayerSnapshot } from "../puzzledb/server/types";
 import { dateOfDay } from "../puzzledb/wire";
 import {
   DISCORD_ID,
@@ -138,6 +138,24 @@ interface World {
   readonly opened: FakeHandle[];
 }
 
+/**
+ * No player data at all. The fakes are about when the refresher reads and
+ * builds, not about what a build makes of players, so every fake snapshot
+ * carries the same empty one and a change somebody made is always a pin.
+ */
+const NO_PLAYERS: PlayerSnapshot = Object.freeze({
+  cut: TODAY,
+  tierRuns: [],
+  dayBoards: [],
+  rushRuns: [],
+  rushRecords: [],
+  dailyDays: [],
+  cleared: [],
+  discoveries: [],
+  lines: [],
+  servers: [],
+});
+
 function snapshotOf(pins: readonly DayPin[], newestPinnedDay: number | null = TODAY): GameSnapshot {
   return Object.freeze({
     accepted: [],
@@ -145,6 +163,7 @@ function snapshotOf(pins: readonly DayPin[], newestPinnedDay: number | null = TO
     published: [],
     pins: Object.freeze(pins.map((pin) => Object.freeze({ ...pin }))),
     newestPinnedDay,
+    players: NO_PLAYERS,
   });
 }
 
@@ -168,9 +187,12 @@ function fakeDataset(snapshot: GameSnapshot, builtAt: number): Dataset {
       about: { schema: 1, builtAt: iso(builtAt), firstDay: FIRST_TIERED_DAY, throughDay: days.at(-1)?.day ?? null },
       puzzles: [],
       days,
+      players: [],
+      servers: [],
     },
     puzzleById: new Map(),
     dayByNumber: new Map(),
+    bodies: new Map(),
     builtAt,
   });
 }
@@ -588,6 +610,25 @@ function checkpointBusy(writer: Database): number {
   return result.busy;
 }
 
+/** The game filing one solved easy run for today, as a player finishing it would. */
+function fileTodaysRun(game: GameFixture, player: { id: string; username: string; avatarUrl: null }): void {
+  const store = new Store(game.databasePath);
+  try {
+    store.recordRun(TODAY, "easy", 51, player, null, {
+      solved: true,
+      attack: 4,
+      targetAttack: 4,
+      durationMs: 30_000,
+      totalMs: 60_000,
+      resets: 0,
+      piecesPlaced: 5,
+      clears: ["tsd"],
+    });
+  } finally {
+    store.close();
+  }
+}
+
 describe("against the game's database", () => {
   test("picks up a publish the game commits", () => {
     const game = fixture();
@@ -626,33 +667,47 @@ describe("against the game's database", () => {
     expect(refresher.current()?.puzzleById.has(UNPUBLISHED_ID)).toBe(true);
   });
 
+  /**
+   * A run filed today, by a player with no finished day and so nothing on the
+   * site: the commonest commit the game makes. Today's row is outside every
+   * finished-day read, and a player who has never finished a day is on no
+   * board, so the snapshot comes back exactly as it was.
+   */
   test("ignores a commit nothing public depends on", () => {
     const game = fixture();
     const real = realRefresher(game);
     real.refresher.check();
     const first = real.refresher.current();
 
-    const store = new Store(game.databasePath);
-    try {
-      store.recordRun(TODAY, "easy", 51, { id: DISCORD_ID, username: "planted-player-name", avatarUrl: null }, null, {
-        solved: true,
-        attack: 4,
-        targetAttack: 4,
-        durationMs: 30_000,
-        totalMs: 60_000,
-        resets: 0,
-        piecesPlaced: 5,
-        clears: ["tsd"],
-      });
-    } finally {
-      store.close();
-    }
+    fileTodaysRun(game, { id: "refresher-new-player", username: "refresher-new-player", avatarUrl: null });
     real.refresher.check();
 
     // It looked, because the database moved, and built nothing, because nothing public did.
     expect(real.reads()).toBe(2);
     expect(real.builds()).toBe(1);
     expect(real.refresher.current()).toBe(first);
+  });
+
+  /**
+   * The same commit by a shown player under a new name is public: signing in
+   * renames the player, and every finished-day board that names them has to
+   * say the new name. The run itself is today's and changes nothing; the name
+   * is what moved.
+   */
+  test("rebuilds when a commit renames a shown player", () => {
+    const game = fixture();
+    const real = realRefresher(game);
+    real.refresher.check();
+    const before = real.refresher.current();
+    expect(before?.json && new TextDecoder().decode(before.json)).toContain("fixture-visible-player");
+
+    fileTodaysRun(game, { id: DISCORD_ID, username: "refresher-renamed-player", avatarUrl: null });
+    real.refresher.check();
+
+    expect(real.builds()).toBe(2);
+    const served = new TextDecoder().decode(real.refresher.current()?.json);
+    expect(served).toContain("refresher-renamed-player");
+    expect(served).not.toContain("fixture-visible-player");
   });
 
   test("picks up a rewritten puzzles.json with no database write", () => {

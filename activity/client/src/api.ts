@@ -267,6 +267,27 @@ export interface PuzzleSubmitResponse {
   };
 }
 
+/**
+ * Where the signed-in player stands on db.tetrisatuci.org, as the game's server
+ * reads it: `GET /api/site-visibility`, and the answer to every
+ * `PUT /api/site-visibility`.
+ *
+ * `hidden` is only the player's own choice. `playerKey` is the site's name for
+ * them, and it is null whenever the site would not give them a page — hidden,
+ * a guest, not yet keyed, or a username the site refuses to print — so the
+ * game links to a profile when this is not null, never when `hidden` is false.
+ * `hasFinishedDay` says whether that page exists yet: the site builds it only
+ * from finished days, so a player whose every result is from today has a key
+ * and no page. `serverKey` is the site's name for the server this session
+ * signed in from, or null outside one.
+ */
+export interface SiteVisibility {
+  readonly hidden: boolean;
+  readonly playerKey: string | null;
+  readonly hasFinishedDay: boolean;
+  readonly serverKey: string | null;
+}
+
 export class ApiError extends Error {
   constructor(message: string, readonly status: number) {
     super(message);
@@ -491,5 +512,29 @@ export class Api {
 
   savePreferences(preferences: unknown): Promise<{ ok: true }> {
     return this.request("/api/prefs", { method: "PUT", body: JSON.stringify({ preferences }) });
+  }
+
+  /**
+   * Whether this player is hidden on db.tetrisatuci.org, and the keys the
+   * game's links to it are built from. Reads only; the server writes nothing.
+   */
+  siteVisibility(): Promise<SiteVisibility> {
+    return this.request("/api/site-visibility");
+  }
+
+  /**
+   * Hides this player on db.tetrisatuci.org, or shows them again.
+   *
+   * Its own route rather than a field of `savePreferences`, on purpose. The
+   * preferences payload is rebuilt from known fields, the local copy wins on
+   * load, and Reset replaces all of it — any one of which would quietly put a
+   * hidden player's name back on a public site. The answer is the state the
+   * server now holds, and the settings row paints from that and nothing else.
+   */
+  setSiteHidden(hidden: boolean): Promise<SiteVisibility> {
+    return this.request("/api/site-visibility", {
+      method: "PUT",
+      body: JSON.stringify({ hidden }),
+    });
   }
 }

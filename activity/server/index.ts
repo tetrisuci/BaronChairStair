@@ -67,6 +67,11 @@ import { registerPublicRoutes, PUBLIC_PREFIX } from "./public-routes";
 import { registerStaticRoutes } from "./static-routes";
 import { registerSubmissionRoutes } from "./submission-routes";
 import {
+  recordSignInGuild,
+  registerSiteVisibilityRoutes,
+  SITE_VISIBILITY_ROUTE,
+} from "./site-visibility-routes";
+import {
   type SocketData,
   duelSocket,
   puzzlesInPlayFor,
@@ -119,7 +124,10 @@ const MAX_TOTAL_MS = 24 * 60 * MINUTE;
  * day nobody has played the moment one puzzle has ever been accepted, so the
  * pinned history would be a pool this process is not serving from.
  */
-const store = new Store(config.paths.database);
+// The zone goes in with the path because db.tetrisatuci.org reads it back out:
+// it cuts "finished days" at this game's midnight, and has no other way to
+// learn which one that is (`server/site-identity.ts`).
+const store = new Store(config.paths.database, undefined, { timeZone: config.timeZone });
 const community = store.acceptedPuzzles();
 /*
  * The corrections come out of the same database and go on last, over both
@@ -209,6 +217,12 @@ app.use("/api/rush/run", rateLimit({ max: 12, windowMs: MINUTE }, callerKey));
 // caller chose rather than one of today's. Nobody writes five puzzles a
 // minute, so this only ever costs somebody who is not writing puzzles.
 app.use("/api/submissions", rateLimit({ max: 5, windowMs: MINUTE }, callerKey));
+// Saving "Hide me on db.tetrisatuci.org" is a write that rebuilds the site, and
+// nobody flips one switch twenty times a minute. Only the save: the read is one
+// row, opened with the settings sheet, and a whole server may share this
+// bucket behind one proxy address, so limiting reads would grey out the switch
+// for everybody in a busy channel.
+app.on("PUT", SITE_VISIBILITY_ROUTE, rateLimit({ max: 20, windowMs: MINUTE }, callerKey));
 // Ten a minute on the exchange, knowing it may be one shared bucket: behind a
 // proxy with `TRUST_PROXY` unset, `callerKey` falls back to the socket's peer
 // address and every caller arrives as the proxy. What actually stands between a
@@ -273,7 +287,11 @@ app.post("/api/session", async (c) => {
 
   const { accessToken, player } = await exchangeCode(String(body.code));
   store.upsertPlayer(player);
-  const { token } = await mintSession(player, await verifyGuild(accessToken, guildId));
+  const guild = await verifyGuild(accessToken, guildId);
+  // The server's name, for db.tetrisatuci.org. Never blocks the sign-in, and
+  // never reaches the session, which still carries the id alone.
+  recordSignInGuild(store.siteIdentity, guild);
+  const { token } = await mintSession(player, guild?.id ?? null);
   return c.json({ token, player, accessToken, guest: false });
 });
 
@@ -1396,6 +1414,7 @@ app.get("/api/rush/leaderboard", requireSession, (c) => {
  * stay above with the rest of the stack rather than scattering with them.
  */
 registerSubmissionRoutes(app, store);
+registerSiteVisibilityRoutes(app, store);
 registerReviewRoutes(app, { secret: config.reviewSecret, store, archive });
 // The archive, for anybody. The one prefix in this server with CORS, and the
 // one that serves answers — both explained in the module. It reads the same

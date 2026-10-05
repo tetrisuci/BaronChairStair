@@ -30,14 +30,12 @@ export type AppRouter = Hono<{ Variables: Variables }>;
 type AppContext = Context<{ Variables: Variables }>;
 
 /**
- * The one identity every guest shares.
- *
- * Named because it is a gate and not a label: anything that credits a person —
- * writing a puzzle under their name, counting what they owe a review queue —
- * has to refuse it, and a bare string repeated at each of those places is one
- * typo away from letting them all through.
+ * The one identity every guest shares — defined in `shared/site.ts`, and
+ * re-exported here so the routes that already import it from this module keep
+ * doing so. It moved because db.tetrisatuci.org must refuse it too, and the
+ * site may not import the game's HTTP layer.
  */
-export const GUEST_ID = "guest";
+export { GUEST_ID } from "../shared/site";
 
 /**
  * The bearer token on a request, or undefined.

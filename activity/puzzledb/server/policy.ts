@@ -1,16 +1,16 @@
 /**
  * What the puzzle database shows, decided once.
  *
- * Three constants, and every one is the owner's call rather than the code's —
+ * Four constants, and every one is the owner's call rather than the code's —
  * `CLAUDE.md` lists them under decisions that are not an implementer's to
  * make. They are constants and not settings on purpose. A setting can be
  * flipped on one box at two in the morning with no review and no release note;
  * each of these decides what strangers can read about the club's players and
  * its history, and changing one should be a commit somebody looked at.
  *
- * The two rules below are the only places the constants are read, so a test
- * can hand in a different policy and pin the boundaries without knowing the
- * numbers.
+ * The rules below, and the build's naming of servers, are the only places the
+ * constants are read, so a test can hand in a different policy and pin the
+ * boundaries without knowing the numbers.
  */
 
 import { DAILY_TIERS, type DailyTier } from "../../shared/daily";
@@ -62,11 +62,58 @@ export const FIRST_EXTREME_DAY = 252;
  */
 export const PUBLISH_COMMUNITY_PUZZLES = false;
 
-/** The three constants as the value a build is handed. Frozen: nothing may edit the policy in flight. */
+/**
+ * A set nobody can change once it is made. `Object.freeze` alone does not do
+ * it: a frozen `Set` still answers `add`, because its entries are not
+ * properties.
+ */
+class FixedSet<T> extends Set<T> {
+  constructor(entries: Iterable<T>) {
+    super();
+    for (const entry of entries) super.add(entry);
+    Object.freeze(this);
+  }
+
+  override add(): this {
+    throw new TypeError("This set is fixed: change it in the source, as a reviewed commit");
+  }
+
+  override delete(): boolean {
+    throw new TypeError("This set is fixed: change it in the source, as a reviewed commit");
+  }
+
+  override clear(): void {
+    throw new TypeError("This set is fixed: change it in the source, as a reviewed commit");
+  }
+}
+
+/**
+ * Servers whose Discord name the site never prints, by their public key
+ * (`guilds.public_key`, the ten characters after `?server=` in the site's own
+ * links). Empty: every server shows the name Discord gave it at a player's
+ * last sign-in from it.
+ *
+ * A listed server renders "Unnamed server", exactly as one nobody has signed
+ * in from since names were first kept, so a reader cannot tell a server that
+ * asked from one that never had a name. Its boards stay; only the name goes.
+ * The build applies it, rather than the snapshot's SQL, so that the snapshot
+ * keeps the signature the refresher calls it with; the name may sit in memory
+ * for the length of a build and never reaches a public byte.
+ *
+ * Keyed by the opaque key rather than the guild id because the id must never
+ * appear in this repository, which is public. A key is shaped by
+ * `PUBLIC_KEY_PATTERN` (`shared/site.ts`), and the policy test refuses an entry
+ * that is not, because a mistyped key would hide nothing and say nothing.
+ * Adding or removing one is the owner's call, and takes a site restart.
+ */
+export const HIDDEN_SERVER_KEYS: ReadonlySet<string> = new FixedSet<string>([]);
+
+/** The constants as the value a build is handed. Frozen: nothing may edit the policy in flight. */
 export const POLICY: Policy = Object.freeze({
   publishCommunity: PUBLISH_COMMUNITY_PUZZLES,
   firstTieredDay: FIRST_TIERED_DAY,
   firstExtremeDay: FIRST_EXTREME_DAY,
+  hiddenServerKeys: HIDDEN_SERVER_KEYS,
 });
 
 const NO_TIERS: readonly DailyTier[] = Object.freeze([]);

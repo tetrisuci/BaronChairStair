@@ -100,11 +100,15 @@ describe("the site's build", () => {
   });
 
   test("develops against the site's own server, never the game's", () => {
+    // `/data` too: every page but the front fetches its body from there with
+    // `Accept: application/json`, which Vite will not answer with the HTML
+    // document, so an unproxied body is a 404 and the page turns into "No such page".
     expect(siteConfig.server?.port).toBe(3003);
     expect(siteConfig.server?.proxy).toEqual({
       "/puzzles.json": "http://127.0.0.1:3002",
       "/puzzles.sqlite": "http://127.0.0.1:3002",
       "/health": "http://127.0.0.1:3002",
+      "/data": "http://127.0.0.1:3002",
     });
   });
 

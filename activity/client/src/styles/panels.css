@@ -1294,3 +1294,53 @@
 .panel--opens { cursor: pointer; }
 .panel--opens:hover { border-color: var(--ink); background: var(--cream-shade); }
 .panel--opens:focus-visible { outline: var(--edge) solid var(--ink); outline-offset: 2px; }
+
+/* ── Links out to db.tetrisatuci.org ──────────────────────────────────────── */
+
+/*
+ * A way off the game, so it reads as a link and not as one more button: the
+ * buttons here are all things the game does, and this one leaves it. Small
+ * and underlined, beside the heading it says more about, never in its place.
+ */
+.site-link {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink);
+  text-decoration: underline;
+  text-decoration-color: var(--ink-line);
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.site-link:hover { text-decoration-color: var(--ink); background: var(--sun); }
+.site-link:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+
+/* The heading keeps the left; the link wraps under it on a narrow panel. */
+.boards__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+
+.profile__head { flex-wrap: wrap; }
+.profile__site { margin-left: auto; }
+.profile__site:empty { display: none; }
+
+.solutions__site { margin: 6px 0 0; }
+
+/*
+ * The settings sheet's On the web section: a full-width row under the two
+ * columns, inside their scroll, padded and ruled like a column of its own.
+ */
+.site-visibility {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px 18px;
+  border-top: 1px dotted var(--ink-line);
+}
+.site-visibility .spec__row { gap: 5px; }
+.site-visibility__status:empty { display: none; }
+.site-visibility__retry-slot:empty { display: none; }
+.site-visibility .spec__toggle:disabled { opacity: 0.6; cursor: default; }
