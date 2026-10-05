@@ -88,6 +88,12 @@ def _placed(last: float | None, now: float) -> float | None:
     return None if last is None or last > now else last
 
 
+def latest_start(*starts: float | None, now: float) -> float | None:
+    """The latest usable start, ignoring future values before comparing them."""
+    placed = (_placed(start, now) for start in starts)
+    return max((start for start in placed if start is not None), default=None)
+
+
 def is_open(last: float | None, now: float) -> bool:
     """Whether a sync may start at `now`."""
     last = _placed(last, now)

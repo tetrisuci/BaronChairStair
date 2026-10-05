@@ -18,6 +18,8 @@ small as it is. This module then adds the two attributes it needs on top, since
 """
 
 import asyncio
+import contextlib
+import io
 import os
 import sqlite3
 import sys
@@ -309,6 +311,33 @@ class OnceEveryTenMinutes(Callback):
         archive_commands._started_here = START + 7200
         await CALLBACK(Interaction(User(1001)))
         self.assertEqual(len(self.calls), 1)
+
+    async def test_a_future_stored_start_cannot_hide_the_memory_window_when_writes_fail(self):
+        sync_window.record_start(self.db, START + 7200)
+        self.db.execute("PRAGMA query_only = ON")
+        errors = io.StringIO()
+        with contextlib.redirect_stderr(errors):
+            await CALLBACK(Interaction(User(1001)))
+            self.assertEqual(len(self.calls), 1, "the future row does not prevent a sync")
+            self.assertEqual(sync_window.last_started(self.db), START + 7200)
+
+            self.later(60)
+            second = Interaction(User(2002))
+            await CALLBACK(second)
+            self.assertEqual(len(self.calls), 1, "the new in-memory start holds the window")
+            self.assertTrue(second.response.messages[0]["ephemeral"])
+            self.assertFalse(second.response.deferred)
+            said = second.response.messages[0]["content"]
+            self.assertIn(f"<t:{int(START)}:R>", said)
+            self.assertIn(f"<t:{int(START) + 600}:R>", said)
+            self.assertNotIn(str(int(START + 7200)), said)
+
+            self.later(540)
+            await CALLBACK(Interaction(User(2002)))
+            self.assertEqual(len(self.calls), 2, "the memory window opens at ten minutes")
+            self.assertEqual(sync_window.last_started(self.db), START + 7200)
+
+        self.assertIn("cannot record the sync window", errors.getvalue())
 
     async def test_with_no_database_the_window_still_holds_in_this_process(self):
         archive_commands.sync_db = None

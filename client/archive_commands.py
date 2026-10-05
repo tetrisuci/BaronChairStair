@@ -115,13 +115,12 @@ def _now() -> float:
     return time.time()
 
 
-def _last_start() -> float | None:
+def _last_start(now: float) -> float | None:
     """
-    When the last sync started, by the database or this process, whichever is later.
+    The latest usable start from the database or this process.
 
-    Returned as stored, even when it is ahead of the clock: `sync_window` is
-    what decides a start in the future cannot hold the window, so the rule
-    lives, and is tested, in one place.
+    `sync_window` discards future starts before comparing them, so a stale
+    database row cannot mask the in-memory fallback when saving fails.
     """
     stored = None
     if sync_db is not None:
@@ -129,8 +128,7 @@ def _last_start() -> float | None:
             stored = sync_window.last_started(sync_db)
         except sqlite3.Error as exc:
             print(f"archive-sync: cannot read the sync window ({exc})", file=sys.stderr)
-    known = [moment for moment in (stored, _started_here) if moment is not None]
-    return max(known, default=None)
+    return sync_window.latest_start(stored, _started_here, now=now)
 
 
 def _record_start() -> float:
@@ -466,7 +464,7 @@ async def _refused(interaction: discord.Interaction) -> bool:
     both find the window open and both start.
     """
     now = _now()
-    last = _last_start()
+    last = _last_start(now)
     running = _running.locked()
     if not running and sync_window.is_open(last, now):
         return False

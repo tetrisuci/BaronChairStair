@@ -4,7 +4,8 @@
     {
       "version": "beta 0.13",
       "changes": [
-        "**Anyone can run `/archive sync` now**, not only officers — it pulls new puzzles in from the club's sheet and makes them playable. It runs at most once every 10 minutes, shared by every server. Ask too soon and the bot tells you, privately, when the last sync started and when the next one can."
+        "**Anyone can run `/archive sync` now**, not only officers — it pulls new puzzles in from the club's sheet and makes them playable. It runs at most once every 10 minutes, shared by every server. Ask too soon and the bot tells you, privately, when the last sync started and when the next one can.",
+        "The ten-minute wait still holds if the bot's clock moves backwards and its database cannot save the new sync start."
       ]
     },
     {
