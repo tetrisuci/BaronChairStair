@@ -1,7 +1,0 @@
-{
-  "$comment": "Copy me to puzzle-admins.json (gitignored) and put the real ids in. Who may run /archive sync. Read fresh on every command, so an edit takes effect immediately with no bot restart. An unreadable or missing file means nobody is allowed, which is deliberate. Ids are strings, never numbers: a Discord snowflake is 64-bit. To copy an id, turn on Settings > Advanced > Developer Mode in Discord, then right-click a user and Copy User ID.",
-  "admins": [
-    { "id": "000000000000000001", "who": "an officer, named so the file explains itself" },
-    { "id": "000000000000000002", "who": "another officer" }
-  ]
-}

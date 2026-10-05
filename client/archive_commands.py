@@ -15,11 +15,18 @@ this will want later: a status, and one day a publish.
 **A sync from here is a published sync.** `bun run sync-archive` reads the
 sheet and upserts every puzzle it can replay; from a terminal everything it
 writes lands *unpublished*, the review gate. From Discord it is run with
-`--publish`, because the officers on the allowlist are that gate: running this
-command is the decision that the sheet is ready. Then the activity is asked to
-reload in place (`POST /api/bot/reload-archive`), so what was synced is
-playable at once, with no restart to drop anybody's duel. A dry run does
-neither.
+`--publish`, and there is no review step: anybody may run this, so what the
+sheet holds is what players get. Edit access to the sheet is the gate now;
+the ten-minute window bounds how often a sync runs and reviews nothing.
+Then the activity is asked to reload in place (`POST /api/bot/reload-archive`),
+so what was synced is playable at once, with no restart to drop anybody's
+duel. A dry run does neither.
+
+**Anybody may run it, once every ten minutes.** It used to sit behind a
+hand-kept list of officers; the owner opened it to every member, and what
+bounds it now is time rather than a name — one window across every server and
+every member, dry runs included. `sync_window.py` holds the window and says
+why it is shaped the way it is.
 
 The two neighbouring tools stay unreachable from Discord: `publish-archive` by
 id at a terminal, and `bun run puzzles`, which has already caused a boot
@@ -34,7 +41,10 @@ Environment (see example.env):
 
 import asyncio
 import os
+import sqlite3
 import sys
+import time
+from collections.abc import Callable
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -42,7 +52,7 @@ import aiohttp
 import discord
 from discord import app_commands
 
-import puzzle_admins
+import sync_window
 
 #: The activity half of this repository, where `bun run sync-archive` lives.
 #:
@@ -53,7 +63,7 @@ import puzzle_admins
 DEFAULT_ACTIVITY_DIR = Path(__file__).resolve().parent.parent / "activity"
 
 #: Long enough for a cold run over the whole sheet, short enough that a wedged
-#: sync gives the officer an answer rather than a spinner. A local dry run over
+#: sync gives whoever ran it an answer rather than a spinner. A local dry run over
 #: 163 puzzles takes a few seconds; the ceiling is for a slow network and a
 #: database the live server is holding, which `sync-archive` waits out with its
 #: own `busy_timeout`.
@@ -83,9 +93,59 @@ EXIT_EDITED = 2
 #:
 #: `sync-archive` is re-runnable and takes a `busy_timeout` against the live
 #: server, so a second run would not corrupt anything — it would do the same
-#: work twice and report two half-truths to two officers. Refusing is kinder
+#: work twice and report two half-truths to two people. Refusing is kinder
 #: than surviving.
 _running = asyncio.Lock()
+
+#: The bot's own database, assigned by `discord_bot.py` once
+#: `sync_window.init_db` has made the table — the arrangement
+#: `puzzle_commands.recap_db` uses. None when the table could not be made.
+sync_db: "sqlite3.Connection | None" = None
+
+#: The last start this process saw, kept beside the one in `sync_db`.
+#:
+#: The window is the only thing bounding a command anybody may run, so it has
+#: to hold when the database cannot be read or written too. Then it lasts
+#: until the next restart, rather than not at all.
+_started_here: float | None = None
+
+
+def _now() -> float:
+    """Wall-clock UTC epoch seconds. A function so a test can own the clock."""
+    return time.time()
+
+
+def _last_start() -> float | None:
+    """
+    When the last sync started, by the database or this process, whichever is later.
+
+    Returned as stored, even when it is ahead of the clock: `sync_window` is
+    what decides a start in the future cannot hold the window, so the rule
+    lives, and is tested, in one place.
+    """
+    stored = None
+    if sync_db is not None:
+        try:
+            stored = sync_window.last_started(sync_db)
+        except sqlite3.Error as exc:
+            print(f"archive-sync: cannot read the sync window ({exc})", file=sys.stderr)
+    known = [moment for moment in (stored, _started_here) if moment is not None]
+    return max(known, default=None)
+
+
+def _record_start() -> float:
+    """Opens a new window from now, and returns when it opened."""
+    global _started_here
+    started = _now()
+    _started_here = started
+    if sync_db is not None:
+        try:
+            sync_window.record_start(sync_db, started)
+        except sqlite3.Error as exc:
+            # Logged, not raised: the sync is already running, and this
+            # process still remembers the start in `_started_here`.
+            print(f"archive-sync: cannot record the sync window ({exc})", file=sys.stderr)
+    return started
 
 
 def _activity_dir() -> Path:
@@ -123,7 +183,12 @@ def _clip(text: str, limit: int = MAX_OUTPUT_CHARS) -> str:
     return "…\n" + body[-limit:].lstrip()
 
 
-async def run_sync(dry_run: bool, by: str, cwd: Path | None = None) -> tuple[int, str]:
+async def run_sync(
+    dry_run: bool,
+    by: str,
+    cwd: Path | None = None,
+    on_start: Callable[[], object] | None = None,
+) -> tuple[int, str]:
     """
     Runs `bun run sync-archive` and returns its exit code and combined output.
 
@@ -136,6 +201,10 @@ async def run_sync(dry_run: bool, by: str, cwd: Path | None = None) -> tuple[int
     tracked archive. It is worth passing because a content edit found months
     later with no explanation is a small mystery, and "who ran the sync" is the
     answer to it.
+
+    `on_start` is called once the process has launched and before its output
+    is awaited, which is the moment the ten-minute window opens. A run that
+    cannot launch — no activity directory, no `bun` — never calls it.
     """
     directory = cwd or _activity_dir()
     argv = ["bun", "run", "sync-archive"]
@@ -147,7 +216,7 @@ async def run_sync(dry_run: bool, by: str, cwd: Path | None = None) -> tuple[int
 
     # Checked before the exec, because `create_subprocess_exec` raises
     # FileNotFoundError for a missing `bun` *and* for a missing cwd, and the
-    # two want opposite advice. Telling an officer to install Bun when the real
+    # two want opposite advice. Telling somebody to install Bun when the real
     # problem is an unset PUZZLE_ACTIVITY_DIR sends them a long way wrong.
     if not directory.is_dir():
         return -1, (
@@ -185,6 +254,9 @@ async def run_sync(dry_run: bool, by: str, cwd: Path | None = None) -> tuple[int
         )
     except OSError as exc:
         return -1, f"Could not start the sync: {exc}"
+
+    if on_start is not None:
+        on_start()
 
     try:
         stdout, _ = await asyncio.wait_for(process.communicate(), timeout=SYNC_TIMEOUT_S)
@@ -248,14 +320,14 @@ def _ids(ids: list) -> str:
 
 def describe_reload(result: dict) -> str:
     """
-    What the activity's reload did, for the officer who asked.
+    What the activity's reload did, for whoever asked.
 
     Says what players will and will not notice, because that is the question
-    an officer publishing to a live game has. New puzzles are playable in
+    anybody publishing to a live game has. New puzzles are playable in
     Explore and duels at once but reach the daily rotation only from tomorrow:
     today's four and today's rush pool were pinned before the swap, so nobody
     playing now is re-dealt. A changed board is named rather than buried —
-    it is the one thing that did not go live, and the officer should know why.
+    it is the one thing that did not go live, and whoever ran the sync should know why.
     """
     added = list(result.get("added") or [])
     held = list(result.get("held") or [])
@@ -283,7 +355,7 @@ async def reload_activity() -> str:
     blamed it for the activity being unreachable would be wrong about both.
 
     Every failure says the same true thing — the rows are published, and the
-    activity picks them up whenever it next starts — so the officer knows
+    activity picks them up whenever it next starts — so whoever ran it knows
     nothing is lost, only delayed.
     """
     later = "They go live when the activity next restarts."
@@ -317,13 +389,13 @@ async def reload_activity() -> str:
 
 archive = app_commands.Group(
     name="archive",
-    description="Officer tools for the puzzle archive.",
+    description="Tools for the club's puzzle archive.",
 )
 
 
 @archive.command(
     name="sync",
-    description="Pull the club's spreadsheet in and make its new puzzles playable.",
+    description="Pull the club's spreadsheet in and make its new puzzles playable. Once every 10 minutes.",
 )
 @app_commands.describe(
     dry_run="Read the sheet and report what would change, writing nothing.",
@@ -331,58 +403,37 @@ archive = app_commands.Group(
 async def archive_sync(
     interaction: discord.Interaction, dry_run: bool = False
 ) -> None:
-    # The refusal answers before any defer, which is this repository's rule and
-    # not a style choice: deferring ephemerally would make every later followup
-    # ephemeral too, and deferring publicly posts a visible "thinking" for a
-    # command about to be turned away. The allowlist is one small file read, so
-    # there is nothing to wait on yet.
-    #
-    # Private, because it is about the person rather than about the world. An
-    # officer-only command answering "you are not an officer" in the channel is
-    # a scolding with an audience.
+    if await _refused(interaction):
+        return
+
+    started_at: float | None = None
+
+    def opened() -> None:
+        nonlocal started_at
+        started_at = _record_start()
+
     user = getattr(interaction, "user", None)
-    if not puzzle_admins.is_admin(getattr(user, "id", None)):
-        await interaction.response.send_message(
-            "That one is for officers. If it should be you, an officer can add your "
-            f"Discord id to `{puzzle_admins.ADMINS_PATH.name}` — "
-            f"`{puzzle_admins.EXAMPLE_PATH.name}` in the repository shows the shape, "
-            "and it takes effect on the next command with no restart.",
-            ephemeral=True,
-            allowed_mentions=discord.AllowedMentions.none(),
-        )
-        return
-
-    if _running.locked():
-        # Public: a sync already running is a fact about the world, and the
-        # officer watching their own reply should see this one too.
-        await interaction.response.send_message(
-            "A sync is already running. Give it a moment and try again.",
-            allowed_mentions=discord.AllowedMentions.none(),
-        )
-        return
-
     async with _running:
         # Public from here on. The result is a change to the club's archive,
-        # and an officer running it silently is how two people run it twice.
+        # and a sync run silently is how two people run it twice.
         await interaction.response.defer()
         label = (
             getattr(user, "name", None)
             or getattr(user, "display_name", None)
             or "discord"
         )
-        code, output = await run_sync(dry_run=dry_run, by=f"discord:{label}")
-        # Inside the lock, so two officers' syncs cannot interleave reloads. Not
-        # after a dry run, which published nothing, nor after a sync that never
+        code, output = await run_sync(
+            dry_run=dry_run, by=f"discord:{label}", on_start=opened
+        )
+        # Inside the lock, so two syncs cannot interleave reloads. Not after a
+        # dry run, which published nothing, nor after a sync that never
         # started (-1). Every other exit reloads: rows that did write were
         # published, and reloading an unchanged pool is a no-op.
         live = await reload_activity() if not dry_run and code != -1 else ""
 
-    heading = "**Dry run** — nothing was written.\n" if dry_run else ""
-    body = _fence_safe(_clip(output))
-    tail = f"\n{_fence_safe(live)}" if live else ""
     try:
         await interaction.followup.send(
-            f"{heading}```\n{body}\n```\n{verdict(code, dry_run)}{tail}",
+            _result(code, output, dry_run, live, started_at),
             # The two sibling command modules both pass this on every send, and
             # this one carries text from the spreadsheet, so it needs it most:
             # an @everyone in a puzzle title would otherwise ping the server.
@@ -391,6 +442,53 @@ async def archive_sync(
     except Exception as exc:  # noqa: BLE001 — the reply is best-effort
         # The sync itself already happened. Losing the message must not look
         # like losing the work, so this is logged rather than raised into
-        # discord.py's handler, which would show the officer a generic failure
-        # for a command that succeeded.
+        # discord.py's handler, which would show a generic failure for a
+        # command that succeeded.
         print(f"archive-sync: could not post the result ({exc})", file=sys.stderr)
+
+
+async def _refused(interaction: discord.Interaction) -> bool:
+    """
+    Turns the request away if a sync is running or the window is shut.
+
+    The refusal answers before any defer, which is this repository's rule and
+    not a style choice: deferring ephemerally would make every later followup
+    ephemeral too, and deferring publicly posts a visible "thinking" for a
+    command about to be turned away. Reading the window is one small query,
+    so there is nothing to wait on yet.
+
+    Private, because it is about the person who asked rather than about the
+    world: a "try later" read out in the channel is a scolding with an
+    audience. It names times and never a person.
+
+    Nothing between this check and `async with _running` in the caller awaits
+    — the send happens only on the path that returns — so two requests cannot
+    both find the window open and both start.
+    """
+    now = _now()
+    last = _last_start()
+    running = _running.locked()
+    if not running and sync_window.is_open(last, now):
+        return False
+    await interaction.response.send_message(
+        sync_window.refusal(last, running=running, now=now),
+        ephemeral=True,
+        allowed_mentions=discord.AllowedMentions.none(),
+    )
+    return True
+
+
+def _result(
+    code: int, output: str, dry_run: bool, live: str, started_at: float | None
+) -> str:
+    """
+    The public reply under a sync: the tool's output, the verdict, what went
+    live, and — when a sync actually started — when the next one may.
+
+    A run that never launched did not open a window, so it promises no wait.
+    """
+    heading = "**Dry run** — nothing was written.\n" if dry_run else ""
+    body = _fence_safe(_clip(output))
+    tail = f"\n{_fence_safe(live)}" if live else ""
+    window = f"\n{sync_window.next_line(started_at)}" if started_at is not None else ""
+    return f"{heading}```\n{body}\n```\n{verdict(code, dry_run)}{tail}{window}"

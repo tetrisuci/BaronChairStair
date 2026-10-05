@@ -444,9 +444,11 @@ activity/data/archive/*.sqlite-*
 # their output is not.
 /audit/
 
-# Who may run /archive sync. Real Discord user ids, which this public
-# repository must never carry: git history here is append-only — force pushes
-# and branch deletion are refused for everyone, owners included — so a
-# mistaken commit of somebody's id could not be taken back. The shape lives in
-# the tracked puzzle-admins.example.json beside it; the real list does not.
+# Who could run /archive sync, back when it had an officer allowlist. Nothing
+# reads it now — anyone may run the command, once every 10 minutes — but an old
+# copy may still sit on a box, and it holds real Discord user ids, which this
+# public repository must never carry: git history here is append-only — force
+# pushes and branch deletion are refused for everyone, owners included — so a
+# mistaken commit of somebody's id could not be taken back. Kept ignored so an
+# old file is never committed.
 puzzle-admins.json

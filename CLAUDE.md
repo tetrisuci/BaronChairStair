@@ -116,8 +116,10 @@ Report these and stop; do not act on them unasked.
   a plain terminal sync, these **publish** every row left waiting, so they change what
   players are dealt from tomorrow on. From Discord the running activity is then
   reloaded; run by hand, `--publish` does not reload, and the activity serves it from
-  its next restart. It is the officers' call; the allowlist in `puzzle-admins.json` is
-  the review gate.
+  its next restart. Anyone in Discord may run `/archive sync` now — there is no
+  allowlist — at most once every 10 minutes across every server, dry runs included,
+  and it still publishes. That any member may run it does not make it yours to run
+  unasked.
 - **`GOAL_ENFORCEMENT`.** Controls whether clear requirements are shown and enforced.
   Check what the box actually sets (`grep -E '^GOAL_ENFORCEMENT=' activity/.env`) rather
   than assuming; it defaults to `log`, which shows and enforces nothing. Turning it `on`

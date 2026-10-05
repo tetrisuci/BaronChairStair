@@ -97,9 +97,9 @@ publishes from a terminal, and the game picks that up only at the next restart.
 The activity lays published rows over the JSON, and `GET /api/public` (and
 `/api/public/:id`) reads the table on every request, so it serves published
 rows to anybody at once, answers included. What is not built is the review UI
-as the gate: it publishes nothing, and the gate is the allowlist on
-`/archive sync`, or whoever publishes from a terminal (`publish-archive`, or
-`sync-archive --publish` run by hand). See rule 5 and *Order of work*.
+as the gate: it publishes nothing, and the gate is whoever runs
+`/archive sync` — anyone, at most once every 10 minutes — or whoever publishes
+from a terminal (`publish-archive`, or `sync-archive --publish` run by hand). See rule 5 and *Order of work*.
 
 **Planned.** The same decode-and-replay step, run against the sheet directly,
 writing rows instead of files:
@@ -173,7 +173,10 @@ The replacement: **sync writes new rows unpublished**, and publishing is a
 separate step, `bun run publish-archive` at a terminal. (An edit to a puzzle
 already published is applied to its row, which stays published. See rule 4b.)
 `--publish` is the exception: Discord's `/archive sync` passes it, so there a
-sync is also a publish, and the allowlist in `puzzle-admins.json` is the gate.
+sync is also a publish, and **that path has no review step any more.** Anyone
+may run the command, so what the sheet holds is what players get; the only
+control left there is who can edit the club's sheet. The bot allows one sync
+every 10 minutes, which limits how often it runs and reviews nothing.
 Run by hand, `sync-archive --publish` publishes too, and the game waits for a
 restart, as rule 5 says. The review UI does not publish yet. Sync is a
 command somebody runs, not a timer — a cron job that silently changes what the
