@@ -45,14 +45,15 @@ import {
   readPublicDatabase,
   writePublicDatabase,
 } from "../puzzledb/server/public-db";
-import { readPlayerData } from "../puzzledb/server/public-db-players";
+import { NO_PLAYER_ROWS, readPlayerData } from "../puzzledb/server/public-db-players";
 import { openGameDatabase, readSnapshot } from "../puzzledb/server/snapshot";
 import type { Dataset, GameSnapshot, Policy } from "../puzzledb/server/types";
-import { dateOfDay, SCHEMA_VERSION, type SitePuzzle } from "../puzzledb/wire";
+import { bodyPathFor, dateOfDay, SCHEMA_VERSION, type SitePuzzle } from "../puzzledb/wire";
 import {
   COMMUNITY_AUTHOR,
   COMMUNITY_ID,
   COMMUNITY_TITLE,
+  CORRECTED_ID,
   fixtureSources,
   gameFixture,
   type GameFixture,
@@ -105,6 +106,7 @@ const ALLOWLIST = {
     "rush_best_ms",
     "rush_best_day",
   ],
+  player_clears: ["player_key", "puzzle_id"],
   tier_boards: [
     "day",
     "tier",
@@ -353,8 +355,9 @@ describe("no personal data (full fixture)", () => {
   test("carries none of them in any /data/ body either", () => {
     const bodies = bodyTexts(dataset);
 
-    // A body for every finished day, listed puzzle and shown player, and the leaderboards.
-    expect(bodies.length).toBe(dataset.data.days.length + dataset.data.puzzles.length + dataset.data.players.length + 1);
+    // A body for every finished day, listed puzzle and shown player, the leaderboards, the players table and the feed's.
+    expect(bodies.length).toBe(dataset.data.days.length + dataset.data.puzzles.length + dataset.data.players.length + 3);
+    for (const kind of ["players", "solves"] as const) expect(dataset.bodies.has(bodyPathFor({ kind })!)).toBe(true);
     expect(bodies.flatMap((text) => leaksIn(text, WITHHELD_WITH_COMMUNITY))).toEqual([]);
   });
 
@@ -386,6 +389,34 @@ describe("no personal data (full fixture)", () => {
     expect(community?.title).toBe(COMMUNITY_TITLE);
     expect(everythingServed(listing).flatMap((text) => leaksIn(text))).toEqual([]);
     expect(cellsAsText(listing.sqlite).flatMap((cell) => leaksIn(cell))).toEqual([]);
+  });
+});
+
+describe("the cleared lists", () => {
+  test("read back each shown player's listed clears, and nothing for anyone else", () => {
+    const cleared = withDownload(dataset.sqlite, (db) => readPlayerData(db).cleared);
+
+    // The visible player's player-written puzzle is withheld, and #51 came after midnight.
+    expect([...cleared]).toEqual([
+      [PLAYERS.unchosen.key, [50]],
+      [PLAYERS.visible.key, [CORRECTED_ID]],
+    ]);
+    expect(dataset.data.players.find((player) => player.key === PLAYERS.visible.key)).toBeDefined();
+  });
+
+  test("list a withheld puzzle once the policy lists it", () => {
+    const listing = buildDataset(snapshot, fixtureSources(game), NOW, { ...PRIVATE, publishCommunity: true });
+    const cleared = withDownload(listing.sqlite, (db) => readPlayerData(db).cleared);
+
+    expect(cleared.get(PLAYERS.visible.key)).toEqual([CORRECTED_ID, COMMUNITY_ID]);
+  });
+
+  test("refuse a clear naming a key the players table does not hold", () => {
+    const players = { ...NO_PLAYER_ROWS, playerClears: [["zzzzzzzzz2", 1] as const] };
+
+    expect(() => writePublicDatabase({ ...sampleRows(), players })).toThrow(
+      "A public board names a player key the players table does not hold",
+    );
   });
 });
 

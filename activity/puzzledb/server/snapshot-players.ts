@@ -49,6 +49,7 @@ import { GUEST_ID } from "../../shared/site";
 import { ALL_SERVERS, type TierMark } from "../wire";
 import type {
   PlayerSnapshot,
+  SnapshotClear,
   SnapshotCount,
   SnapshotDailyDays,
   SnapshotDayBoardRow,
@@ -146,6 +147,7 @@ export function readPlayers(db: Database, clockToday: number, firstTieredDay: nu
     rushRecords: rushRecords(db, bounds),
     dailyDays: dailyDays(db, bounds),
     cleared: counted(db, bounds, CLEARED_SQL),
+    clearedPuzzles: clearedPuzzles(db, bounds),
     discoveries: counted(db, bounds, DISCOVERIES_SQL),
     lines: lines(db, bounds),
     servers: servers(db, bounds),
@@ -297,6 +299,31 @@ const CLEARED_SQL = `
     JOIN players p ON p.id = c.player_id
    WHERE c.first_at < $cutStart
    GROUP BY c.player_id`;
+
+/**
+ * Which puzzles each shown player first cleared before the game's midnight
+ * that starts the cut, in any mode: the list a profile prints under "Puzzles
+ * cleared".
+ *
+ * **Shown players only, decided here with {@link SHOWN}.** Every other
+ * per-player read lets a hidden player's rows out unlabelled, because one
+ * unlabelled number cannot be traced back to anybody. A set of puzzles can:
+ * the whole of what someone has cleared is as good as their name to anyone
+ * who has seen it once. So a hidden player's clears are counted
+ * ({@link CLEARED_SQL}) and never listed, and the list never becomes a JS value
+ * for a leak to start from. Never `best_ms`, `times` or `last_at`; `first_at`
+ * only bounds the read.
+ */
+const CLEARED_PUZZLES_SQL = `
+  SELECT ${WHO}, c.puzzle_id AS puzzleId
+    FROM puzzle_clears c
+    JOIN players p ON p.id = c.player_id
+   WHERE c.first_at < $cutStart AND ${SHOWN}
+   ORDER BY playerKey, puzzleId`;
+
+function clearedPuzzles(db: Database, bounds: Bounds): SnapshotClear[] {
+  return db.query<SnapshotClear, Bounds>(CLEARED_PUZZLES_SQL).all(bounds);
+}
 
 /**
  * Lines credited to each finder, counted as the Discoveries board counts them —

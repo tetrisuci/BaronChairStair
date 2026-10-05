@@ -23,6 +23,7 @@ import { DIGITS17, LINE_DAY } from "../puzzledb/server/snapshot-players";
 import type { PlayerSnapshot, SnapshotPlayer } from "../puzzledb/server/types";
 import { ALL_SERVERS } from "../puzzledb/wire";
 import {
+  COMMUNITY_ID,
   CORRECTED_ID,
   type FixtureOptions,
   gameFixture,
@@ -99,6 +100,7 @@ describe("the cut", () => {
     expect(early.rushRuns).toEqual([]);
     expect(early.lines).toEqual([]);
     expect(early.cleared).toEqual([]);
+    expect(early.clearedPuzzles).toEqual([]);
     expect(early.discoveries).toEqual([]);
   });
 
@@ -228,7 +230,8 @@ describe("the totals", () => {
     const count = (key: string | null) => players.cleared.filter((row) => row.playerKey === key).map((row) => row.count);
 
     // The visible player first cleared #51 61 seconds into today: not counted.
-    expect(count(PLAYERS.visible.key)).toEqual([1]);
+    // Their player-written puzzle is: the game counts any puzzle, listed or not.
+    expect(count(PLAYERS.visible.key)).toEqual([2]);
     expect(count(PLAYERS.unchosen.key)).toEqual([1]);
     expect(count(null)).toEqual([1]);
   });
@@ -239,6 +242,43 @@ describe("the totals", () => {
     expect(counts.sort()).toEqual(
       [[PLAYERS.visible.key, 1], [PLAYERS.unchosen.key, 1], [null, 1]].sort(),
     );
+  });
+});
+
+describe("the puzzles each player cleared", () => {
+  const listOf = (read: PlayerSnapshot, key: string | null) =>
+    read.clearedPuzzles.filter((row) => row.playerKey === key).map((row) => row.puzzleId);
+
+  test("lists each shown player's first clears before the game's midnight, by key then puzzle", () => {
+    expect(listOf(players, PLAYERS.visible.key)).toEqual([CORRECTED_ID, COMMUNITY_ID]);
+    expect(listOf(players, PLAYERS.unchosen.key)).toEqual([50]);
+    // #51 was first cleared 61 seconds into today.
+    expect(players.clearedPuzzles.map((row) => row.puzzleId)).not.toContain(51);
+    const keys = players.clearedPuzzles.map((row) => row.playerKey!);
+    expect(keys).toEqual(keys.toSorted());
+    for (const row of players.clearedPuzzles) {
+      expect(Object.keys(row).sort()).toEqual(["name", "playerKey", "puzzleId"]);
+    }
+  });
+
+  test("never lists a hidden player's clears, not even unlabelled: no row of theirs, and no row for #6", () => {
+    const withheld = [PLAYERS.hidden, PLAYERS.digitRun, PLAYERS.guest].map((player) => player.key);
+
+    expect(players.clearedPuzzles.filter((row) => row.playerKey === null)).toEqual([]);
+    expect(players.clearedPuzzles.filter((row) => withheld.includes(row.playerKey!))).toEqual([]);
+    expect(players.clearedPuzzles.map((row) => row.puzzleId)).not.toContain(6);
+    // The positive control: their clear is still counted, unlabelled.
+    expect(players.cleared.filter((row) => row.playerKey === null).map((row) => row.count)).toEqual([1]);
+  });
+
+  test("lists nothing for a player the game never keyed", () => {
+    const game = fixture();
+    edit(game, "UPDATE players SET public_key = NULL WHERE id = ?1", PLAYERS.unchosen.id);
+
+    const read = playersOf(game.databasePath);
+
+    expect(read.clearedPuzzles.map((row) => row.puzzleId)).not.toContain(50);
+    expect(read.clearedPuzzles.every((row) => row.playerKey === PLAYERS.visible.key)).toBe(true);
   });
 });
 

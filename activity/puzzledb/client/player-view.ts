@@ -1,6 +1,7 @@
 /**
- * `/player/:key`: one shown player's finished days — their totals, their
- * recent days and their rushes.
+ * `/player/:key`: one shown player's finished days — their totals, each
+ * tier's record, a calendar, their recent days, the puzzles they cleared and
+ * their rushes. The three in the middle are `profile-panels.ts`.
  *
  * Only a player who has not chosen "Hide me on db.tetrisatuci.org" has this
  * page; for anybody else the address is the site's one 404, decided by the
@@ -25,6 +26,7 @@ import { el, formatDuration, panel, stat } from "../../client/src/ui/dom";
 import { dayLabel, pathOf, type SitePlayerBody, type SitePlayerEntry, type SitePlayerRun } from "../wire";
 import { ordinal, plural } from "./board-rows";
 import { type BodyView, readBody, type SiteIndex, titleOf } from "./data";
+import { calendarPanel, clearedPanel, showAllButton, tiersPanel } from "./profile-panels";
 
 /** How many days with hand-ins "Recent days" lists. */
 const RECENT_DAYS = 30;
@@ -34,6 +36,16 @@ const RUSHES_SHOWN = 30;
 function dayLink(day: number, text: string, index: SiteIndex): Node {
   if (!index.dayByNumber.has(day)) return document.createTextNode(text);
   return el("a", { text, attrs: { href: pathOf({ kind: "day", day }) } });
+}
+
+/**
+ * Lines found, linked to the Discoveries board: the count is theirs, and the
+ * board is where it sits beside everybody's. Never to the lines themselves,
+ * which name no finder.
+ */
+function linesStat(count: number): HTMLElement {
+  const board = el("a", { text: count, attrs: { href: `${pathOf({ kind: "leaderboards" })}#discoveries` } });
+  return el("div", { class: "stat" }, el("span", { class: "stat__key", text: "Lines found" }), el("span", { class: "stat__value" }, board));
 }
 
 function totalsCards(body: SitePlayerBody): HTMLElement {
@@ -50,7 +62,7 @@ function totalsCards(body: SitePlayerBody): HTMLElement {
       stat("Streak", t.currentStreak),
       stat("Best streak", t.bestStreak),
     ),
-    panel("Archive", { class: "profile__stats" }, stat("Puzzles cleared", t.puzzlesCleared), stat("Lines found", t.linesFound)),
+    panel("Archive", { class: "profile__stats" }, stat("Puzzles cleared", t.puzzlesCleared), linesStat(t.linesFound)),
     panel(
       "Rush",
       { class: "profile__stats" },
@@ -111,20 +123,7 @@ function rushes(body: SitePlayerBody, index: SiteIndex): HTMLElement {
     ),
   );
   const list = el("ol", { class: "pdb-run-days" }, ...lines.slice(0, RUSHES_SHOWN));
-  const more =
-    lines.length <= RUSHES_SHOWN
-      ? null
-      : el("button", {
-          class: "btn btn--small pdb-more",
-          text: `Show all ${lines.length}`,
-          attrs: { type: "button" },
-          on: {
-            click: (event) => {
-              list.replaceChildren(...lines);
-              (event.currentTarget as HTMLElement).remove();
-            },
-          },
-        });
+  const more = lines.length <= RUSHES_SHOWN ? null : showAllButton(`Show all ${lines.length}`, list, lines);
   return panel(
     "Rushes",
     { class: "pdb-recent" },
@@ -144,7 +143,10 @@ export function renderPlayer(body: SitePlayerBody, index: SiteIndex): HTMLElemen
       class: "note profile__note",
       text: through === null ? "No day has finished yet." : `Streaks count finished days, through ${dayLabel(through)}.`,
     }),
+    tiersPanel(body, index),
+    calendarPanel(body, index),
     recentDays(body, index),
+    clearedPanel(body, index),
     rushes(body, index),
   );
 }

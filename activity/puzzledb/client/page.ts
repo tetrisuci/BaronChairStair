@@ -9,7 +9,9 @@
  * until they reload, as a document would. What a page shows beyond the index —
  * a day's boards, a player's runs, a puzzle's stats and lines, the all-time
  * boards — is one body from `/data/…`, fetched when the page is shown and kept
- * for the rest of the visit, so Back draws it again without asking.
+ * for the rest of the visit, so Back draws it again without asking. The
+ * solves feed reads day bodies through the same copy ({@link SitePage.dayBody}),
+ * so a day it has read opens without asking either.
  *
  * **A body that arrives late is dropped.** Every show takes a number, and a
  * body is drawn only if its page is still the one on screen; otherwise a slow
@@ -24,8 +26,9 @@
  * opened a puzzle when clicked opens the same puzzle when shared, and a page
  * the server answered 404 is the missing view here, never a different page.
  * The tab's title comes from the same function, word for word. The server
- * chip is in the query string, `?server=`, read here and written back without
- * a history entry, as the browse filter is.
+ * chip, the players table's sort and search and the feed's filters are in the
+ * query string, read here and written back without a history entry, as the
+ * browse filter is (`list-queries.ts`).
  *
  * **One view at a time, and one answer.** Moving on detaches the puzzle view,
  * which gives up the replay's arrow keys; the browse view is built once and
@@ -42,6 +45,7 @@ import {
   pageText,
   parsePage,
   type SiteData,
+  type SiteDayBody,
   type SitePuzzle,
   UNAVAILABLE_TEXT,
 } from "../wire";
@@ -54,11 +58,13 @@ import { createDaysView, createDayView } from "./days";
 import { filterFromQuery, queryFromFilter } from "./filter-url";
 import { markCurrent, missingView, siteFooter, siteHeader, unavailableView } from "./frame";
 import { leaderboardsPage } from "./leaderboards";
+import { playersQueryFrom, solvesQueryFrom } from "./list-queries";
 import { playerPage } from "./player-view";
-import { renderPlayers } from "./players";
+import { playersPage } from "./players";
 import { ANSWER_ID, createPuzzleView, LINES_ID, type PuzzleView } from "./puzzle-view";
 import { type Navigation, startRouter } from "./router";
 import { queryForServer, serverFromQuery } from "./server-chips";
+import { solvesPage } from "./solves";
 
 /** What the page says while the archive is on its way — the same words `index.html` starts with. */
 const OPENING = "opening the archive";
@@ -90,6 +96,8 @@ export class SitePage {
   /** Every body drawn this visit, by path. */
   private readonly bodies = new Map<string, unknown>();
   private readonly redraw = () => this.puzzle?.stage.draw();
+  /** A list page's choice, written into the address without a history entry, as the browse filter is. */
+  private readonly writeQuery = (search: string) => this.navigation?.replaceQuery(search);
 
   constructor(
     private readonly root: HTMLElement,
@@ -168,19 +176,41 @@ export class SitePage {
       case "leaderboards":
         return leaderboardsPage(index, ctx);
       case "players":
-        return renderPlayers(index);
+        return playersPage(index, playersQueryFrom(search, index), this.writeQuery);
       case "player": {
         const entry = index.playerByKey.get(route.key);
         return entry ? playerPage(entry, index) : null;
       }
+      case "solves": {
+        const showing = this.showing;
+        return solvesPage(index, solvesQueryFrom(search, index), {
+          dayBody: (day) => this.dayBody(day),
+          onQuery: this.writeQuery,
+          isCurrent: () => showing === this.showing,
+        });
+      }
     }
+  }
+
+  /**
+   * A finished day's body for the solves feed, from this visit's copy when
+   * there is one. Kept once it proves to be a day's body, so the feed's later
+   * presses, its other filters and the day's own page all draw from it again
+   * without asking.
+   */
+  async dayBody(day: number): Promise<SiteDayBody> {
+    const path = bodyPathFor({ kind: "day", day })!;
+    const body = this.bodies.has(path) ? this.bodies.get(path) : await this.loadPageBody(path);
+    const read = readBody("day", body);
+    this.bodies.set(path, body);
+    return read;
   }
 
   /** The server chip the address names, and the way a picked chip gets back into the address. */
   private contextFor(index: SiteIndex, search: string): ViewContext {
     return {
       server: serverFromQuery(search, index),
-      onServer: (server) => this.navigation?.replaceQuery(queryForServer(server)),
+      onServer: (server) => this.writeQuery(queryForServer(server)),
     };
   }
 
@@ -234,7 +264,25 @@ export class SitePage {
       this.bodies.set(path, body);
     } catch (error) {
       this.failed(path, view, showing, route, error);
+      return;
     }
+    if (route.kind !== "puzzle") this.settleAnchor();
+  }
+
+  /**
+   * The address's anchor scrolled into view, once the body that carries it is
+   * drawn: a profile's "Lines found" goes to `/leaderboards#discoveries`, and
+   * that card does not exist until the boards arrive, which is after both the
+   * browser and the router have looked. A puzzle settles its own anchors
+   * ({@link settlePuzzle}), so it is left out rather than scrolled twice. The
+   * anchor is looked up as an id, never a selector, since the address is
+   * anybody's to type.
+   */
+  private settleAnchor(): void {
+    const anchor = this.win.location.hash.slice(1);
+    if (!anchor) return;
+    const target = this.win.document.getElementById(anchor);
+    if (target && this.main.contains(target)) target.scrollIntoView({ block: "start" });
   }
 
   /** The slot says the body could not be had, and offers to ask again. */

@@ -83,7 +83,7 @@ const READ_COLUMNS: Readonly<Record<string, readonly string[]>> = {
   players: ["id", "username", "site_hidden", "public_key"],
   runs: ["day", "player_id", "guild_id", "puzzle_id", "slot", "solved", "total_ms", "attack", "target_attack"],
   rush_runs: ["day", "player_id", "guild_id", "solved", "time_to_last_ms"],
-  puzzle_clears: ["player_id", "first_at"],
+  puzzle_clears: ["player_id", "puzzle_id", "first_at"],
   puzzle_solutions: [
     "solution_id",
     "puzzle_id",
@@ -493,23 +493,26 @@ describe("what it lets out about people", () => {
     for (const mark of Object.values(TODAY_MARKS)) expect(text).not.toContain(String(mark));
     expect([...players.tierRuns, ...players.rushRuns, ...players.rushRecords].filter((row) => row.day >= TODAY)).toEqual([]);
     expect(players.lines.map((line) => line.puzzleId)).not.toContain(LINES.today.puzzleId);
-    // The visible player's first clear of #51 came 61 seconds into today.
-    expect(players.cleared.find((row) => row.playerKey === PLAYERS.visible.key)?.count).toBe(1);
+    // The visible player's first clear of #51 came 61 seconds into today; #12 and their withheld one did not.
+    expect(players.cleared.find((row) => row.playerKey === PLAYERS.visible.key)?.count).toBe(2);
+    expect(players.clearedPuzzles.map((row) => row.puzzleId)).not.toContain(51);
   });
 });
 
 describe("the game's zone", () => {
   /**
    * The fixture with its zone fact set to `zone`, and the visible player's
-   * line and first clear moved to just after the midnight that starts today
-   * in New York — which is still yesterday evening in Los Angeles.
+   * line and yesterday's first clears moved to just after the midnight that
+   * starts today in New York — which is still yesterday evening in Los Angeles.
    */
   function filedJustAfterNewYorkMidnight(zone: string): string {
     const copy = copyOf(fixture({ journal: "delete" }));
     const justAfter = startOfDay(TODAY, { timeZone: "America/New_York" }) + 61_000;
     edit(copy, "UPDATE site_facts SET value = ?1 WHERE name = 'time_zone'", zone);
     edit(copy, "UPDATE puzzle_solutions SET found_at = ?1 WHERE found_at = ?2", justAfter, LINES.visible.foundAt);
-    edit(copy, "UPDATE puzzle_clears SET first_at = ?1 WHERE first_at = ?2", justAfter, CLEARS[0]!.firstAt);
+    for (const clear of CLEARS.filter((one) => one.player === "visible" && one.firstAt < justAfter)) {
+      edit(copy, "UPDATE puzzle_clears SET first_at = ?1 WHERE first_at = ?2", justAfter, clear.firstAt);
+    }
     return copy;
   }
 
@@ -524,6 +527,7 @@ describe("the game's zone", () => {
     expect(players.lines.map((line) => line.puzzleId)).not.toContain(LINES.visible.puzzleId);
     expect(visible(players.discoveries)).toEqual([]);
     expect(visible(players.cleared)).toEqual([]);
+    expect(visible(players.clearedPuzzles)).toEqual([]);
   });
 
   test("would have shown them by Los Angeles's midnight, which is what makes the test above mean anything", () => {
@@ -531,5 +535,6 @@ describe("the game's zone", () => {
 
     expect(players.lines.map((line) => line.puzzleId)).toContain(LINES.visible.puzzleId);
     expect(players.cleared.some((row) => row.playerKey === PLAYERS.visible.key)).toBe(true);
+    expect(players.clearedPuzzles.some((row) => row.playerKey === PLAYERS.visible.key)).toBe(true);
   });
 });
