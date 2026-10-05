@@ -19,6 +19,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { buildDataset } from "../puzzledb/server/dataset";
+import { playerRows } from "../puzzledb/server/dataset-players";
 import { FIRST_EXTREME_DAY, FIRST_TIERED_DAY, POLICY } from "../puzzledb/server/policy";
 import { openGameDatabase, readSnapshot } from "../puzzledb/server/snapshot";
 import type {
@@ -56,6 +57,7 @@ const EMPTY: PlayerSnapshot = {
   rushRecords: [],
   dailyDays: [],
   cleared: [],
+  clearedPuzzles: [],
   discoveries: [],
   lines: [],
   servers: [
@@ -459,6 +461,55 @@ describe("puzzles", () => {
     } finally {
       db.close();
     }
+  });
+});
+
+describe("the puzzles each player cleared", () => {
+  const scope = { policy: POLICY, days: new Set<number>(), listed: new Set([6, 50]) };
+  const clear = (player: SnapshotPlayer, puzzleId: number) => ({ ...player, puzzleId });
+
+  test("keep listed puzzles only, while the count stays whole, as the game counts it", () => {
+    const dataset = build({
+      cleared: [{ ...ALICE, count: 3 }],
+      clearedPuzzles: [clear(ALICE, 50), clear(ALICE, COMMUNITY_ID), clear(ALICE, 9_999)],
+    });
+    const db = Database.deserialize(dataset.sqlite, { readonly: true });
+    try {
+      expect(db.query("SELECT player_key, puzzle_id FROM player_clears").all()).toEqual([
+        { player_key: ALICE.playerKey, puzzle_id: 50 },
+      ]);
+      expect(db.query("SELECT puzzles_cleared FROM players").all()).toEqual([{ puzzles_cleared: 3 }]);
+    } finally {
+      db.close();
+    }
+  });
+
+  test("come out by key, then puzzle, whatever order they went in", () => {
+    const rows = playerRows({ ...EMPTY, clearedPuzzles: [clear(BOB, 6), clear(ALICE, 50), clear(ALICE, 6)] }, scope);
+
+    expect(rows.playerClears).toEqual([
+      [ALICE.playerKey!, 6],
+      [ALICE.playerKey!, 50],
+      [BOB.playerKey!, 6],
+    ]);
+  });
+
+  test("refuse a clear that reached the build without a shown player, which SQL should have made impossible", () => {
+    expect(() => playerRows({ ...EMPTY, clearedPuzzles: [clear(HIDDEN, 6)] }, scope)).toThrow(
+      "A cleared puzzle reached the build without a shown player; refusing to publish it",
+    );
+  });
+
+  test("refuse a name holding seventeen digits that only a clear carries", () => {
+    const digits = { playerKey: "ddddddddd2", name: "x-12345678901234567" };
+
+    expect(() => playerRows({ ...EMPTY, clearedPuzzles: [clear(digits, 6)] }, scope)).toThrow(/seventeen digits/);
+  });
+
+  test("give a name found only on a clear a players row, so the key resolves", () => {
+    const rows = playerRows({ ...EMPTY, clearedPuzzles: [clear(BOB, 6)] }, scope);
+
+    expect(rows.players.map((row) => [row[0], row[1]])).toEqual([[BOB.playerKey!, BOB.name!]]);
   });
 });
 

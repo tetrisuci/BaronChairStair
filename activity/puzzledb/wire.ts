@@ -41,7 +41,12 @@ import type { ClearName, ClearRequirement, Mino, RowCode, SolutionStep } from ".
 /**
  * The public database's schema: `PRAGMA user_version` in the download and
  * `about.schema`. 1 was the puzzles and days alone; 2 adds the boards, the
- * standings, each puzzle's stats and the players' alternate lines.
+ * standings, each puzzle's stats and the players' alternate lines, and which
+ * listed puzzles each shown player has cleared.
+ *
+ * **The cleared list joined 2 rather than making 3 because no schema-2 file
+ * had been served when it did.** If 2 has been served by the time a table is
+ * next added, that table is 3.
  */
 export const SCHEMA_VERSION = 2;
 
@@ -310,6 +315,23 @@ export interface SitePlayerRush {
   readonly timeMs: number;
 }
 
+/**
+ * One tier of a shown player's finished days, built by the server from the
+ * same rows the tier boards publish, so the download can reproduce every
+ * number in it.
+ */
+export interface SiteTierSummary {
+  readonly tier: DailyTier;
+  /** Hand-ins on finished days, in the tiers each day dealt. */
+  readonly handIns: number;
+  readonly solves: number;
+  /** Fastest solve, and the earliest day it was set on, so a tie has one answer; both null with no solve. */
+  readonly bestMs: number | null;
+  readonly bestDay: number | null;
+  /** Of the solves, the middle one, or the two middles' mean rounded to a millisecond; null with none. */
+  readonly medianMs: number | null;
+}
+
 /** `GET /data/player/:key.json`: one shown player. Their name is in the index. */
 export interface SitePlayerBody extends SiteBody {
   readonly totals: SitePlayerTotals;
@@ -317,6 +339,15 @@ export interface SitePlayerBody extends SiteBody {
   readonly runs: readonly SitePlayerRun[];
   /** Newest first. */
   readonly rush: readonly SitePlayerRush[];
+  /** Always four, in `DAILY_TIERS` order; a tier never played has zeros and nulls. */
+  readonly tiers: readonly SiteTierSummary[];
+  /**
+   * The listed puzzles they cleared, in any mode, before the newest finished
+   * day ended; ascending. Can be fewer than `totals.puzzlesCleared`, which
+   * also counts puzzles the site does not list. Never when, how often or how
+   * fast — and a player who hid has no body, so no list, anywhere.
+   */
+  readonly cleared: readonly number[];
 }
 
 /** How a puzzle went on the finished days it was dealt: daily hand-ins only. */
@@ -387,7 +418,10 @@ export interface SiteLeaderboardsBody extends SiteBody {
   readonly boards: Readonly<Record<StandingBoard, Readonly<Record<string, readonly SiteStanding[]>>>>;
 }
 
-/** A page of the site. The browse filter and the server chip live in the query string, not here. */
+/**
+ * A page of the site. The browse filter, the server chip, the players table's
+ * sort and the feed's filters live in the query string, not here.
+ */
 export type PageRoute =
   | { readonly kind: "browse" }
   | { readonly kind: "days" }
@@ -395,7 +429,8 @@ export type PageRoute =
   | { readonly kind: "day"; readonly day: number }
   | { readonly kind: "leaderboards" }
   | { readonly kind: "players" }
-  | { readonly kind: "player"; readonly key: string };
+  | { readonly kind: "player"; readonly key: string }
+  | { readonly kind: "solves" };
 
 /** How a page finds what it names. The server builds one from its dataset, the page from its index. */
 export interface SiteLookup {
@@ -415,6 +450,7 @@ const BROWSE: PageRoute = Object.freeze({ kind: "browse" });
 const DAYS: PageRoute = Object.freeze({ kind: "days" });
 const LEADERBOARDS: PageRoute = Object.freeze({ kind: "leaderboards" });
 const PLAYERS: PageRoute = Object.freeze({ kind: "players" });
+const SOLVES: PageRoute = Object.freeze({ kind: "solves" });
 
 /**
  * One spelling per page: no leading zero, no trailing slash, no case variant.
@@ -444,6 +480,7 @@ export function parsePage(pathname: string): PageRoute | null {
   if (pathname === "/days") return DAYS;
   if (pathname === "/leaderboards") return LEADERBOARDS;
   if (pathname === "/players") return PLAYERS;
+  if (pathname === "/solves") return SOLVES;
   const player = PLAYER_PATH.exec(pathname);
   if (player) return Object.freeze({ kind: "player", key: player[1]! });
   const puzzle = PUZZLE_PATH.exec(pathname);
@@ -470,6 +507,8 @@ export function pathOf(route: PageRoute): string {
       return "/players";
     case "player":
       return `/player/${route.key}`;
+    case "solves":
+      return "/solves";
   }
 }
 
@@ -480,6 +519,12 @@ export function pathOf(route: PageRoute): string {
  * only where a page might, and the build keys `Dataset.bodies` by exactly what
  * the page will ask for. Whether that body exists is the build's call, and a
  * miss is the same byte-identical 404 as any other.
+ *
+ * **The players table has a body rather than a heavier index.** The index is
+ * read on every visit, and the table's extra numbers are wanted on one page.
+ * **The solves feed's body only steers it**: which finished days had a solve,
+ * in which tiers and servers. The rows themselves are the day bodies, fetched
+ * a few days at a time, so no body grows with history by more than a line a day.
  */
 export function bodyPathFor(route: PageRoute): string | null {
   switch (route.kind) {
@@ -487,10 +532,11 @@ export function bodyPathFor(route: PageRoute): string | null {
     case "puzzle":
     case "player":
     case "leaderboards":
+    case "players":
+    case "solves":
       return `/data${pathOf(route)}.json`;
     case "browse":
     case "days":
-    case "players":
       return null;
   }
 }
@@ -519,8 +565,20 @@ const LEADERBOARDS_TEXT: PageText = Object.freeze({
 const PLAYERS_TEXT: PageText = Object.freeze({
   title: `Players${SUFFIX}`,
   description:
-    "The players of the Tetris at UCI daily, by the name the game shows, " +
-    "each with a page of their finished days.",
+    "The players of the Tetris at UCI daily, by the name the game shows: days solved, " +
+    "streaks, puzzles cleared, lines found and best rush, each with a page of their finished days.",
+});
+
+/**
+ * The solves feed's text. Exported, unlike the other fixed texts, because the
+ * server's test reads `/solves`'s head against it and the query string must
+ * never change a byte of it.
+ */
+export const SOLVES_TEXT: PageText = Object.freeze({
+  title: `Recent solves${SUFFIX}`,
+  description:
+    "Every daily solve on a finished day of the Tetris at UCI daily, newest first, " +
+    "by tier, server and puzzle.",
 });
 
 /** The 404 page's text: one text for every missing thing, so a miss says nothing about why. */
@@ -566,6 +624,8 @@ export function pageText(route: PageRoute, lookup: SiteLookup): PageText | null 
       const player = lookup.player(route.key);
       return player ? playerText(player) : null;
     }
+    case "solves":
+      return SOLVES_TEXT;
   }
 }
 

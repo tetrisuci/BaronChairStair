@@ -18,6 +18,8 @@
  * puzzle and every shown player, and the leaderboards — an empty board
  * included, as an empty list, so a page never has to tell "nothing yet" from
  * "missing". A player who hid has no body, exactly as a key nobody holds.
+ * The players table and the solves feed have one body each, built in
+ * `bodies-profiles.ts`.
  */
 
 import { DAILY_TIERS } from "../../shared/daily";
@@ -37,6 +39,7 @@ import {
   STANDING_BOARDS,
   type StandingBoard,
 } from "../wire";
+import { playersBody, solvesBody, tierSummaries } from "./bodies-profiles";
 import type { PlayerData } from "./public-db-players";
 import { groupedBy } from "./rank";
 
@@ -54,6 +57,8 @@ export function buildBodies(data: SiteData, players: PlayerData): ReadonlyMap<st
   for (const [key, body] of playerBodies(players, builtAt)) put(bodyPathFor({ kind: "player", key }), body);
   for (const [id, body] of puzzleBodies(data, players, builtAt)) put(bodyPathFor({ kind: "puzzle", id }), body);
   put(bodyPathFor({ kind: "leaderboards" }), leaderboardsBody(players, builtAt));
+  put(bodyPathFor({ kind: "players" }), playersBody(players, builtAt));
+  put(bodyPathFor({ kind: "solves" }), solvesBody(players, builtAt));
   return bodies;
 }
 
@@ -100,7 +105,8 @@ function boardRanks<T>(rows: readonly T[], boardOf: (row: T) => string, same: (a
  * Each shown player's totals, hand-ins and rushes, newest first. A hand-in
  * carries its rank on that day's tier, as the day's board shows it, but no
  * server and no attack: the day's page is where it sits beside everybody
- * else's.
+ * else's. Then their four tiers summed up, and the listed puzzles they have
+ * cleared — a list that exists only for a shown player, so only here.
  */
 function playerBodies(players: PlayerData, builtAt: string): Map<string, SitePlayerBody> {
   const tierAt = (tier: string) => DAILY_TIERS.indexOf(tier as (typeof DAILY_TIERS)[number]);
@@ -136,6 +142,8 @@ function playerBodies(players: PlayerData, builtAt: string): Map<string, SitePla
           rush: (rushes.get(key) ?? [])
             .toSorted((a, b) => b.day - a.day)
             .map((row) => ({ day: row.day, rank: rushRank.get(row)!, solved: row.solved, timeMs: row.timeMs })),
+          tiers: tierSummaries(runs.get(key) ?? []),
+          cleared: players.cleared.get(key) ?? [],
         },
       ];
     }),

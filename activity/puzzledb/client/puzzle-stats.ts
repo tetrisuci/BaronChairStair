@@ -13,12 +13,17 @@
  * panel can step; it says nothing about lines that are not shown, because
  * the only lines not shown are today's, and saying so would mark today's
  * deal (`puzzledb/README.md`).
+ *
+ * Once somebody has solved it, the card links to every solve of it in the
+ * feed (`/solves?puzzle=<id>`); before then the feed would only say "No
+ * solves match", so the link is not offered.
  */
 
 import { el, panel, stat } from "../../client/src/ui/dom";
-import type { SitePuzzle, SitePuzzleBody, SitePuzzleStats } from "../wire";
+import { pathOf, type SitePuzzle, type SitePuzzleBody, type SitePuzzleStats } from "../wire";
 import { playerName, plural, timeOrDash } from "./board-rows";
 import type { SiteIndex } from "./data";
+import { queryForSolves } from "./list-queries";
 
 /** A stat row whose value is more than text: the fastest time and whose it was. */
 function fastestRow(stats: SitePuzzleStats): HTMLElement {
@@ -36,6 +41,12 @@ function rateRow(stats: SitePuzzleStats): HTMLElement {
     stat("Solve rate", `${share}%`),
     el("span", { class: "boards__bar" }, el("span", { class: "boards__bar-fill", style: { width: `${share}%` } })),
   );
+}
+
+/** Every solve of the puzzle, in the feed. */
+function feedLink(puzzle: SitePuzzle): HTMLElement {
+  const href = `${pathOf({ kind: "solves" })}${queryForSolves({ tier: null, server: null, puzzle: puzzle.id })}`;
+  return el("p", { class: "pdb-feed-link" }, el("a", { text: "Every solve of this puzzle →", attrs: { href } }));
 }
 
 /** The card. `stats` is null when no finished day has dealt the puzzle. */
@@ -56,5 +67,6 @@ export function renderPuzzleStats(puzzle: SitePuzzle, body: SitePuzzleBody, inde
     fastestRow(stats),
     stat("Median", timeOrDash(stats.medianMs)),
     lines,
+    stats.solves === 0 ? null : feedLink(puzzle),
   );
 }

@@ -10,8 +10,9 @@
  * **What is kept.** A board row survives only on a day the site shows, and in
  * a tier that day was dealt (`tiersShownOn`); a day board marks a tier it was
  * not dealt as NULL. A puzzle a player wrote keeps its row and loses its id
- * while such puzzles are withheld, as the day itself does. Stats and lines are
- * kept only for a puzzle the site lists. Discovery counts are kept whole, as
+ * while such puzzles are withheld, as the day itself does. Stats, lines and a
+ * shown player's cleared list are kept only for a puzzle the site lists, so a
+ * list can be shorter than its count. Discovery counts are kept whole, as
  * the game counts them — any puzzle, voided lines included — so the site's
  * Discoveries board agrees with the game's, and can add up to more lines than
  * the site shows.
@@ -24,7 +25,8 @@
  * **What a player who hid still contributes.** Their rows, unlabelled, with
  * the values and ranks they earned — the owner's decision — and on an
  * all-time board no `detail`, the second number that would let two of their
- * rows be matched up. They are not in `players` and have no page.
+ * rows be matched up. They are not in `players`, have no page, and have no
+ * cleared list: SQL never let one out.
  *
  * **Two guards that repeat SQL on purpose.** A name holding seventeen digits
  * in a row, or a key not shaped like a key, fails the build: the refresher
@@ -40,6 +42,7 @@ import { isWithheld, tiersShownOn } from "./policy";
 import type {
   DayBoardRow,
   LineRow,
+  PlayerClearRow,
   PlayerRow,
   PlayerRows,
   PuzzleStatsRow,
@@ -48,10 +51,11 @@ import type {
   StandingRow,
   TierBoardRow,
 } from "./public-db-players";
-import { ascending, byPlayer, byText, descending, groupedBy, type Order, ranked, then } from "./rank";
+import { ascending, byPlayer, byText, descending, groupedBy, type Order, ranked, textOrder, then } from "./rank";
 import type {
   PlayerSnapshot,
   Policy,
+  SnapshotClear,
   SnapshotCount,
   SnapshotDayBoardRow,
   SnapshotLine,
@@ -90,6 +94,7 @@ export function playerRows(snapshot: PlayerSnapshot, scope: PlayerScope): Player
   return {
     servers: serverRows(snapshot, scope.policy, { tierBoards, dayBoards, rushBoards, standings }),
     players: playerTotals(snapshot, runs, rushes),
+    playerClears: clearRows(snapshot.clearedPuzzles, scope.listed),
     tierBoards,
     dayBoards,
     rushBoards,
@@ -108,6 +113,7 @@ function everyPlayer(snapshot: PlayerSnapshot): SnapshotPlayer[] {
     ...snapshot.rushRecords,
     ...snapshot.dailyDays,
     ...snapshot.cleared,
+    ...snapshot.clearedPuzzles,
     ...snapshot.discoveries,
   ];
 }
@@ -312,6 +318,26 @@ function lineRows(lines: readonly SnapshotLine[], listed: ReadonlySet<number>): 
       positions.set(line.puzzleId, position);
       return [line.puzzleId, position, line.attack, JSON.stringify(line.clears), JSON.stringify(line.steps)];
     });
+}
+
+/**
+ * Each shown player's clears of puzzles the site lists, by key then puzzle.
+ * `players.puzzles_cleared` keeps counting the rest, as the game does.
+ *
+ * **A clear with no shown player fails the build.** SQL lets only a shown
+ * player's list out at all, because a whole set of clears names its owner
+ * even unlabelled; this is the second lock on that door.
+ */
+function clearRows(clears: readonly SnapshotClear[], listed: ReadonlySet<number>): PlayerClearRow[] {
+  return clears
+    .map((clear): PlayerClearRow => {
+      if (clear.playerKey === null) {
+        throw new Error("A cleared puzzle reached the build without a shown player; refusing to publish it");
+      }
+      return [clear.playerKey, clear.puzzleId];
+    })
+    .filter(([, puzzleId]) => listed.has(puzzleId))
+    .toSorted(([keyA, idA], [keyB, idB]) => textOrder(keyA, keyB) || idA - idB);
 }
 
 /** By shown key, the one row of each per-player list a key appears in. */
