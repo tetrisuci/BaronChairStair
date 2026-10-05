@@ -28,22 +28,28 @@ import { BOARD_HEIGHT, COMMUNITY_ID_BASE } from "../shared/puzzle";
 import { ApiError } from "../client/src/api";
 import type { BoardView } from "../client/src/render/board";
 import {
+  ALL_SERVERS,
   dateOfDay,
   NOT_FOUND_TEXT,
   pageText,
   SCHEMA_VERSION,
   type SiteData,
   type SiteDay,
+  type SiteDayBody,
+  type SiteLeaderboardsBody,
+  type SitePlayerBody,
   type SitePuzzle,
+  type SitePuzzleBody,
+  STANDING_BOARDS,
   UNAVAILABLE_TEXT,
 } from "../puzzledb/wire";
-import { loadSiteData } from "../puzzledb/client/api";
+import { loadBody, loadSiteData } from "../puzzledb/client/api";
 import { BoardStage } from "../puzzledb/client/board-stage";
 import { createBrowseView } from "../puzzledb/client/browse";
 import { indexSiteData, listingOf, readSiteData, type SiteIndex } from "../puzzledb/client/data";
 import { createDaysView, createDayView, dealLine } from "../puzzledb/client/days";
 import { filterFromQuery, queryFromFilter } from "../puzzledb/client/filter-url";
-import { SitePage } from "../puzzledb/client/page";
+import { type BodyLoader, SitePage } from "../puzzledb/client/page";
 import { createPuzzleView, type PuzzleView } from "../puzzledb/client/puzzle-view";
 import { isInternalClick, QUERY_WRITE_MS, REFUSED_RETRY_MS } from "../puzzledb/client/router";
 
@@ -186,7 +192,86 @@ const DATA: SiteData = {
     day(273, { easy: MARKUP.id, medium: TWO_STEP.id, hard: null, extreme: TALL.id }),
     day(274, { easy: TWO_STEP.id, medium: MARKUP.id, hard: NOTCH.id, extreme: TALL.id }),
   ],
+  players: [{ key: "adakey2345", name: "ada", daysSolved: 3, bestStreak: 2 }],
+  servers: [{ key: "clubkey234", name: "Club One" }],
 };
+
+const ADA = { key: "adakey2345", name: "ada" } as const;
+const CLUB = DATA.servers[0]!;
+const BUILT = DATA.about.builtAt;
+
+function dayBody(number: number, who: { key: string; name: string }): SiteDayBody {
+  const marks = { easy: 2, medium: 0, hard: 0, extreme: 0 } as const;
+  return {
+    builtAt: BUILT,
+    day: number,
+    boards: { [ALL_SERVERS]: [{ rank: 1, player: who, solved: 1, timeMs: 61_000, marks }] },
+    tiers: [{ tier: "easy", rank: 1, serverKey: CLUB.key, player: who, puzzleId: TWO_STEP.id, solved: true, timeMs: 61_000, attack: 2, targetAttack: 2 }],
+    rush: [],
+  };
+}
+
+const LEADERBOARDS: SiteLeaderboardsBody = {
+  builtAt: BUILT,
+  boards: Object.fromEntries(STANDING_BOARDS.map((board) => [board, { [ALL_SERVERS]: [] }])) as never,
+};
+const RUSH_RECORDS: SiteLeaderboardsBody = {
+  ...LEADERBOARDS,
+  boards: {
+    ...LEADERBOARDS.boards,
+    rush: {
+      [ALL_SERVERS]: [{ rank: 1, player: ADA, value: 14, detail: null, timeMs: 291_000, day: 274 }],
+      [CLUB.key]: [{ rank: 1, player: null, value: 3, detail: null, timeMs: 99_000, day: 273 }],
+    },
+  },
+};
+
+const ADA_BODY: SitePlayerBody = {
+  builtAt: BUILT,
+  totals: {
+    daysSolved: 3, dailies: 4, currentStreak: 2, bestStreak: 2, puzzlesCleared: 5, linesFound: 1,
+    rushRuns: 0, rushBest: null, rushBestMs: null, rushBestDay: null,
+  },
+  runs: [{ day: 274, tier: "easy", rank: 1, solved: true, timeMs: 61_000, puzzleId: TWO_STEP.id }],
+  rush: [],
+};
+
+const NOTCH_BODY: SitePuzzleBody = {
+  builtAt: BUILT,
+  stats: { handIns: 4, solves: 1, fastestMs: 61_000, medianMs: 61_000, fastest: ADA },
+  lines: [{ position: 1, attack: 4, clears: ["tsd"], steps: NOTCH.solution! }],
+};
+
+/** Every body the server would have built for this data, by path: one per day, puzzle and player, and the boards. */
+const BODIES: ReadonlyMap<string, unknown> = new Map<string, unknown>([
+  ...DATA.days.map(({ day: number }): [string, unknown] => [`/data/day/${number}.json`, dayBody(number, ADA)]),
+  ...DATA.puzzles.map(({ id }): [string, unknown] => [`/data/puzzle/${id}.json`, { builtAt: BUILT, stats: null, lines: [] }]),
+  ["/data/puzzle/4.json", NOTCH_BODY],
+  ["/data/leaderboards.json", RUSH_RECORDS],
+  [`/data/player/${ADA.key}.json`, ADA_BODY],
+]);
+
+/** The server, as far as bodies go: what it built, and its 404 for anything else. */
+const serverBodies: BodyLoader = async (path) => {
+  const body = BODIES.get(path);
+  if (body === undefined) throw new ApiError("Not found", 404);
+  return structuredClone(body);
+};
+
+/** A body loader that answers only when a test says so, recording what it was asked. */
+function heldBodies() {
+  const asked: string[] = [];
+  const waiting = new Map<string, { resolve(body: unknown): void; reject(error: unknown): void }>();
+  const loader: BodyLoader = (path) =>
+    new Promise((resolve, reject) => {
+      asked.push(path);
+      waiting.set(path, { resolve, reject });
+    });
+  return { asked, loader, answer: (path: string, body: unknown) => waiting.get(path)!.resolve(body), fail: (path: string, error: unknown) => waiting.get(path)!.reject(error) };
+}
+
+/** Lets every promise already settled run its callbacks. */
+const settle = () => new Promise((done) => setTimeout(done, 0));
 
 const INDEX: SiteIndex = indexSiteData(DATA);
 
@@ -263,6 +348,7 @@ async function openPage(
   url: string,
   load: () => Promise<SiteData> = () => Promise.resolve(DATA),
   win: DomWindow = window as unknown as DomWindow,
+  bodies: BodyLoader = serverBodies,
 ) {
   window.happyDOM.setURL(url);
   // `setURL` moves the location and leaves the history entry as it was, so
@@ -271,9 +357,10 @@ async function openPage(
   window.history.replaceState(null, "", url);
   const root = document.createElement("div");
   document.body.append(root);
-  const page = new SitePage(root, load, win);
+  const page = new SitePage(root, load, win, bodies);
   opened.push(page);
   await page.start();
+  await settle();
   return { root, page };
 }
 
@@ -390,9 +477,9 @@ function errorsReported(): readonly unknown[] {
 }
 
 /** The page on a hand-turned clock, recording its address writes and anything its listeners throw. */
-async function openOnClock(url: string) {
+async function openOnClock(url: string, bodies: BodyLoader = serverBodies) {
   const clock = handClock();
-  const { root, page } = await openPage(url, undefined, windowOn(clock));
+  const { root, page } = await openPage(url, undefined, windowOn(clock), bodies);
   return { root, page, clock, errors: errorsReported(), ...recordHistory() };
 }
 
@@ -403,6 +490,7 @@ describe("the data", () => {
     for (const payload of [
       null, "<!doctype html>", [], {}, { puzzles: [], days: [] }, { about: null, puzzles: [], days: [] },
       { about: {}, puzzles: {}, days: [] }, { about: {}, puzzles: [], days: "274" },
+      { about: {}, puzzles: [], days: [], players: [] }, { about: {}, puzzles: [], days: [], players: [], servers: {} },
     ]) {
       expect(() => readSiteData(payload)).toThrow();
     }
@@ -433,6 +521,19 @@ describe("the data", () => {
     const proxyPage = () => new Response("<html>", { status: 502 });
     await expect(loadSiteData(answering(proxyPage))).rejects.toThrow(ApiError);
     await expect(loadSiteData(answering(() => Response.json({ puzzles: [] })))).rejects.toThrow();
+  });
+
+  test("reads a body from its own path, and turns a miss into a 404 the page can recognise", async () => {
+    const asked: string[] = [];
+    const fetcher = async (input: string) => {
+      asked.push(input);
+      return input === "/data/leaderboards.json" ? Response.json(LEADERBOARDS) : Response.json({ error: "Not found" }, { status: 404 });
+    };
+    expect(await loadBody("/data/leaderboards.json", fetcher)).toEqual(LEADERBOARDS);
+    const miss = await loadBody("/data/player/zzzzzzzzzz.json", fetcher).then(() => null, (error: ApiError) => error);
+    expect(miss).toEqual(new ApiError("Not found", 404));
+    expect(miss?.status).toBe(404);
+    expect(asked).toEqual(["/data/leaderboards.json", "/data/player/zzzzzzzzzz.json"]);
   });
 
   test("adapts a puzzle to the shared filter without losing unrated puzzles", () => {
@@ -857,12 +958,27 @@ describe("the page", () => {
       ["/day/275", "Day 275 is not on this site"],
       ["/puzzle/007", "No such page"],
       ["/days/", "No such page"],
+      ["/player/zzzzzzzzzz", "No such page"],
     ] as const) {
       const { root } = await openPage(`${ORIGIN}${path}`);
       expect(document.title).toBe(NOT_FOUND_TEXT.title);
       expect(root.textContent).toContain(sentence);
       expect(hrefs(find(root, "main"), "a")).toContain("/");
     }
+  });
+
+  test("carries Leaderboards and Players in the header, each marked on its own page", async () => {
+    const { root } = await openPage(`${ORIGIN}/leaderboards`);
+    expect(document.title).toBe("Leaderboards — Puzzle archive");
+    const nav = (label: string) => linksSaying(find(root, "nav.pdb-nav"), label)[0]!;
+    expect(nav("Leaderboards").getAttribute("href")).toBe("/leaderboards");
+    expect(nav("Leaderboards").getAttribute("aria-current")).toBe("page");
+
+    click(nav("Players"));
+    expect(document.title).toBe("Players — Puzzle archive");
+    expect(nav("Players").getAttribute("aria-current")).toBe("page");
+    expect(nav("Leaderboards").hasAttribute("aria-current")).toBe(false);
+    expect(find(root, "footer").textContent).toContain("Player names as the game shows them.");
   });
 
   test("carries the downloads, and how fresh the data is, on every page", async () => {
@@ -906,6 +1022,181 @@ describe("the page", () => {
       expect(window.getComputedStyle(window.document.body).overflow).toBe("auto");
     } finally {
       for (const sheet of sheets) sheet.remove();
+    }
+  });
+});
+
+describe("the bodies", () => {
+  test("draws what the index can at once, and the rest when the page's own body arrives", async () => {
+    const held = heldBodies();
+    const { root } = await openPage(`${ORIGIN}/day/274`, undefined, undefined, held.loader);
+
+    expect(held.asked).toEqual(["/data/day/274.json"]);
+    expect(root.querySelectorAll(".pdb-deal")).toHaveLength(4);
+    expect(root.querySelector(".pdb-day-boards")).toBeNull();
+    expect(root.textContent).toContain("Reading the records");
+
+    held.answer("/data/day/274.json", dayBody(274, ADA));
+    await settle();
+    expect(root.querySelector(".pdb-day-boards")).not.toBeNull();
+    expect(root.textContent).not.toContain("Reading the records");
+    expect(hrefs(find(root, ".pdb-day-boards"), ".pdb-row a")).toContain(`/player/${ADA.key}`);
+  });
+
+  test("asks for no body on a page the index draws alone, and keeps a body for the rest of the visit", async () => {
+    const asked: string[] = [];
+    const counting: BodyLoader = (path) => {
+      asked.push(path);
+      return serverBodies(path);
+    };
+    const { root } = await openPage(`${ORIGIN}/players`, undefined, undefined, counting);
+    expect(asked).toEqual([]);
+    expect(hrefs(root, "a.pdb-player")).toEqual([`/player/${ADA.key}`]);
+
+    click(find(root, "a.pdb-player"));
+    await settle();
+    expect(document.title).toBe("ada — Puzzle archive");
+    expect(root.textContent).toContain("Puzzles cleared");
+    window.history.back();
+    await settle();
+    window.history.forward();
+    await settle();
+    expect(asked).toEqual([`/data/player/${ADA.key}.json`]);
+  });
+
+  test("drops a body that arrives after the reader has moved on", async () => {
+    const held = heldBodies();
+    const { root } = await openPage(`${ORIGIN}/day/274`, undefined, undefined, held.loader);
+    click(find(root, '.pdb-pager a[href="/day/273"]'));
+    held.answer("/data/day/273.json", dayBody(273, { key: ADA.key, name: "on time" }));
+    held.answer("/data/day/274.json", dayBody(274, { key: ADA.key, name: "too late" }));
+    await settle();
+
+    expect(find(root, "h1").textContent).toBe("Day 273");
+    expect(root.textContent).toContain("on time");
+    expect(root.textContent).not.toContain("too late");
+  });
+
+  /**
+   * The answers above that can hurt: a stale miss would replace the page now on
+   * screen with "No such page", and a stale failure would put a "Couldn't load"
+   * note on it, though nothing the reader is looking at failed. A stale success
+   * only fills a slot that is no longer in the document, so it cannot show
+   * whether the guard holds. The miss can, on screen; the failure's note goes
+   * to that same detached slot, so it shows in the console it reports to.
+   */
+  test("drops a miss that arrives after the reader has moved on", async () => {
+    const held = heldBodies();
+    const { root } = await openPage(`${ORIGIN}/day/274`, undefined, undefined, held.loader);
+    click(find(root, '.pdb-pager a[href="/day/273"]'));
+    held.answer("/data/day/273.json", dayBody(273, { key: ADA.key, name: "on time" }));
+    held.fail("/data/day/274.json", new ApiError("Not found", 404));
+    await settle();
+
+    expect(find(root, "h1").textContent).toBe("Day 273");
+    expect(document.title).not.toBe(NOT_FOUND_TEXT.title);
+    expect(root.querySelector(".pdb-day-boards")).not.toBeNull();
+    expect(root.textContent).toContain("on time");
+  });
+
+  test("drops a failure that arrives after the reader has moved on", async () => {
+    const error = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const held = heldBodies();
+      const { root } = await openPage(`${ORIGIN}/day/274`, undefined, undefined, held.loader);
+      click(find(root, '.pdb-pager a[href="/day/273"]'));
+      held.answer("/data/day/273.json", dayBody(273, { key: ADA.key, name: "on time" }));
+      held.fail("/data/day/274.json", new ApiError("Could not reach the archive.", 0));
+      await settle();
+
+      expect(find(root, "h1").textContent).toBe("Day 273");
+      expect(root.textContent).toContain("on time");
+      expect(root.textContent).not.toContain("Couldn't load this part of the page.");
+      // The note would land in the old view's slot, out of the document, so
+      // what a missing guard leaks is the report: an operator reading the
+      // console would chase a failure no reader saw.
+      expect(error).not.toHaveBeenCalled();
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  test("shows the missing page when the body is missing, as the server would have", async () => {
+    const held = heldBodies();
+    const { root } = await openPage(`${ORIGIN}/player/${ADA.key}`, undefined, undefined, held.loader);
+    expect(document.title).toBe("ada — Puzzle archive");
+
+    held.fail(`/data/player/${ADA.key}.json`, new ApiError("Not found", 404));
+    await settle();
+    expect(document.title).toBe(NOT_FOUND_TEXT.title);
+    expect(find(root, "h1").textContent).toBe("No such page");
+  });
+
+  test("says so, and offers another try, when a body cannot be loaded", async () => {
+    const error = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const held = heldBodies();
+      const { root } = await openPage(`${ORIGIN}/leaderboards`, undefined, undefined, held.loader);
+      held.fail("/data/leaderboards.json", new ApiError("Could not reach the archive.", 0));
+      await settle();
+      expect(root.textContent).toContain("Couldn't load this part of the page.");
+      expect(String(error.mock.calls[0]?.[0])).toStartWith("[puzzledb]");
+
+      buttonSaying(root, "Try again").click();
+      expect(held.asked).toEqual(["/data/leaderboards.json", "/data/leaderboards.json"]);
+      held.answer("/data/leaderboards.json", LEADERBOARDS);
+      await settle();
+      expect(root.querySelectorAll(".pdb-board-card")).toHaveLength(6);
+
+      // A body that is not the body asked for fails the same way.
+      const odd = await openPage(`${ORIGIN}/leaderboards`, undefined, undefined, async () => ({ builtAt: BUILT }));
+      expect(odd.root.textContent).toContain("Couldn't load this part of the page.");
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  test("reads the server from the address, and writes a chip the reader picks back into it", async () => {
+    const { root, clock, writes } = await openOnClock(`${ORIGIN}/leaderboards?server=${CLUB.key}`);
+    const rush = () => [...root.querySelectorAll(".pdb-board-card")][0]!;
+    expect(find(rush(), '[aria-pressed="true"]').textContent).toBe("Club One");
+    expect(rush().textContent).toContain("a player");
+
+    buttonSaying(rush(), "All servers").click();
+    clock.advance(QUERY_WRITE_MS);
+    expect(writes).toEqual(["replaceState /leaderboards"]);
+    expect(rush().textContent).toContain("ada");
+
+    buttonSaying(rush(), "Club One").click();
+    clock.advance(QUERY_WRITE_MS);
+    expect(writes.at(-1)).toBe(`replaceState /leaderboards?server=${CLUB.key}`);
+
+    // A key the index does not know is every server.
+    const { root: junk } = await openPage(`${ORIGIN}/leaderboards?server=nosuchkey2`);
+    expect(find(junk, '.pdb-board-card [aria-pressed="true"]').textContent).toBe("All servers");
+  });
+
+  test("adds how the puzzle went and its players' lines to a puzzle's page", async () => {
+    const { root } = await openPage(`${ORIGIN}/puzzle/4`);
+    expect(root.querySelector(".pdb-rail .pdb-stats")).not.toBeNull();
+    buttonSaying(root, "Show the answers").click();
+    expect([...root.querySelectorAll(".pdb-answer__chips button")].map((chip) => chip.textContent)).toEqual([
+      "Maker's answer",
+      "Line 1 · 4 atk · 1p",
+    ]);
+  });
+
+  test("scrolls to the answers for #lines and leaves them shut", async () => {
+    const scrolled: string[] = [];
+    const scroll = spyOn(window.HTMLElement.prototype, "scrollIntoView").mockImplementation(function (this: HTMLElement) {
+      scrolled.push(this.id);
+    });
+    try {
+      const { root } = await openPage(`${ORIGIN}/puzzle/4#lines`);
+      expect(scrolled).toEqual(["lines"]);
+      expect(root.querySelector(".replay")).toBeNull();
+    } finally {
+      scroll.mockRestore();
     }
   });
 });

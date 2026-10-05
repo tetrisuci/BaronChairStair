@@ -12,7 +12,10 @@
 
 import { describe, expect, test } from "bun:test";
 import { dayNumber } from "../shared/daily";
+import { PUBLIC_KEY_PATTERN } from "../shared/site";
 import {
+  ALL_SERVERS,
+  bodyPathFor,
   dateOfDay,
   dayLabel,
   DESCRIPTION_LIMIT,
@@ -24,10 +27,15 @@ import {
   SITE_NAME,
   UNAVAILABLE_TEXT,
   type PageRoute,
+  STANDING_BOARDS,
   type SiteDay,
   type SiteLookup,
+  type SitePlayerEntry,
   type SitePuzzle,
 } from "../puzzledb/wire";
+
+/** A key of the shape the game draws; the wire only ever pattern-matches it. */
+const KEY = "k7m2p9xq4w";
 
 const LA = "America/Los_Angeles";
 
@@ -54,10 +62,19 @@ function sitePuzzle(over: Partial<SitePuzzle> = {}): SitePuzzle {
   };
 }
 
-function lookupOf(puzzles: readonly SitePuzzle[], days: readonly SiteDay[] = []): SiteLookup {
+function lookupOf(
+  puzzles: readonly SitePuzzle[],
+  days: readonly SiteDay[] = [],
+  players: readonly SitePlayerEntry[] = [],
+): SiteLookup {
   const byId = new Map(puzzles.map((puzzle) => [puzzle.id, puzzle]));
   const byDay = new Map(days.map((day) => [day.day, day]));
-  return { puzzle: (id) => byId.get(id), day: (day) => byDay.get(day) };
+  const byKey = new Map(players.map((player) => [player.key, player]));
+  return { puzzle: (id) => byId.get(id), day: (day) => byDay.get(day), player: (key) => byKey.get(key) };
+}
+
+function sitePlayer(over: Partial<SitePlayerEntry> = {}): SitePlayerEntry {
+  return { key: KEY, name: "ada", daysSolved: 41, bestStreak: 21, ...over };
 }
 
 const NOTHING = lookupOf([]);
@@ -69,6 +86,51 @@ function descriptionOf(puzzle: SitePuzzle): string {
 }
 
 describe("the page routes", () => {
+  test("reads /leaderboards, /players and /player/<key>", () => {
+    expect(parsePage("/leaderboards")).toEqual({ kind: "leaderboards" });
+    expect(parsePage("/players")).toEqual({ kind: "players" });
+    expect(parsePage(`/player/${KEY}`)).toEqual({ kind: "player", key: KEY });
+    expect(parsePage("/player/23456789ab")).toEqual({ kind: "player", key: "23456789ab" });
+  });
+
+  test("reads no player path that is not exactly a public key", () => {
+    // The page's path pattern and the game's key pattern are one rule: a path
+    // the site routes as a player must be one the game could have handed out.
+    const strays = [
+      "/player",
+      "/player/",
+      `/player/${KEY}/`,
+      `/player/${KEY.toUpperCase()}`,
+      "/player/0123456789",
+      "/player/abcdefghjl",
+      "/player/23456789a",
+      "/player/23456789abc",
+      "/player/123456789012345678",
+      "/player/guest",
+      `/Player/${KEY}`,
+      `/players/${KEY}`,
+      "/leaderboards/",
+      "/Leaderboards",
+      "/players/",
+      "/data/leaderboards.json",
+    ];
+
+    expect(strays.filter((path) => parsePage(path) !== null)).toEqual([]);
+    expect(PUBLIC_KEY_PATTERN.test(KEY)).toBe(true);
+  });
+
+  test("routes a player path exactly when its key is one the game's pattern admits", () => {
+    // The path pattern is written out in `wire.ts` rather than built from
+    // `PUBLIC_KEY_PATTERN`, so the two are held together here, character by character.
+    const disagree: string[] = [];
+    for (let code = 0x20; code < 0x7f; code++) {
+      const key = String.fromCharCode(code).repeat(10);
+      if ((parsePage(`/player/${key}`) !== null) !== PUBLIC_KEY_PATTERN.test(key)) disagree.push(key);
+    }
+
+    expect(disagree).toEqual([]);
+  });
+
   test("reads /, /days, /puzzle/N and /day/N", () => {
     expect(parsePage("/")).toEqual({ kind: "browse" });
     expect(parsePage("/days")).toEqual({ kind: "days" });
@@ -122,10 +184,13 @@ describe("the page routes", () => {
       { kind: "puzzle", id: 1 },
       { kind: "puzzle", id: 100000 },
       { kind: "day", day: 274 },
+      { kind: "leaderboards" },
+      { kind: "players" },
+      { kind: "player", key: KEY },
     ];
 
     for (const route of routes) expect(parsePage(pathOf(route))).toEqual(route);
-    for (const path of ["/", "/days", "/puzzle/42", "/day/251"]) {
+    for (const path of ["/", "/days", "/puzzle/42", "/day/251", "/leaderboards", "/players", `/player/${KEY}`]) {
       expect(pathOf(parsePage(path)!)).toBe(path);
     }
   });
@@ -326,6 +391,93 @@ describe("page text", () => {
 
   test("names the site and the schema the download carries", () => {
     expect(SITE_NAME).toBe("Tetris at UCI puzzle archive");
-    expect(SCHEMA_VERSION).toBe(1);
+    // 2 is the schema with player data in it: boards, standings, stats, lines.
+    expect(SCHEMA_VERSION).toBe(2);
+  });
+
+  test("names the leaderboards and players pages, which exist whatever the data holds", () => {
+    expect(pageText({ kind: "leaderboards" }, NOTHING)).toEqual({
+      title: "Leaderboards — Puzzle archive",
+      description:
+        "Each Discord server's daily and rush boards from the Tetris at UCI daily, " +
+        "and the all-time boards, for every finished day.",
+    });
+    expect(pageText({ kind: "players" }, NOTHING)).toEqual({
+      title: "Players — Puzzle archive",
+      description:
+        "The players of the Tetris at UCI daily, by the name the game shows, " +
+        "each with a page of their finished days.",
+    });
+  });
+
+  test("names a player's page by their name, days solved and best streak", () => {
+    const lookup = lookupOf([], [], [sitePlayer()]);
+
+    expect(pageText({ kind: "player", key: KEY }, lookup)).toEqual({
+      title: "ada — Puzzle archive",
+      description: "ada's finished days in the Tetris at UCI daily: 41 days solved, best streak 21.",
+    });
+  });
+
+  test("says one day in the singular, and keeps a name on one line", () => {
+    const lookup = lookupOf([], [], [sitePlayer({ name: "  baron\nchair ", daysSolved: 1, bestStreak: 1 })]);
+
+    expect(pageText({ kind: "player", key: KEY }, lookup)).toEqual({
+      title: "baron chair — Puzzle archive",
+      description: "baron chair's finished days in the Tetris at UCI daily: 1 day solved, best streak 1.",
+    });
+  });
+
+  test("answers null for any key that is not a listed player, which is what makes the shared 404", () => {
+    // A hidden player, a random key and a key from before a hide are all just
+    // absent from the lookup, and so missing in exactly the same way.
+    const lookup = lookupOf([], [], [sitePlayer()]);
+
+    expect(pageText({ kind: "player", key: "23456789ab" }, lookup)).toBeNull();
+    expect(pageText({ kind: "player", key: KEY }, NOTHING)).toBeNull();
+  });
+
+  test("clips a long name's description in code points", () => {
+    const lookup = lookupOf([], [], [sitePlayer({ name: "🧩".repeat(300) })]);
+    const description = pageText({ kind: "player", key: KEY }, lookup)?.description ?? "";
+
+    expect(Array.from(description)).toHaveLength(DESCRIPTION_LIMIT);
+    expect(description.endsWith("…")).toBe(true);
+  });
+});
+
+describe("the data a page fetches beside the index", () => {
+  test("names one body per page that has one, under /data/", () => {
+    expect(bodyPathFor({ kind: "day", day: 274 })).toBe("/data/day/274.json");
+    expect(bodyPathFor({ kind: "player", key: KEY })).toBe(`/data/player/${KEY}.json`);
+    expect(bodyPathFor({ kind: "puzzle", id: 42 })).toBe("/data/puzzle/42.json");
+    expect(bodyPathFor({ kind: "leaderboards" })).toBe("/data/leaderboards.json");
+  });
+
+  test("names none for the pages the index alone can draw", () => {
+    expect(bodyPathFor({ kind: "browse" })).toBeNull();
+    expect(bodyPathFor({ kind: "days" })).toBeNull();
+    expect(bodyPathFor({ kind: "players" })).toBeNull();
+  });
+
+  test("puts each body at its page's own path, under /data and ending .json", () => {
+    // A body's path is its page's path with a prefix and a suffix, so a body
+    // can exist only where `parsePage` already said a page might.
+    for (const path of ["/day/274", "/puzzle/42", `/player/${KEY}`, "/leaderboards"]) {
+      const route = parsePage(path)!;
+      expect(bodyPathFor(route)).toBe(`/data${path}.json`);
+    }
+  });
+});
+
+describe("the scopes and boards the public rows are keyed by", () => {
+  test("calls every server's board 'all', which no server's key can collide with", () => {
+    expect(ALL_SERVERS).toBe("all");
+    expect(PUBLIC_KEY_PATTERN.test(ALL_SERVERS)).toBe(false);
+  });
+
+  test("lists the all-time boards in the order the leaderboards page shows them", () => {
+    expect(STANDING_BOARDS).toEqual(["rush", "dailies", "streak", "best_streak", "cleared", "discoveries"]);
+    expect(Object.isFrozen(STANDING_BOARDS)).toBe(true);
   });
 });

@@ -5,10 +5,19 @@
  * and expects an OAuth handshake. Outside it — the local dev server — there is
  * no handshake, so the server hands out a guest identity instead. Everything
  * downstream sees the same shape either way.
+ *
+ * That includes leaving: `openLink` is how anything in the game opens a page
+ * outside it. Inside Discord the iframe may not navigate away or open a window
+ * of its own, so it asks the SDK, which shows Discord's "you are leaving"
+ * prompt; on the local dev server a new tab does the same job. It is decided
+ * here because this is the one place that knows which of the two it is talking
+ * to — whether the player is a guest says nothing about it, since Discord can
+ * hand out a guest session too.
  */
 
 import { DiscordSDK } from "@discord/embedded-app-sdk";
 import { Api, type PlayerProfile } from "./api";
+import { type OpenLink, externalLinkOpener } from "./ui/site-link";
 
 /** Discord serves the activity from its own origin and proxies through here. */
 const PROXY_PREFIX = "/.proxy";
@@ -19,6 +28,8 @@ export interface Connection {
   readonly guildId: string | null;
   readonly inDiscord: boolean;
   readonly guest: boolean;
+  /** Opens an absolute URL outside the activity, the way this host allows. */
+  readonly openLink: OpenLink;
 }
 
 /**
@@ -84,6 +95,7 @@ async function connectToDiscord(api: Api, clientId: string): Promise<Connection>
     guildId: sdk.guildId,
     inDiscord: true,
     guest: session.guest,
+    openLink: externalLinkOpener(sdk.commands),
   };
 }
 
@@ -96,6 +108,7 @@ async function connectAsGuest(api: Api): Promise<Connection> {
     guildId: null,
     inDiscord: false,
     guest: true,
+    openLink: externalLinkOpener(null),
   };
 }
 

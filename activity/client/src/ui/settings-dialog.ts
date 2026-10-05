@@ -5,6 +5,12 @@
  * `settings-rows.ts`. Changes are reported as they happen so the values save
  * immediately, and once more on close, because a slider fires continuously
  * while it is dragged and restarting a run on every pixel would be absurd.
+ *
+ * One section is not a setting at all: On the web, the "Hide me on
+ * db.tetrisatuci.org" row. It is stored on the server and built by the caller,
+ * and the sheet only gives it a place and tells it when the sheet opens. That
+ * is deliberate — Reset re-renders the handling and the controls from
+ * defaults, and a row it could reach would be one Reset could un-hide.
  */
 
 import { type Handling, sanitizeHandling } from "@shared/tetris/handling";
@@ -19,6 +25,7 @@ import {
   sliderRow,
   toggleRow,
 } from "./settings-rows";
+import type { SiteVisibilityRow } from "./site-visibility-row";
 
 export interface SettingsDialogOptions {
   readonly input: InputRouter;
@@ -30,6 +37,11 @@ export interface SettingsDialogOptions {
    * to — belongs here rather than in `onChange`.
    */
   readonly onClose: (changed: { handling: boolean }) => void;
+  /**
+   * The On the web section, drawn above the sheet's foot. Optional so the
+   * sheet stands on its own; the app always passes one.
+   */
+  readonly web?: SiteVisibilityRow;
 }
 
 export interface SettingsDialog {
@@ -47,6 +59,7 @@ interface SheetParts {
   readonly bindsBody: HTMLElement;
   readonly onClose: () => void;
   readonly onReset: () => void;
+  readonly web: HTMLElement | null;
 }
 
 function column(title: string, body: HTMLElement): HTMLElement {
@@ -78,6 +91,10 @@ function buildSheet(parts: SheetParts): HTMLElement {
         { class: "spec__cols" },
         column("Handling", parts.handlingBody),
         column("Controls", parts.bindsBody),
+        // Inside the scrolling columns rather than beside the foot: the head
+        // and foot are fixed bars, and a third fixed bar would take its height
+        // out of the columns on exactly the short screens that have none spare.
+        parts.web,
       ),
       el(
         "div",
@@ -149,6 +166,7 @@ export function createSettingsDialog(options: SettingsDialogOptions): SettingsDi
     bindsBody,
     onClose: close,
     onReset: () => options.onReset(),
+    web: options.web?.element ?? null,
   });
 
   return {
@@ -163,7 +181,14 @@ export function createSettingsDialog(options: SettingsDialogOptions): SettingsDi
       // re-stamping there would compare the defaults against themselves and
       // report no change — leaving the attempt running under the old handling
       // while the sheet claims otherwise.
-      if (!isOpen) openedWith = JSON.stringify(nextHandling);
+      //
+      // The same goes for the web row: it asks the server once per opening,
+      // not again on the reopen Reset causes, which would flash "…" over an
+      // answer that cannot have changed.
+      if (!isOpen) {
+        openedWith = JSON.stringify(nextHandling);
+        options.web?.refresh();
+      }
       isOpen = true;
       element.hidden = false;
       options.input.setGameInputEnabled(false);

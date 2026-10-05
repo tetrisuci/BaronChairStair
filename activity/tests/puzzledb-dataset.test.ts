@@ -46,6 +46,7 @@ import {
   NOW,
   PLANTED,
   PUBLISHED_ID,
+  SERVERS,
   TODAY,
   UNPUBLISHED_ID,
 } from "./puzzledb-fixture";
@@ -66,7 +67,16 @@ const CODED_COUNT = 134;
 /** The id `server/puzzles.ts` names: "fourtris mogs" in the file, "misplaced heart" in the archive. */
 const DRIFTED_ID = 8;
 
-const LISTING_COMMUNITY: Policy = { ...POLICY, publishCommunity: true };
+/**
+ * Community puzzles listed, and the fixture's quiet server on the hide list as
+ * the fixture's privacy tests always have it, so "Listed Quiet Club" stays one
+ * of the planted values a scan of this build must not find.
+ */
+const LISTING_COMMUNITY: Policy = {
+  ...POLICY,
+  publishCommunity: true,
+  hiddenServerKeys: new Set([SERVERS.quiet.key]),
+};
 
 const built: GameFixture[] = [];
 

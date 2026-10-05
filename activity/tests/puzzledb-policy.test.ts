@@ -1,5 +1,5 @@
 /**
- * The puzzle database's three decisions, and the two rules read off them.
+ * The puzzle database's decisions, and the rules read off them.
  *
  * The constants are the owner's, not the code's — `CLAUDE.md` lists them under
  * decisions that are not an implementer's to make — so nothing here pins their
@@ -8,14 +8,21 @@
  * off. Each rule is driven through a policy handed in, so the boundaries are
  * tested at the constants and not at numbers somebody would have to keep in
  * step with them.
+ *
+ * The server hide list is the one constant whose value is pinned — empty in
+ * the commit — because its entries are opaque keys nobody can check by eye. A
+ * mistyped key would hide nothing, silently, so every entry it ever holds must
+ * at least be shaped like a key.
  */
 
 import { describe, expect, test } from "bun:test";
 import { DAILY_TIERS, type DailyTier } from "../shared/daily";
 import { COMMUNITY_ID_BASE } from "../shared/puzzle";
+import { PUBLIC_KEY_PATTERN } from "../shared/site";
 import {
   FIRST_EXTREME_DAY,
   FIRST_TIERED_DAY,
+  HIDDEN_SERVER_KEYS,
   isWithheld,
   POLICY,
   PUBLISH_COMMUNITY_PUZZLES,
@@ -43,7 +50,7 @@ describe("the tiers a day shows", () => {
   });
 
   test("reads the days from the policy it is handed", () => {
-    const policy: Policy = { publishCommunity: false, firstTieredDay: 5, firstExtremeDay: 10 };
+    const policy: Policy = { ...POLICY, firstTieredDay: 5, firstExtremeDay: 10 };
 
     expect(tiersShownOn(4, policy)).toEqual([]);
     expect(tiersShownOn(5, policy)).toEqual(THREE);
@@ -75,12 +82,14 @@ describe("puzzles a player wrote", () => {
 });
 
 describe("the policy", () => {
-  test("is the three constants, in the order the box lived them", () => {
+  test("is the constants, in the order the box lived them", () => {
     expect(POLICY).toEqual({
       publishCommunity: PUBLISH_COMMUNITY_PUZZLES,
       firstTieredDay: FIRST_TIERED_DAY,
       firstExtremeDay: FIRST_EXTREME_DAY,
+      hiddenServerKeys: HIDDEN_SERVER_KEYS,
     });
+    expect(POLICY.hiddenServerKeys).toBe(HIDDEN_SERVER_KEYS);
     expect(FIRST_TIERED_DAY).toBeLessThan(FIRST_EXTREME_DAY);
   });
 
@@ -88,5 +97,21 @@ describe("the policy", () => {
     // A setting would be the wrong shape for this: turning community puzzles on
     // is a reviewed code change with a release note.
     expect(Object.isFrozen(POLICY)).toBe(true);
+  });
+});
+
+describe("the server hide list", () => {
+  test("is empty in the commit: listing a server is the owner's call", () => {
+    expect(HIDDEN_SERVER_KEYS.size).toBe(0);
+  });
+
+  test("holds only entries shaped like a key, since a mistyped one would hide nothing", () => {
+    for (const key of HIDDEN_SERVER_KEYS) expect(key).toMatch(PUBLIC_KEY_PATTERN);
+  });
+
+  test("cannot be added to at run time", () => {
+    expect(Object.isFrozen(HIDDEN_SERVER_KEYS)).toBe(true);
+    expect(() => (HIDDEN_SERVER_KEYS as Set<string>).add("qtcserver2")).toThrow();
+    expect(HIDDEN_SERVER_KEYS.size).toBe(0);
   });
 });

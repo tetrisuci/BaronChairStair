@@ -134,6 +134,33 @@ it once the activity is verified —
 [`puzzledb/DEPLOY.md`](puzzledb/DEPLOY.md), "After every activity deploy".
 Restarting it never touches the game.*
 
+### The site's player data (`beta 0.13`)
+
+The commit that carries `beta 0.13` in `../changelog.json` is the one that lets
+db.tetrisatuci.org publish leaderboards and a page per player, and it changes this
+half in three ways:
+
+- **A migration**, run by the restart above, before the server listens. It adds two
+  columns to `players` — `site_hidden` (a player's *Hide me on db.tetrisatuci.org*,
+  NULL until they choose) and `public_key` (the site's random name for them) — with a
+  unique index on the key, and two tables: `guilds` (each server's key, and its name
+  from the last sign-in there) and `site_facts` (the game's time zone, rewritten at
+  every start, which the site cuts finished days by). It gives every existing player
+  and every server that has filed a run a key. Everything is added and nothing is
+  dropped, so the older code still runs on the migrated database. **No new
+  environment variable.**
+- **Two routes**, `GET` and `PUT /api/site-visibility`: the setting's read and its
+  save, twenty saves a minute per caller.
+- **The page**: an *On the web* section in Settings, and links out to the site from
+  the leaderboards, your own profile and a solved puzzle's solutions. So `bun run
+  build` is part of this deploy, as always, and the bundle check below has a string
+  to look for.
+
+**The site goes up in the same sitting**, straight after this guide's verification:
+the game's new links point at pages only the new site has, and the bot must not
+restart while `beta 0.13` is unverified — the root [`../DEPLOY.md`](../DEPLOY.md)
+and [`puzzledb/DEPLOY.md`](puzzledb/DEPLOY.md), rule 2, have the gate.
+
 ### Rate limiting behind the proxy
 
 **If anything sits in front of this server — cloudflared, nginx, Caddy — put
@@ -281,6 +308,24 @@ loads, nothing errors, and the behaviour is simply the old one. It has happened 
 a player-reported fix was merged, the box was pulled and restarted, and players still
 saw the bug because `dist` had not been rebuilt.
 
+**For `beta 0.13`, the narrower check has its string**, and the migration has its own:
+
+```sh
+grep -l "Hide me on db.tetrisatuci.org" dist/assets/*.js    # a filename: the setting is in the bundle
+bun -e 'import {Database} from "bun:sqlite";
+        import {resolve} from "node:path";
+        const p = resolve(process.env.DATABASE_PATH ?? "data/daily.sqlite");
+        const db = new Database(p, {readonly: true});
+        console.log("players keyed:", db.query("SELECT COUNT(*) c FROM players WHERE public_key IS NULL").get().c === 0);
+        console.log("servers:      ", db.query("SELECT COUNT(*) servers, COUNT(name) named FROM guilds").get());
+        console.log("zone:         ", db.query("SELECT value FROM site_facts WHERE name = ?").get("time_zone")?.value);'
+```
+
+Expect `players keyed: true`, and the zone the start-up line names. Servers start
+with no names — a name is recorded when a player signs in from that server — so
+`named` grows as people open the activity. Counts only: never print `guild_id` or a
+player's `id`.
+
 **5. The review routes are switched on** (only if you set `REVIEW_SECRET`):
 
 ```sh
@@ -386,6 +431,12 @@ bun install && bun run build
 **Then restart the service.** `bun run build` rewrites `dist/` in place, so between
 that command and the restart the box is serving the old server against the rolled-back
 client. Do not stop after the build.
+
+Rolling back past the `beta 0.13` commit leaves its columns and tables in place, which
+the older code ignores. A player that code signs in for the first time gets no key,
+and the site treats a player with no key as hidden until this code is deployed again
+and keys them. Roll back the site with it, and check the note went too:
+[`puzzledb/DEPLOY.md`](puzzledb/DEPLOY.md), *Rolling back*.
 
 One thing to know: if you have already accepted a submission, the old code will
 not load it — it reads puzzles only from `data/puzzles.json` — so the archive

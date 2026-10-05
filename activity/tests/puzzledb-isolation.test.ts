@@ -119,7 +119,30 @@ const GAME_SERVER = [
   "solve-verdict",
   "public-routes",
   "static-routes",
+  // The game's half of the site's identity: it draws keys and writes the
+  // opt-out. The site reads what it wrote, from the database, and nothing else.
+  "site-identity",
+  "site-visibility-routes",
 ].map((name) => `server/${name}.ts`);
+
+/**
+ * What the page must never load from the game's client. `avatar.ts` because
+ * an avatar URL embeds the player's Discord id: the site shows nobody's.
+ */
+const PAGE_FORBIDDEN = [
+  "client/src/discord.ts",
+  "client/src/app.ts",
+  "client/src/main.ts",
+  "client/src/ui/builder-state.ts",
+  "client/src/ui/avatar.ts",
+];
+
+/**
+ * Rules the game and the site must apply identically, moved out of the game's
+ * modules so the site can import the very same code: the key alphabet and the
+ * guest's id, the streak arithmetic, and the clauses that say which lines count.
+ */
+const SHARED_WITH_GAME = ["shared/site.ts", "shared/streaks.ts", "server/discovery-sql.ts"];
 
 /** Under `shared/tetris/`, everything but the settings sanitiser is the engine. */
 function isEngine(file: string): boolean {
@@ -149,6 +172,8 @@ describe("what it loads", () => {
     const reached = [...files].map(fromActivity);
 
     expect(reached).toContain("server/config.ts");
+    // The game's writer of the site's keys, which the Store loads: forbidden, and reached.
+    expect(reached.filter((file) => GAME_SERVER.includes(file))).toContain("server/site-identity.ts");
     expect(reached.some(isEngine)).toBe(true);
     // The engine's library, by its subpath, is one of the packages the server's allowlist refuses.
     expect([...packages].filter((name) => !isServerPackage(name))).toContain("@haelp/teto/engine");
@@ -157,9 +182,8 @@ describe("what it loads", () => {
   test("the page's runtime imports never reach the game's page entry, the builder or the engine", () => {
     const { files, packages } = runtimeClosure(PAGE);
     const reached = [...files].map(fromActivity);
-    const forbidden = ["client/src/discord.ts", "client/src/app.ts", "client/src/main.ts", "client/src/ui/builder-state.ts"];
 
-    expect(reached.filter((file) => forbidden.includes(file))).toEqual([]);
+    expect(reached.filter((file) => PAGE_FORBIDDEN.includes(file))).toEqual([]);
     expect(reached.filter((file) => file.startsWith("shared/tetris/"))).toEqual([]);
     expect([...packages]).toEqual([]);
     expect(reached).toContain("puzzledb/wire.ts");
@@ -169,6 +193,18 @@ describe("what it loads", () => {
     const reached = [...runtimeClosure(join(ACTIVITY, "client/src/main.ts")).files].map(fromActivity);
 
     expect(reached).toContain("client/src/app.ts");
+    expect(reached.filter((file) => PAGE_FORBIDDEN.includes(file))).toContain("client/src/ui/avatar.ts");
+  });
+
+  test("the rules it shares with the game load nothing of the game's", () => {
+    for (const shared of SHARED_WITH_GAME) {
+      const { files, packages } = runtimeClosure(join(ACTIVITY, shared));
+      const reached = [...files].map(fromActivity);
+
+      expect(GAME_SERVER).not.toContain(shared);
+      expect(reached.filter((file) => GAME_SERVER.includes(file) || isEngine(file))).toEqual([]);
+      expect([...packages]).toEqual([]);
+    }
   });
 });
 

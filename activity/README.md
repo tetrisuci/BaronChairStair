@@ -35,7 +35,7 @@ day's target.
 | `server/` | Hono + Bun: OAuth exchange, daily puzzle, puzzle rush, run verification, SQLite |
 | `client/` | The activity itself — canvas playfield and interface |
 | `client/public/fonts/` | Archivo and DM Mono, self-hosted (see below) |
-| `puzzledb/` | db.tetrisatuci.org: a read-only public view of the archive, as its own process and build — see [its README](puzzledb/README.md) |
+| `puzzledb/` | db.tetrisatuci.org: a read-only public view of the archive and of how every finished day went, as its own process and build — see [its README](puzzledb/README.md) |
 
 ## Running it locally
 
@@ -366,6 +366,58 @@ forgiveness would congratulate a server on a run it had just broken.
 The board it returns is capped at a hundred rather than the interactive
 twenty-five, and carries a `total`. Misses sort last, so the smaller cap would
 have quietly deleted exactly the people a recap exists to tease.
+
+## db.tetrisatuci.org, and what the game tells it
+
+The puzzle database site ([`puzzledb/`](puzzledb/README.md)) publishes finished
+days' boards, a page per player and the lines players have found, by reading this
+server's database read-only. It cannot ask the game anything, so the game writes
+down the few things the site needs and cannot work out — in `server/site-identity.ts`,
+run from the `Store`'s constructor:
+
+- **A key for every player and every server**: ten random characters
+  (`players.public_key`, `guilds.public_key`), drawn once and never changed. The site
+  addresses a player's page by it and never by a Discord id. The game draws them,
+  rather than the site deriving them, so that the site holds no secret, and so that
+  the game can link a player to their own page.
+- **Each server's name**, as Discord gave it at the last sign-in from there. The
+  session route already asks Discord whether the player is in the server they
+  launched from, and the answer carries the name, so recording it costs no new
+  permission. A failure to record it is logged as `[site-identity]` and never stops a
+  sign-in; the session still holds only the server's id. The name is cleaned of
+  control and direction-override characters and clipped to 100 code points.
+- **The game's time zone**, `site_facts('time_zone')`, rewritten at every start:
+  the site cuts some rows by a midnight, and must take the game's.
+- **Whether a player wants to be on the site at all.**
+
+### Hide me on db.tetrisatuci.org
+
+A switch in Settings, under *On the web*. On, the site shows the player's results as
+"a player" and gives them no page; the game's own boards are unchanged. It is
+`players.site_hidden` — NULL never chose, 0 shown, 1 hidden — and deliberately not a
+field of `preferences`: `PUT /api/prefs` rebuilds the stored payload from the fields
+it knows, the local copy wins on load, and Reset replaces every setting, and any one
+of those would quietly un-hide somebody. So Reset never touches it, and the row in
+the sheet is never optimistic: it shows `…` until the server answers, and repaints
+only from the server's answer to a save.
+
+| Route | |
+|---|---|
+| `GET /api/site-visibility` | `{ hidden, playerKey, hasFinishedDay, serverKey }`. Writes nothing — the site rebuilds on any commit, so a read that wrote would rebuild it every time somebody opened Settings |
+| `PUT /api/site-visibility` | Body `{ hidden: true \| false }`; answers the same shape, read back after the write. `400` for anything but a boolean, `403` for a guest, who has no name on the site; twenty saves a minute per caller |
+
+`playerKey` is the player's key only when the site would show them, so it is what
+the game's profile links with: `/player/<key>` once they have something on a finished
+day (`hasFinishedDay`), `/players` before that, and no link at all while hidden.
+`serverKey` is the session's server, for the leaderboards' link. The site picks a
+change up within about a minute.
+
+The game links out from three places — inside Discord through its own
+`openExternalLink`, which asks before leaving, and in a browser as a new tab: the
+leaderboards (*See more on db.tetrisatuci.org*, to that server's boards), your own
+profile (*Your page on db.tetrisatuci.org*), and a solved puzzle's solutions (*Every
+line on db.tetrisatuci.org*, never for a puzzle a player wrote, which the site does
+not list).
 
 ## 1v1
 
@@ -836,6 +888,8 @@ Fully rebindable, with TETR.IO handling: DAS, ARR, DCD, SDF, safe lock, DAS
 cancel, 20G movement, and initial rotation/hold. Lock delay is absent rather
 than configurable — see above. Settings are stored locally and
 mirrored to the player's Discord account, so they follow them to another device.
+One switch is not a setting in that sense: *Hide me on db.tetrisatuci.org* lives on
+the server alone, and Reset does not touch it (see above).
 
 **Timings are in milliseconds**, matching the club's own board and every
 handling guide worth reading. The engine works in 60Hz frames, and the

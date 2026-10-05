@@ -439,3 +439,233 @@ body {
 }
 .pips__dot--on { background: var(--ink); }
 .pips__plus { font-family: var(--mono); font-size: 10px; margin-left: 2px; }
+
+/* ── Boards: rows, ranks and "a player" ───────────────────────────────────── */
+
+/*
+ * Rank, name, detail, score: four cells on every board, so a day board's marks,
+ * a standing's second number and a bare score all line up in one column. The
+ * game's `.board-list__row` is three columns; this file loads after
+ * overlays.css, so the single class below wins by order.
+ */
+.pdb-row {
+  grid-template-columns: 30px minmax(0, 1fr) auto auto;
+  gap: 10px;
+  align-items: center;
+  padding: 5px 8px;
+}
+
+.pdb-row:nth-child(odd) { background: var(--cream-shade); }
+
+.pdb-row--quiet .board-list__score { color: var(--ink-soft); }
+
+.pdb .pdb-row__name a { text-decoration: none; }
+.pdb .pdb-row__name a:hover { text-decoration: underline; }
+
+.pdb-row__detail {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-faint);
+  white-space: nowrap;
+  justify-self: end;
+}
+
+/* A player who chose to hide: present, ranked, and plainly not a name. */
+.pdb-anon {
+  font-style: italic;
+  font-weight: 500;
+  color: var(--ink-soft);
+}
+
+.pdb-rank {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The podium as minos: O, I and L, the club's own colours, drawn like the block mark's squares. */
+.pdb-rank--1::before,
+.pdb-rank--2::before,
+.pdb-rank--3::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border: 1px solid var(--ink);
+  border-radius: 1px;
+  flex: none;
+}
+
+.pdb-rank--1 { color: var(--ink); font-weight: 700; }
+.pdb-rank--1::before { background: var(--mino-o); }
+.pdb-rank--2::before { background: var(--mino-i); }
+.pdb-rank--3::before { background: var(--mino-l); }
+
+/* A page has room: the game's 200px scroller would hide most of a day's board. */
+.pdb-board-list--full { max-height: none; overflow: visible; }
+
+.pdb-board-empty { margin: 0; padding: 6px 0; }
+
+.pdb-capped { display: grid; gap: 8px; }
+
+/* ── Board cards and their grid ───────────────────────────────────────────── */
+
+.pdb-board-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr));
+  gap: var(--gutter);
+  align-items: start;
+}
+
+.pdb-board-card,
+.pdb-latest-card {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+  min-width: 0;
+}
+
+.pdb-board-scope { margin: 0; }
+
+.pdb .pdb-latest-card__link {
+  font-family: var(--display);
+  font-weight: 800;
+  font-stretch: 108%;
+  font-size: 15px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.pdb-chips { margin: 0; }
+
+.pdb-stack--tight { gap: 8px; }
+
+.pdb-subtitle {
+  margin: 0;
+  font-size: clamp(17px, 2.4vw, 22px);
+}
+
+.pdb-day-boards { margin-top: 6px; }
+
+/* A day's cards carry marks beside each name, so they are given a little more width than the all-time ones. */
+.pdb-board-grid--day { grid-template-columns: repeat(auto-fill, minmax(min(100%, 360px), 1fr)); }
+
+/*
+ * Each tier is a grid of its own (the game's `.boards__tier`), so an `auto`
+ * column sizes per row and the four bars come out four lengths. Fixed side
+ * columns keep the bars one length, so the eye compares their fills.
+ */
+.pdb-field .boards__tier { grid-template-columns: 70px minmax(60px, 1fr) 64px 108px; }
+.pdb-field .boards__tier-you { justify-self: end; }
+
+/* A slot the body has not filled is no gap in the rail. */
+.pdb-slot:empty { display: none; }
+
+.pdb-loading { padding: 8px 0; }
+
+.pdb-failed {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.pdb-failed .note { margin: 0; }
+
+/* ── A puzzle's stats and answers ─────────────────────────────────────────── */
+
+.pdb-rate { display: grid; gap: 4px; padding-bottom: 4px; border-bottom: 1px dotted var(--ink-line); }
+.pdb-rate .stat { border-bottom: none; }
+
+.pdb-stat-fastest { overflow-wrap: anywhere; }
+.pdb .pdb-stat-fastest a { text-decoration: none; }
+.pdb .pdb-stat-fastest a:hover { text-decoration: underline; }
+
+/* Chips carry names a person typed; set in sentence case they stay short enough to sit on one row. */
+.pdb-answer__chips .btn,
+.pdb-chips .btn { text-transform: none; letter-spacing: 0; }
+
+/* ── Players ──────────────────────────────────────────────────────────────── */
+
+.pdb-player-filter { max-width: 320px; }
+
+.pdb-player-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 200px), 1fr));
+  gap: 10px;
+}
+
+.pdb .pdb-player {
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px;
+  border: var(--edge) solid var(--ink);
+  border-radius: var(--radius);
+  background: var(--cream);
+  box-shadow: 3px 3px 0 var(--ink);
+  text-decoration: none;
+  min-width: 0;
+  transition: transform 70ms ease, box-shadow 70ms ease, background-color 90ms ease;
+}
+
+.pdb .pdb-player:hover { background: var(--sun); }
+
+.pdb .pdb-player:active {
+  transform: translate(3px, 3px);
+  box-shadow: 0 0 0 var(--ink);
+}
+
+.pdb-player__name {
+  font-weight: 700;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
+.pdb-player__meta {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-soft);
+}
+
+/* ── A player's days ──────────────────────────────────────────────────────── */
+
+.pdb-run-days {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+}
+
+.pdb-run-day {
+  display: grid;
+  gap: 4px;
+  padding: 8px 0;
+  border-bottom: 1px dotted var(--ink-line);
+  font-family: var(--mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.pdb-run-day:last-child { border-bottom: none; }
+
+.pdb-runs {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  gap: 4px 14px;
+  flex-wrap: wrap;
+}
+
+.pdb-run--missed { color: var(--ink-soft); }
+
+.pdb-foot {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px 16px;
+  flex-wrap: wrap;
+}

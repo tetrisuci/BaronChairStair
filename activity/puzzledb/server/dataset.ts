@@ -1,5 +1,6 @@
 /**
- * One build of the puzzle database: what players are dealt, and the days that are over.
+ * One build of the puzzle database: what players are dealt, the days that are
+ * over, and how they went.
  *
  * **What players are dealt, not the published record.** The list is the
  * game's own: `PuzzleArchive.load` over the same six inputs the game's next
@@ -23,8 +24,14 @@
  * number. Each puzzle is shown as it is today, which may not be what a day
  * dealt if somebody has edited it since.
  *
+ * **How they went.** The boards, the all-time standings, each puzzle's stats
+ * and the players' lines are `dataset-players.ts`'s rows, cut to the same
+ * days and the same listed puzzles as the rest, so a board never names a day
+ * the history leaves out or a puzzle the list withholds.
+ *
  * The rows go to `public-db.ts`, and everything this returns is read back from
- * there. The result is frozen and swapped whole by the refresher.
+ * there — the index, the download and every `/data/…` body (`bodies.ts`). The
+ * result is frozen and swapped whole by the refresher.
  */
 
 import { trackedAnswers } from "../../server/archive-solutions";
@@ -32,7 +39,9 @@ import { PuzzleArchive, shapeKey } from "../../server/puzzles";
 import { dailyTierOf } from "../../shared/daily";
 import { COMMUNITY_ID_BASE, pieceBudget, type Puzzle } from "../../shared/puzzle";
 import { dateOfDay, SCHEMA_VERSION } from "../wire";
+import { buildBodies } from "./bodies";
 import { type TrackedCodes, trackedCodes } from "./codes";
+import { playerRows } from "./dataset-players";
 import { isWithheld, POLICY, tiersShownOn } from "./policy";
 import { type AboutRow, type DayRow, type PuzzleRow, writePublicDatabase } from "./public-db";
 import type { Dataset, DatasetSources, DayPin, GameSnapshot, Policy } from "./types";
@@ -65,13 +74,20 @@ export function buildDataset(
     .map((puzzle) => puzzleRow(puzzle, codes));
   const days = dayRows(snapshot.pins, policy);
   const about = aboutRows(builtAt, policy, days);
-  const { sqlite, data } = writePublicDatabase({ puzzles, days, about });
+  const players = playerRows(snapshot.players, {
+    policy,
+    days: new Set(days.map(([day]) => day)),
+    listed: new Set(puzzles.map(([id]) => id)),
+  });
+  const written = writePublicDatabase({ puzzles, days, about, players });
+  const { sqlite, data } = written;
   return Object.freeze({
     json: new TextEncoder().encode(JSON.stringify(data)),
     sqlite,
     data,
     puzzleById: new Map(data.puzzles.map((puzzle) => [puzzle.id, puzzle])),
     dayByNumber: new Map(data.days.map((day) => [day.day, day])),
+    bodies: buildBodies(data, written.players),
     builtAt,
   });
 }

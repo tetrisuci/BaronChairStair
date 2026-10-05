@@ -1,6 +1,6 @@
 /**
- * One puzzle: its board, what it asks, its maker's answer behind a button, and
- * the finished days that dealt it.
+ * One puzzle: its board, what it asks, its answers behind a button, how it
+ * went on the finished days that dealt it, and those days.
  *
  * **The answer is public and still hidden.** The club decided answers are
  * public (`server/public-routes.ts`), so this is not secrecy: anybody can read
@@ -13,6 +13,13 @@
  * already draws the first placement in place and the second as a ghost, which
  * on a page like this is the answer's first two moves. So the bare board is a
  * player over no steps at all, and the real one is built only on the press.
+ *
+ * **Players' lines join the maker's answer behind the same press.** They
+ * arrive with the page's body, after the board is already drawn, as chips over
+ * the panel's one replay (`lines.ts`). A line is as much a spoiler as the
+ * maker's answer, so it is no easier to open; the page's `#lines` anchor
+ * scrolls to the panel and leaves it shut. Beta 0.13 told players that the
+ * site now shows these, and why that undoes beta 0.3's promise there.
  *
  * **Required clears are never shown.** The game shows them only under
  * `GOAL_ENFORCEMENT=on`, which is the owner's call, and a page that showed them
@@ -34,9 +41,11 @@ import { difficultyPips } from "../../client/src/ui/chrome";
 import { el, panel, replaceChildren, stat } from "../../client/src/ui/dom";
 import { createReplay, type Replay } from "../../client/src/ui/replay";
 import { BOARD_HEIGHT } from "@shared/puzzle";
-import { dayLabel, pathOf, type SitePuzzle } from "../wire";
+import { dayLabel, pathOf, type SiteLine, type SitePuzzle, type SitePuzzleBody } from "../wire";
 import { type SiteIndex, titleOf } from "./data";
 import { pager } from "./frame";
+import { answerChips, answerChoices, answersIntro } from "./lines";
+import { renderPuzzleStats } from "./puzzle-stats";
 
 export interface PuzzleHandlers {
   /** The frame to draw. Called once while the view is built, and on every step after. */
@@ -47,12 +56,18 @@ export interface PuzzleView {
   readonly element: HTMLElement;
   /** Handed back so the page can size it and paint it once it is in the document. */
   readonly canvas: HTMLCanvasElement;
+  /** Where the page's body goes: the rail's slot for how the puzzle went, and its notes while it loads. */
+  readonly extras: HTMLElement;
+  /** Draws the body: the stats card into {@link extras}, and the lines into the answers. */
+  addBody(body: SitePuzzleBody, index: SiteIndex): void;
   /** Gives up the answer's keyboard. Called when the page moves on. */
   detach(): void;
 }
 
 /** The answer panel's id: what `#answer` in a link names, and where the page scrolls for it. */
 export const ANSWER_ID = "answer";
+/** The answers' own anchor, inside that panel: where the game's "every line" link lands, shut. */
+export const LINES_ID = "lines";
 
 /**
  * A link out to the Blueprint viewer, or nothing.
@@ -128,53 +143,86 @@ function factsPanel(puzzle: SitePuzzle): HTMLElement {
 interface AnswerPanel {
   readonly element: HTMLElement;
   reveal(): void;
+  /** Adds players' lines, before or after the press. */
+  setLines(lines: readonly SiteLine[]): void;
   detach(): void;
 }
 
-function answerSection(...children: (Node | null)[]): HTMLElement {
+function answerSection(body: HTMLElement): HTMLElement {
   return el(
     "section",
     { class: "panel pdb-answer", attrs: { id: ANSWER_ID } },
-    el("h2", { class: "panel__caption", text: "The answer" }),
-    ...children,
+    el("h2", { class: "panel__caption", text: "Answers" }),
+    body,
   );
 }
 
 /**
- * The maker's answer: a button until it is pressed, then the game's own replay
- * — timeline, transport and arrow keys — over the real steps.
+ * The answers: a button until it is pressed, then the game's own replay —
+ * timeline, transport and arrow keys — over the chosen answer's steps, with a
+ * chip per answer when there is more than one.
  *
  * One replay at most, ever: a second press is impossible because the button is
- * gone, and a second `reveal` is refused, because two replays would both own
- * the arrow keys and step two players for every press.
+ * gone, a second `reveal` is refused, and a chip rebinds the one replay rather
+ * than building another, because two replays would both own the arrow keys
+ * and step two players for every press. Each answer gets the rows it needs, so
+ * a line that builds higher than the maker's is not cut off.
  */
-function answerPanel(puzzle: SitePuzzle, rows: number, onView: (view: BoardView) => void): AnswerPanel {
-  const steps = puzzle.solution;
-  if (!steps || steps.length === 0) {
-    const element = answerSection(el("p", { class: "note", text: "No answer on file for this puzzle." }));
-    return { element, reveal: () => {}, detach: () => {} };
-  }
-
+function answerPanel(puzzle: SitePuzzle, onView: (view: BoardView) => void): AnswerPanel {
+  let lines: readonly SiteLine[] = [];
   let replay: Replay | null = null;
-  const body = el("div", { class: "pdb-answer__body" });
-  const reveal = () => {
-    if (replay) return;
-    const player = new SolutionPlayer(puzzle, steps, rows);
-    replay = createReplay();
-    replaceChildren(body, replay.element, blueprintLink("Open the answer in Blueprint", puzzle.solutionUrl));
+  let chosen = 0;
+  const body = el("div", { class: "pdb-answer__body", attrs: { id: LINES_ID } });
+  const choices = () => answerChoices(puzzle, lines);
+
+  const play = () => {
+    const choice = choices()[chosen];
+    if (!replay || !choice) return;
+    const player = new SolutionPlayer(puzzle, choice.steps, BOARD_HEIGHT);
     replay.bind(player, () => onView(player.view()));
   };
-  replaceChildren(
-    body,
-    el("p", { class: "note", text: `The maker's answer, one placement at a time — ${steps.length} in all.` }),
-    el("button", {
-      class: "btn btn--primary",
-      text: "Show the answer",
-      attrs: { type: "button" },
-      on: { click: reveal },
-    }),
-  );
-  return { element: answerSection(body), reveal, detach: () => replay?.detach() };
+  const pick = (at: number) => {
+    chosen = at;
+    draw();
+    play();
+  };
+  const reveal = () => {
+    if (replay || choices().length === 0) return;
+    replay = createReplay();
+    draw();
+    play();
+  };
+  function draw(): void {
+    const all = choices();
+    if (all.length === 0) {
+      replaceChildren(body, el("p", { class: "note", text: "No answer on file for this puzzle." }));
+      return;
+    }
+    if (!replay) {
+      const label = all.length === 1 ? "Show the answer" : "Show the answers";
+      const button = el("button", { class: "btn btn--primary", text: label, attrs: { type: "button" }, on: { click: reveal } });
+      replaceChildren(body, el("p", { class: "note", text: answersIntro(puzzle, all) }), button);
+      return;
+    }
+    const choice = all[chosen]!;
+    replaceChildren(
+      body,
+      all.length > 1 ? answerChips(all, chosen, pick) : null,
+      replay.element,
+      choice.blueprintUrl ? blueprintLink("Open the answer in Blueprint", choice.blueprintUrl) : null,
+    );
+  }
+
+  draw();
+  return {
+    element: answerSection(body),
+    reveal,
+    setLines(next) {
+      lines = next;
+      draw();
+    },
+    detach: () => replay?.detach(),
+  };
 }
 
 /** The finished days that dealt it, newest first, each a link to that day. */
@@ -226,7 +274,8 @@ export function createPuzzleView(
   const canvas = el("canvas", {
     attrs: { role: "img", "aria-label": `The board of puzzle #${puzzle.id}, ${titleOf(puzzle)}` },
   });
-  const answer = answerPanel(puzzle, rows, onView);
+  const answer = answerPanel(puzzle, onView);
+  const extras = el("div", { class: "pdb-slot" });
 
   onView(new SolutionPlayer(puzzle, [], rows).view());
   if (options.revealed) answer.reveal();
@@ -244,9 +293,18 @@ export function createPuzzleView(
         el("div", { class: "pdb-board" }, canvas),
         piecesStrip(puzzle),
       ),
-      el("div", { class: "pdb-rail" }, factsPanel(puzzle), answer.element, dealtOnPanel(puzzle, index)),
+      el("div", { class: "pdb-rail" }, factsPanel(puzzle), extras, answer.element, dealtOnPanel(puzzle, index)),
     ),
     puzzlePager(puzzle, index),
   );
-  return { element, canvas, detach: () => answer.detach() };
+  return {
+    element,
+    canvas,
+    extras,
+    addBody(body, bodyIndex) {
+      replaceChildren(extras, renderPuzzleStats(puzzle, body, bodyIndex));
+      answer.setLines(body.lines);
+    },
+    detach: () => answer.detach(),
+  };
 }
