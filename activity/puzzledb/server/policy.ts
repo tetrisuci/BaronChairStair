@@ -25,12 +25,13 @@ import type { Policy } from "./types";
  * rotation *would* have dealt on days when nobody was dealt tiers at all.
  * Showing those as history would present a derivation as a record.
  *
- * A fact about the production box, not about the code: 2026-09-02, the day
- * three tiers shipped, one day after the activity's first commit. Until the
- * owner confirms it against the box's own runs it is a commit date, which is
- * the unsafe direction — so the merge waits for that answer.
+ * A fact about the production box, not about the code, read from its own
+ * `runs` on 2026-10-05. Days 245 and 246 hold only `legacy` runs: one puzzle a
+ * day, with tier rows the backfill derived afterwards. Day 247 is the first
+ * with tiered runs (and the last with legacy ones: tiers reached the box that
+ * day). The commit date, 2026-09-02 = day 245, was two days early.
  */
-export const FIRST_TIERED_DAY = 245;
+export const FIRST_TIERED_DAY = 247;
 
 /**
  * The first day dealt with an extreme tier.
@@ -41,10 +42,13 @@ export const FIRST_TIERED_DAY = 245;
  * `/api/recap` views finished days. So a day played with three tiers can hold
  * four rows today, and only the date tells the fourth apart.
  *
- * 2026-09-08, when the fourth tier shipped; confirmed by the owner in the same
- * way as {@link FIRST_TIERED_DAY}.
+ * Read from the production box's `runs` in the same way as
+ * {@link FIRST_TIERED_DAY}. Day 251 holds an `extreme` row and no extreme
+ * runs: the fourth tier reached the box late that evening, Pacific time, and
+ * topped the day up. Day 252 is the first dealt with four tiers. The commit
+ * date, 2026-09-08 = day 251, was a day early.
  */
-export const FIRST_EXTREME_DAY = 251;
+export const FIRST_EXTREME_DAY = 252;
 
 /**
  * Off. A community puzzle's author is the submitter's Discord display name
