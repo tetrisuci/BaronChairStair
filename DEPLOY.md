@@ -51,6 +51,16 @@ has been announced, one restart announces both once both gates pass. From
 bun -e 'const r = (await Bun.file("../changelog.json").json()).releases; console.log(r.some((x) => x.version === "beta 0.13") ? "carries beta 0.13" : "no beta 0.13")'   # "carries beta 0.13": the player data and the setting must be verified first
 ```
 
+**Third, while `changelog.json` carries `beta 0.15`,** do not restart the bot until
+the profile browser is verified too: `/data/players.json` and `/data/solves.json`
+must answer `200`, and **Players** and **Solves** must pass the checks in
+[`activity/puzzledb/DEPLOY.md`](activity/puzzledb/DEPLOY.md), rule 2. From
+`activity/`:
+
+```sh
+bun -e 'const r = (await Bun.file("../changelog.json").json()).releases; console.log(r.some((x) => x.version === "beta 0.15") ? "carries beta 0.15" : "no beta 0.15")'   # "carries beta 0.15": the profile browser must be verified first
+```
+
 ---
 
 ## Two directories, and one that lies to you
@@ -182,7 +192,8 @@ python3 -m unittest discover -s client     # 173 run, 0 fail; bare python3 skips
 *Before any restart, the exceptions near the top of this file: if `changelog.json`
 carries `beta 0.12` and db.tetrisatuci.org is not yet up on this box, or carries
 `beta 0.13` and the site's player data and the activity's setting are not yet
-verified, stop.*
+verified, or carries `beta 0.15` and the profile browser is not yet verified,
+stop.*
 
 Find how the bot actually runs on this box. Look, do not guess:
 

@@ -2,6 +2,12 @@
   "$comment": "The project's version and its player-facing release notes. Newest first; order in this list IS the version order. Read by client/changelog.py — the bot's /puzzle announcement. Adding a release means putting it at the top. Keep `changes` to things a player can see.",
   "releases": [
     {
+      "version": "beta 0.15",
+      "changes": [
+        "**The archive now has a Players table and a recent-solves feed.** Sort players by days solved, best streak, puzzles cleared, lines found or best rush; search by name and narrow to a server. Each profile shows per-tier solve rates and times, a calendar and puzzles cleared. The Solves page lists daily solves by tier, server and puzzle. Players who choose to hide still appear only as \"a player\" and have no profile."
+      ]
+    },
+    {
       "version": "beta 0.14",
       "changes": [
         "**Anyone can run `/archive sync` now**, not only officers — it pulls new puzzles in from the club's sheet and makes them playable. It runs at most once every 10 minutes, shared by every server. Ask too soon and the bot tells you, privately, when the last sync started and when the next one can.",
@@ -11,7 +17,6 @@
     {
       "version": "beta 0.13",
       "changes": [
-        "**The archive now has a Players table and a recent-solves feed.** Sort players by days solved, best streak, puzzles cleared, lines found or best rush; search by name and narrow to a server. Each profile shows per-tier solve rates and times, a calendar and puzzles cleared. The Solves page lists daily solves by tier, server and puzzle. Players who choose to hide still appear only as \"a player\" and have no profile.",
         "**db.tetrisatuci.org now shows how every finished day went**: each Discord server's daily boards, tier by tier, and rush board; the all-time boards, Discoveries among them; each puzzle's hand-ins, solves and times; and a page for each player with their solved days, streaks, best rush and lines found. Players appear by the name the game shows, and servers by their Discord name once somebody signs in from there. Today is never shown. The game keeps its own leaderboards, profile and solutions, now with links to the site.",
         "**New setting: Hide me on db.tetrisatuci.org**, under Settings → On the web. With it on, your results on the site say \"a player\" and you have no page there. The site catches up within a few minutes, and you can turn it off at any time. It hides you on the site only: the game's boards still show you, and a copy of the site saved before you turned it on keeps what it had.",
         "**Players' alternate lines are now public on db.tetrisatuci.org**, on each puzzle's page, for finished days, with no name on them. Beta 0.3 said a puzzle you had not solved kept its answers to themselves; on the site that is no longer true, so open a puzzle's answers there only when you want them. In the game nothing changes: a puzzle's solutions still open once you have solved it."

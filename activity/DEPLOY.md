@@ -158,7 +158,7 @@ half in three ways:
 
 **The site goes up in the same sitting**, straight after this guide's verification:
 the game's new links point at pages only the new site has, and the bot must not
-restart while `beta 0.13` is unverified — the root [`../DEPLOY.md`](../DEPLOY.md)
+restart while `beta 0.13` or `beta 0.15` is unverified — the root [`../DEPLOY.md`](../DEPLOY.md)
 and [`puzzledb/DEPLOY.md`](puzzledb/DEPLOY.md), rule 2, have the gate.
 
 ### Rate limiting behind the proxy
@@ -325,6 +325,11 @@ Expect `players keyed: true`, and the zone the start-up line names. Servers star
 with no names — a name is recorded when a player signs in from that server — so
 `named` grows as people open the activity. Counts only: never print `guild_id` or a
 player's `id`.
+
+The profile browser is the separate `beta 0.15` release. Its site checks and bot
+restart gate are in [`puzzledb/DEPLOY.md`](puzzledb/DEPLOY.md), rule 2; do not
+restart the bot while that note is carried and **Players** and **Solves** have not
+been verified publicly.
 
 **5. The review routes are switched on** (only if you set `REVIEW_SECRET`):
 

@@ -121,6 +121,21 @@ true. The two notes together come to 1,869 characters of the bot's 1,900
 bun -e 'const r = (await Bun.file("../changelog.json").json()).releases; console.log(r.some((x) => x.version === "beta 0.13") ? "carries beta 0.13" : "no beta 0.13")'   # "carries beta 0.13": the player data and the setting must be verified first
 ```
 
+**Beta 0.15 has a gate of its own.** The profile browser (the Players table,
+richer profiles and the recent-solves feed) is a separate player-visible release,
+so the older gates do not cover it. While the file carries `beta 0.15`, do not
+restart the bot until the `beta 0.13` gate above has passed and these checks from
+*Verify it publicly* pass too:
+
+- `/data/players.json` and `/data/solves.json` both answer `200`;
+- **Players** lets a reader sort and filter, and a profile shows its tier panels,
+  calendar and cleared puzzles;
+- **Solves** lets a reader filter and load older days.
+
+```sh
+bun -e 'const r = (await Bun.file("../changelog.json").json()).releases; console.log(r.some((x) => x.version === "beta 0.15") ? "carries beta 0.15" : "no beta 0.15")'   # "carries beta 0.15": the profile browser must be verified first
+```
+
 ---
 
 ## Before you start
@@ -584,8 +599,8 @@ Last, `git status` from the repository root must be clean: `puzzledb/dist/`,
 
 ## Only now, restart the bot
 
-Once both gates in rule 2 pass — `beta 0.12`'s, and `beta 0.13`'s while the file
-carries it. By its own name, as the root [`DEPLOY.md`](../../DEPLOY.md) describes —
+Once all gates in rule 2 pass — `beta 0.12`'s, `beta 0.13`'s and `beta 0.15`'s
+while the file carries them. By its own name, as the root [`DEPLOY.md`](../../DEPLOY.md) describes —
 never with `pm2 restart all`, which would take DIAYN down with it. That restart is
 what announces the site: the next `/puzzle` in each server carries every release note
 that server has not had.
@@ -707,6 +722,13 @@ site on the older checkout (the commands just below), and check:
 
 ```sh
 bun -e 'const r = (await Bun.file("../changelog.json").json()).releases; console.log(r.some((x) => x.version === "beta 0.13") ? "carries beta 0.13" : "no beta 0.13")'   # must print "no beta 0.13"
+```
+
+**The profile-browser deploy (`beta 0.15`) failed verification**, and the bot has
+not restarted. Take the site back with the activity's rollback, then check:
+
+```sh
+bun -e 'const r = (await Bun.file("../changelog.json").json()).releases; console.log(r.some((x) => x.version === "beta 0.15") ? "carries beta 0.15" : "no beta 0.15")'   # must print "no beta 0.15"
 ```
 
 Players whose results were published in the meantime stay in whatever copies were
