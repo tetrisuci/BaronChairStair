@@ -27,7 +27,7 @@ leaves the boards out; `render.py --highlights`, run by hand on a `.pkl` from
 ### `/puzzle` — the daily puzzle
 
 ```
-/puzzle               today's four puzzles, and a link that opens the activity
+/puzzle               a short message and a link that opens the activity
 ```
 
 One command, not a group. It used to be four; the other three rendered in
@@ -36,8 +36,8 @@ the rules all live one click away — and each was a second place for a board to
 be wrong. The one job left is the one Discord is actually for: announcing the
 day in a channel, with a way in.
 
-The bot owns none of the game. It reads the activity server and formats what
-comes back, so the two can never disagree about a score. Needs
+The bot owns none of the game. Puzzle details and scores stay in the activity;
+the bot reads only the day number to record where a recap should reply. Needs
 `PUZZLE_APP_ID` and `PUZZLE_API`. Without the first the command still
 registers and says what is missing rather than failing shut; without the
 second it posts the launch link with no puzzle details. `PUZZLE_API_KEY` is
@@ -60,7 +60,7 @@ repository root — the same list that says what each one changed. Read by the
 bot's `/puzzle` announcement, below.
 
 **A server is told the first time somebody runs `/puzzle` on a build it has not
-heard about**, as a plain message behind the puzzle embed. Not on a timer and
+heard about**, as a plain message behind the activity link. Not on a timer and
 not at boot: a deploy should not wake a channel up, so the note rides along
 behind something a person actually asked for, and only the first person to ask
 sees it arrive. It sends with `AllowedMentions.none()`, so a release note can

@@ -127,7 +127,7 @@ grep -oE '^[A-Z_][A-Z0-9_]*=' .env | tr -d '='
 |---|---|---|
 | `DISCORD_TOKEN` | everything | the bot does not start |
 | `PUZZLE_APP_ID` | the launch link | `/puzzle` cannot build its button |
-| `PUZZLE_API` | `/puzzle`'s day details; the recap; `/archive sync` telling the activity to reload | `/puzzle` posts only the launch link, with "puzzle details are unavailable right now"; the recap has nowhere to read from; a sync publishes, but the activity is not told |
+| `PUZZLE_API` | `/puzzle`'s day number for recap replies; the recap; `/archive sync` telling the activity to reload | `/puzzle` posts only the launch link, with "puzzle details are unavailable right now"; the recap has nowhere to read from; a sync publishes, but the activity is not told |
 | `PUZZLE_API_KEY` | the recap; `/archive sync` telling the activity to reload | the recap never posts; once a day is owed, the log names the key every 5 minutes (`recap failed for guild …`); a sync publishes, but the activity is not told |
 | `PUZZLE_RECAP` | the recap | the recap is off — the default, because it pings every player it names |
 | `GITHUB_TOKEN` | `/report` | `/report` answers "Reports aren't wired up yet" |

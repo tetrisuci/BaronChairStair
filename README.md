@@ -37,7 +37,7 @@ for as long as you leave it there — and undo and redo are always one key away.
 
 | Command | What it does |
 | :-- | :-- |
-| `/puzzle` | Today's puzzles, and the link that opens the activity |
+| `/puzzle` | A short message and the link that opens the activity |
 | `/highlights` | Attach a `.ttrm` replay — get each player's biggest attack bursts, clear by clear |
 | `/report` | File a bug or a suggestion. No GitHub account needed |
 | `/activity graph`<br>`/activity now` | Who is online, right now or across the last week |
