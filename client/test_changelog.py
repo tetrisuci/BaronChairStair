@@ -343,8 +343,8 @@ class ClaimingOnce(unittest.TestCase):
         The headline rule, end to end.
 
         Everything else here tests `releases_since` and `format_announcement`
-        separately. Nothing tested that `announcement_for` — the one thing
-        `/puzzle` actually calls — joins them up, so replacing its body with
+        separately. Nothing tested that the legacy `announcement_for` joins
+        them up, so replacing its body with
         `format_announcement((RELEASES[0],))` would have announced only the tip
         and left the whole suite green.
         """
@@ -365,19 +365,27 @@ class ClaimingOnce(unittest.TestCase):
         self.assertIn("the second thing", message, "a skipped version was not announced")
         self.assertNotIn("the first thing", message, "a version already heard was repeated")
 
-    def test_a_fresh_server_hears_the_shipped_profile_browser_release(self):
-        message = changelog.announcement_for(self.db, 99)
+    def test_legacy_fresh_server_hears_profile_browser_when_it_is_latest(self):
+        # Freeze the historical beta 0.15 scenario: later releases should not
+        # make this test depend on the legacy three-release preview cap.
+        history = changelog.load_releases()
+        start = next(i for i, release in enumerate(history) if release.version == "beta 0.15")
+        with patch.object(changelog, "RELEASES", history[start:]):
+            message = changelog.announcement_for(self.db, 99, "beta 0.15")
 
         self.assertIn("Players table", message)
         self.assertLessEqual(len(message), changelog.MAX_MESSAGE_CHARS)
-        self.assertEqual(changelog.seen_version(self.db, 99), changelog.VERSION)
+        self.assertEqual(changelog.seen_version(self.db, 99), "beta 0.15")
 
-    def test_a_server_on_beta_014_hears_the_profile_browser_release(self):
+    def test_legacy_server_on_beta_014_hears_profile_browser_when_it_is_latest(self):
         changelog.claim_announcement(self.db, 100, "beta 0.14")
-        message = changelog.announcement_for(self.db, 100)
+        history = changelog.load_releases()
+        start = next(i for i, release in enumerate(history) if release.version == "beta 0.15")
+        with patch.object(changelog, "RELEASES", history[start:]):
+            message = changelog.announcement_for(self.db, 100, "beta 0.15")
 
         self.assertIn("Players table", message)
-        self.assertEqual(changelog.seen_version(self.db, 100), changelog.VERSION)
+        self.assertEqual(changelog.seen_version(self.db, 100), "beta 0.15")
 
     def test_a_new_version_is_announced_to_a_server_already_on_an_old_one(self):
         changelog.claim_announcement(self.db, 3, "beta 0.1")
