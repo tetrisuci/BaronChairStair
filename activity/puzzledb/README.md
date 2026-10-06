@@ -4,8 +4,9 @@ The club's puzzle archive, and how every finished day of the daily went, open to
 anybody with a browser: every club puzzle the daily deals from, with its board, its
 goal, its maker's answer and the other lines players have found through it; the
 puzzles each finished day dealt, and each Discord server's boards for that day; the
-all-time boards; a page for each player who has not chosen to hide; and all of it as
-one SQLite file to download. No sign-in, no cookies, and nothing it does can write to
+all-time boards; every player who has not chosen to hide, in a table and on a page
+of their own; every daily solve, newest first; and all of it as one SQLite file to
+download. No sign-in, no cookies, and nothing it does can write to
 the game.
 
 The owner's aim is that players play in the Discord activity and look things up
@@ -42,10 +43,11 @@ promises, and why it is shaped the way it is.
 | `/days` | Every finished day, newest first, with what each tier dealt |
 | `/day/:day` | One finished day: a card per tier, then how it went — each tier's field, the day's board across tiers, each tier's board and the rush board — for every server at once or for one |
 | `/leaderboards` | The all-time boards over finished days, top fifty each: rush records, daily solves, current streak, best streak, puzzles cleared and Discoveries |
-| `/players` | Every listed player by name, with a filter |
-| `/player/:key` | One listed player: their totals, their last thirty days with a hand-in, and their rushes |
+| `/players` | Every listed player in a table: days solved, best streak, puzzles cleared, lines found and best rush, sorted by any of them, searched by name and narrowed to a server |
+| `/player/:key` | One listed player: their totals; each tier's solves of hand-ins, rate, best time and median; a calendar of the finished days; their last thirty days with a hand-in; the listed puzzles they have cleared; and their rushes |
+| `/solves` | Every daily solve on a finished day, by every player, newest day first, filtered by tier, server and puzzle. Rush is not here: each day's page has its rush board |
 | `/puzzles.json` | The index every page reads: the puzzles, the days, the listed players and the servers (shape below) |
-| `/data/…` | One page's body, for the pages that need more than the index: `/data/day/:day.json`, `/data/puzzle/:id.json`, `/data/player/:key.json` and `/data/leaderboards.json` |
+| `/data/…` | One page's body, for the pages that need more than the index: `/data/day/:day.json`, `/data/puzzle/:id.json`, `/data/player/:key.json`, `/data/leaderboards.json`, `/data/players.json` and `/data/solves.json` |
 | `/puzzles.sqlite` | Every public row, the boards included, as a SQLite file, saved as `tetrisatuci-puzzles.sqlite` |
 | `/health` | `{"ok":true,"puzzles":…,"days":…,"throughDay":…,"builtAt":…,"checkedAt":…}`, or `503 {"ok":false,"checkedAt":…}` before the first build. Counts and times only, never an error's text |
 | `/assets/*`, `/fonts/*` | The built page's own files: its script, stylesheet and icon, and its fonts with their OFL licence texts and README, which the OFL asks to travel with the fonts |
@@ -71,10 +73,16 @@ page's `<title>`, description and Open Graph tags into the document, escaped, so
 link pasted into Discord unfurls as the puzzle, day or player it names; Discord runs
 no script. The page then takes over in the browser from `/puzzles.json` and moves
 between pages without reloading. Filters live in the query string, so a filtered view
-is a link. On `/leaderboards` and `/day/:day`, `?server=<key>` picks one server's
-boards; a key the site does not list reads as every server. On `/`: `q` (search),
-`d=3-7` (difficulty), `u=0` (hide unrated), `p=5-9` (pieces), `set` and `by`
-(repeatable), and `sort=difficulty`, `pieces` or `title`.
+is a link, and the server sends the same document whatever the query string says. On
+`/leaderboards` and `/day/:day`, `?server=<key>` picks one server's boards; a key the
+site does not list reads as every server. On `/`: `q` (search), `d=3-7`
+(difficulty), `u=0` (hide unrated), `p=5-9` (pieces), `set` and `by` (repeatable),
+and `sort=difficulty`, `pieces` or `title`. On `/players`: `sort=streak`, `cleared`,
+`lines` or `rush` (days solved is the default), `q` and `server`. On `/solves`:
+`tier=easy`, `medium`, `hard` or `extreme`, `server`, and `puzzle=<id>`. **Junk reads
+as "all", never as an empty list**: an unknown sort is the default, a server no
+listed row names is every server, and a puzzle the site does not list, or one no
+finished day dealt, is every puzzle.
 
 **On every response:** a Content-Security-Policy that allows the page's own scripts,
 styles, fonts and images and nothing else (`default-src 'none'`, no inline script,
@@ -88,9 +96,12 @@ body until those bytes change. Hashed assets are cached for a year, fonts for a 
 the SQLite file. `/puzzles.json` and the bodies count only against the first. A visit
 reads the index once, then one body for each page it opens that needs one, and keeps
 each body for the rest of the visit; a cap of thirty would lock out a whole campus
-arriving from one address. Past either, `429 {"error":"Slow down a moment."}` with
-`Retry-After`. A caller is the address the proxy in front names — `Cf-Connecting-Ip`,
-else the last `X-Forwarded-For` entry — always, because the process listens on
+arriving from one address. The solves feed reads day bodies seven at a time, and at
+most twenty-eight before it stops and offers *Show older days*, through the same
+per-visit copy, so a day it has read costs nothing again. Past either limit,
+`429 {"error":"Slow down a moment."}` with `Retry-After`. A caller is the address
+the proxy in front names — `Cf-Connecting-Ip`, else the last `X-Forwarded-For`
+entry — always, because the process listens on
 127.0.0.1 only and every peer it can see is that proxy. There is no CORS:
 `/api/public` on the game server stays the club's cross-origin contract.
 
@@ -139,6 +150,42 @@ is a commit to the game's database, so the site's next 30-second check sees
 `PRAGMA data_version` move; `site_hidden` is one of the columns it reads, so the
 snapshot's hash changes and the site rebuilds.
 
+### The table, the pages and the feed
+
+**The players table** is the index's names joined by key to `/data/players.json`,
+which carries keys and numbers and never a name, so one page can never show one
+person under two names from two builds. Its numbers are totals across every server,
+as the game keeps them. A server chip only narrows who is listed: a player is listed
+under every server they handed in or rushed in on a finished day, and the caption
+says the totals count every server. Every sort puts the most first, best rush by
+most solved and then fastest, and a tie goes by name, case-folded, then by key.
+
+**A player's page** has three panels beside the totals, recent days and rushes:
+
+- **By tier**: for each of the four tiers, solves of hand-ins, the rate, the fastest
+  solve with the earliest day it was set on, and the median. The build works these
+  out from the same rows `tier_boards` holds, so the download can reproduce every
+  number.
+- **Calendar**: a month for each calendar month that holds a finished day, newest
+  first, six and then the rest on request. Each finished day is a cell, shaded by how
+  many of the tiers that day dealt the player solved. Its range is the index's days,
+  so today is never a cell.
+- **Puzzles cleared**: the listed puzzles they have cleared, in any mode, in id
+  order. A puzzle the site does not list still counts in *Puzzles cleared* and is not
+  on the list, so the list can be shorter than the count, and the page says by how
+  many.
+
+*Lines found* links to the Discoveries board, never to the lines, which name no
+finder.
+
+**The solves feed** is daily solves only. It is steered by `/data/solves.json` —
+each finished day with a solve, its solves per tier and the servers they were in —
+and carried by the day bodies themselves, so each row is a day body's row and adds
+nothing to it. A filter skips, without fetching them, the days that cannot match: by
+the steering's counts and servers, and for a puzzle by the days the index says dealt
+it. A row's rank is the one the day's page prints under the same server chip, a tie
+shared, so the two never disagree about who was second.
+
 ### What a player who hid leaves behind
 
 Said plainly, because the setting's promise is only as good as its limits:
@@ -154,9 +201,20 @@ Said plainly, because the setting's promise is only as good as its limits:
   rows cannot be matched by it. Nothing on a hidden row is there to tie it to
   another, though the values themselves can coincide, and the server can tie them
   (below).
+- **No cleared list, anywhere, ever.** One unlabelled number cannot be traced to
+  anybody, but the whole set of puzzles someone has cleared is as good as their name
+  to anyone who has seen it once. So a hidden player's clears are counted and never
+  listed: SQL lets only a shown player's list out (`CLEARED_PUZZLES_SQL`), and
+  `player_clears` has no row of theirs.
+- **The players table and the feed.** They have no row in the table, and searching
+  for their name finds nobody. In the feed their solves are there as "a player", with
+  no link and the server and rank they earned: each is a day body's row, the same row
+  the day's page shows. `/data/solves.json` holds counts and server keys only, and is
+  the same bytes whether they hid or not.
 - **What can still single them out:**
-  - **The server.** Per-server rows carry `server_key`. In a server where only one
-    player hid, every "a player" row of that server is that person.
+  - **The server.** Per-server rows carry `server_key`, and so do the feed's. In a
+    server where only one player hid, every "a player" row of that server is that
+    person.
   - **The game.** Its own boards still show the same numbers under their name, to
     anyone signed in to the activity in any server. The switch hides a player on this
     site only.
@@ -217,8 +275,8 @@ names one.
 
 | Never shown | What holds it |
 |---|---|
-| Discord ids, guild ids, avatar URLs, preferences, input logs, officers' `discord:<username>` attributions | The allowlist, at both ends. The site reads the game's player tables only through `server/snapshot-players.ts`, which names every column it touches; `tests/puzzledb-snapshot.test.ts` builds the very same bytes from a copy stripped to those columns, fails if one of them is not needed, and bans `SELECT *`. Everything served is read back out of a fresh in-memory database whose tables and columns are exactly `PUBLIC_COLUMNS` (`server/public-db.ts`, with `server/public-db-players.ts`). `tests/puzzledb-public-db.test.ts` and `tests/puzzledb-app.test.ts` plant a value in every personal column of a game database and scan the file's bytes, every cell, the index, every body and every route for them, for any run of 17 or more digits, for `discord:` and for avatar URLs — and check that the shown players' names and keys *are* there, so a scan that found nothing because nothing was published cannot pass. |
-| A hidden player's name, key or page | `SHOWN`, in SQL. `tests/puzzledb-hidden-trace.test.ts` builds twice, differing only in one player's choice, and checks that the hidden build holds them in no byte, gives them no entry and no body, leaves their rows unlabelled and every other row as it was, and orders tied rows the same whoever holds the lowest Discord id. `tests/puzzledb-snapshot.test.ts` scans what the snapshot read for them before anything is built. |
+| Discord ids, guild ids, avatar URLs, preferences, input logs, officers' `discord:<username>` attributions | The allowlist, at both ends. The site reads the game's player tables only through `server/snapshot-players.ts`, which names every column it touches; `tests/puzzledb-snapshot.test.ts` builds the very same bytes from a copy stripped to those columns, fails if one of them is not needed, and bans `SELECT *`. The players table, the profile panels and the feed added one column to that list, `puzzle_clears.puzzle_id`; everything else they show is built from rows already published. Everything served is read back out of a fresh in-memory database whose tables and columns are exactly `PUBLIC_COLUMNS` (`server/public-db.ts`, with `server/public-db-players.ts`). `tests/puzzledb-public-db.test.ts`, `tests/puzzledb-app.test.ts` and `tests/puzzledb-app-profiles.test.ts` plant a value in every personal column of a game database and scan the file's bytes, every cell, the index, every body and every route for them, for any run of 17 or more digits, for `discord:` and for avatar URLs — and check that the shown players' names and keys *are* there, so a scan that found nothing because nothing was published cannot pass. |
+| A hidden player's name, key, page or cleared list | `SHOWN`, in SQL. `tests/puzzledb-hidden-trace.test.ts` builds twice, differing only in one player's choice, and checks that the hidden build holds them in no byte, gives them no entry and no body, leaves their rows unlabelled and every other row as it was, takes exactly their row out of the players table, moves no byte of `/data/solves.json`, lists their clears nowhere, and orders tied rows the same whoever holds the lowest Discord id. `tests/puzzledb-snapshot.test.ts` scans what the snapshot read for them before anything is built. |
 | Who found a line, or when | `found_by` and `found_at` are used inside SQL and never selected, and no public table has a column for either (`tests/puzzledb-snapshot-players.test.ts`, *the lines*; the allowlist). |
 | Puzzles players wrote, and their authors' Discord display names | `PUBLISH_COMMUNITY_PUZZLES = false` in `server/policy.ts` (`tests/puzzledb-dataset.test.ts`). A day that dealt one says a player wrote it, and names neither the puzzle nor its id; a board row for it keeps its tier and loses the id; it has no stats and no lines. |
 | Today, or any later day | The cut: a day is shown only when it is before both the club's today and the newest day the game has pinned (`FINISHED_DAYS_SQL`), and every player read is cut at the same day (`tests/puzzledb-snapshot.test.ts`, *finished days only* and *reads nothing filed today*; `tests/puzzledb-snapshot-players.test.ts`, *the cut*). Nothing marks which puzzles are today's, and no rush pool is read. |
@@ -228,7 +286,8 @@ names one.
 **The boards are the game's boards.** `tests/puzzledb-agreement.test.ts` builds the
 site over a game database and compares every board with what the game's own `Store`
 answers for it — day, tier and rush boards in every scope, rush records, daily
-solves, streaks, Discoveries and the solutions gallery — less today. Rows tied on
+solves, streaks, Discoveries, each shown player's cleared puzzles (less those the
+site does not list) and the solutions gallery — less today. Rows tied on
 everything the game ranks by are compared as sets, because the game breaks such ties
 by things the site never publishes.
 
@@ -260,16 +319,22 @@ never past the game's own today, so its midnight can only hold data back.
 | Tier, day and rush boards; a player's hand-ins and rushes | from the first tiered day up to `cut` |
 | Rush records | any day before `cut` (the game's own board includes today) |
 | Days solved, daily solves, streaks | solved days before `cut`, days of the single legacy puzzle included. A current streak counts only if it reaches the newest finished day, so it reads one lower than the game for a player who has already solved today |
-| Puzzles cleared | first cleared before the game's midnight starting `cut`, in any mode |
+| Puzzles cleared, and a player's cleared list | first cleared before the game's midnight starting `cut`, in any mode; the list also only puzzles the site lists |
 | Lines, Discoveries and lines found | filed before that midnight |
 | A puzzle's stats | daily hand-ins on finished days, in the tiers each day dealt |
+| A player's tier summaries | their tier-board rows: finished days, in the tiers each day dealt |
+| A player's calendar | the index's days, so never today, a later day or a day before history |
+| A players-table row's servers | servers of hand-ins and rushes on finished days |
+| The solves feed and its steering | the tier boards' solved rows, so finished days only; the puzzle filter offers only puzzles a finished day dealt. No rush |
 | Rush pools | never read |
 
 **A puzzle is never held back because it is today's deal.** Every line a player
 files comes from the daily, on the day its puzzle was dealt, so cutting by the day a
 line was filed removes exactly today's answers and never makes an old line vanish.
 Nothing says a puzzle has lines not yet shown, because the only such lines are
-today's, and saying so would mark today's deal.
+today's, and saying so would mark today's deal. For the same reason a cleared list
+never marks today: a puzzle on it was cleared before the newest finished day ended,
+which says nothing about whether it is today's deal.
 
 ---
 
@@ -358,17 +423,28 @@ may differ from what that day dealt if somebody has edited it since. A server's
 
 **The bodies** are cut from the same public database as the download, so a body can
 say nothing the file does not, and every one carries the `builtAt` of the build it
-came from. Their shapes are in [`wire.ts`](wire.ts). Whose row it is, everywhere, is
-`{ "key", "name" }` or `null` — "a player" — and nothing else.
+came from. Their shapes are in [`wire.ts`](wire.ts) and
+[`wire-profiles.ts`](wire-profiles.ts). Whose row it is, on every board, is
+`{ "key", "name" }` or `null` — "a player" — and nothing else; the players table's
+rows carry a `key` alone, and take the name from the index.
 
 | Path | What it holds |
 |---|---|
 | `/data/day/:day.json` | The day's boards across tiers, keyed `all` and by each server that played; every tier's hand-ins, with server, puzzle, time and attack; the rush board |
 | `/data/puzzle/:id.json` | `stats` (`null` when no finished day dealt it) and `lines`: each line's position, attack, clears and placements |
-| `/data/player/:key.json` | Totals, then every daily hand-in (newest first, with its rank on that tier as the day's board shows it, a tie shared) and every rush, ranked the same way |
+| `/data/player/:key.json` | Totals, then every daily hand-in (newest first, with its rank on that tier as the day's board shows it, a tie shared) and every rush, ranked the same way; `tiers`, always four in the daily's order, each with `handIns`, `solves`, `bestMs`, `bestDay` and `medianMs`; and `cleared`, the listed puzzles they have cleared, ascending |
 | `/data/leaderboards.json` | The six all-time boards, each keyed `all`, and rush also by server |
+| `/data/players.json` | `rows`, one per listed player in the index's order: `key`, `puzzlesCleared`, `linesFound`, `rushBest`, `rushBestMs`, and `servers`, the keys of the servers they handed in or rushed in on a finished day. No name: the index has it |
+| `/data/solves.json` | `days`, each finished day with a daily solve, newest first: `day`, `tiers` (solves per tier, "a player"'s included) and `servers` (the keys of the servers with a solve that day). The solves themselves are the day bodies' |
 
-`/puzzles.sqlite` holds eleven tables, with `PRAGMA user_version` equal to the schema
+**No body is one giant list of history.** A day body is the same bytes however long
+history grows, and the players table is one row a player. `/data/solves.json` grows
+by one short line for each finished day with a solve: over a synthetic year of a
+forty-player club, three servers and four tiers a day, about 118 bytes a day and
+43 KB in all, and `tests/puzzledb-profile-bodies.test.ts` fails it past 160 bytes a
+day. A player's own body still grows with their hand-ins, as it did before.
+
+`/puzzles.sqlite` holds twelve tables, with `PRAGMA user_version` equal to the schema
 number, 2:
 
 | Table | |
@@ -376,6 +452,7 @@ number, 2:
 | `puzzles`, `day_puzzles`, `about` | The archive and the days, as in schema 1 |
 | `servers` | Each server's key and name |
 | `players` | The listed players and their totals |
+| `player_clears` | Which listed puzzles each listed player has cleared: `player_key` and `puzzle_id`, and never when, how often or how fast. A player who hid has no rows |
 | `tier_boards`, `day_boards`, `rush_boards` | Every finished day's boards |
 | `standings` | The all-time boards, top fifty each |
 | `puzzle_stats` | How each listed puzzle went |
@@ -398,7 +475,12 @@ sqlite3 -readonly tetrisatuci-puzzles.sqlite \
   "SELECT id, title, author, difficulty, pieces FROM puzzles WHERE difficulty IS NOT NULL ORDER BY difficulty DESC, pieces LIMIT 10"
 sqlite3 -readonly tetrisatuci-puzzles.sqlite \
   "SELECT s.rank, coalesce(p.name, 'a player'), s.value FROM standings s LEFT JOIN players p ON p.key = s.player_key WHERE s.board = 'dailies' AND s.scope = 'all' ORDER BY s.rank LIMIT 10"
+sqlite3 -readonly tetrisatuci-puzzles.sqlite \
+  "SELECT z.id, z.title, COUNT(c.player_key) AS cleared_by FROM puzzles z LEFT JOIN player_clears c ON c.puzzle_id = z.id GROUP BY z.id ORDER BY cleared_by, z.id LIMIT 10"
 ```
+
+That last one counts listed players only: a player who hid has cleared puzzles too,
+and they are in no row of `player_clears`.
 
 `about` has four keys: `schema`, `built_at` (when this file was built), `first_day`
 (where history starts) and `through_day` (the newest finished day, or NULL). Day 1
@@ -511,19 +593,26 @@ reasons at the top of this file.
 | File | What it does |
 |---|---|
 | `wire.ts` | The JSON's shapes, the index's and the bodies', which paths are pages, what each page is called and how a day becomes a date: everything the server and the page must agree on |
+| `wire-profiles.ts` | The players table's and the solves feed's body shapes, types only, beside `wire.ts` for length |
 | `server/main.ts` | The entry point. Nothing runs at import |
 | `server/settings.ts` | The environment, checked once: the refusals, the port, the zone, the owner warning |
 | `server/snapshot.ts` | The one transaction against the game's database, and the puzzle and day reads |
 | `server/snapshot-players.ts` | The only SQL run against the game's player tables: the column list, who may be named, the cut |
 | `server/policy.ts` | The four decisions above |
 | `server/dataset.ts` | One build: what players are dealt, and the days that are over |
-| `server/dataset-players.ts` | The boards, standings, stats and lines a build publishes, and the guards that repeat the SQL's rules |
+| `server/dataset-players.ts` | The boards, standings, stats, lines and cleared lists a build publishes, and the guards that repeat the SQL's rules |
 | `server/rank.ts` | The order of a board's rows, over published columns only |
 | `server/codes.ts` | Blueprint codes from the tracked archive, by shape |
 | `server/public-db.ts`, `server/public-db-players.ts` | The allowlist: the public schema, the write, the read-back, the download |
 | `server/bodies.ts` | The `/data/…` bodies, cut from the read-back database |
+| `server/bodies-profiles.ts` | Each player's tier summaries, the players table's body and the feed's steering body, from the same read-back rows |
 | `server/refresher.ts` | The 30-second question, the last good dataset, and the explanations |
 | `server/head.ts` | Each page's escaped `<title>` and tags, put in by position |
 | `server/app.ts` | HTTP: the routes, headers and limits |
 | `client/` | The page. It reuses the game's board, glyphs and answer stepper from `activity/client/src`, and draws its own board rows: the game's key rows on Discord ids and draw avatars |
+| `client/players.ts` | The players table: the index's names joined to the body's numbers, the sort, the search and the server chips |
+| `client/player-view.ts`, `client/profile-panels.ts` | A player's page; the second holds its *By tier*, *Calendar* and *Puzzles cleared* panels |
+| `client/solves.ts`, `client/solves-rows.ts` | The feed: which days a filter can match, read seven at a time; and a day's solves, ranked as the day's page ranks them |
+| `client/list-queries.ts` | The players table's and the feed's choices in the query string, junk read as "all" |
+| `client/profiles.css` | Those three views' styles, beside `site.css` |
 | `vite.config.ts` | Its own build, into `puzzledb/dist/`, never the game's `dist/` |

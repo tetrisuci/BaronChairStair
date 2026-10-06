@@ -31,12 +31,15 @@ import { FIRST_TIERED_DAY, POLICY } from "../puzzledb/server/policy";
 import { openGameDatabase, readSnapshot } from "../puzzledb/server/snapshot";
 import type { Dataset, GameSnapshot } from "../puzzledb/server/types";
 import {
+  bodyPathFor,
   type PlayerRef,
   type SiteDayBody,
   type SiteLeaderboardsBody,
+  type SitePlayerBody,
   type SitePuzzleBody,
   STANDING_BOARDS,
 } from "../puzzledb/wire";
+import type { SitePlayersBody } from "../puzzledb/wire-profiles";
 import { fixtureSources, gameFixture, type GameFixture, NOW, PLAYERS, SERVERS, TODAY } from "./puzzledb-fixture";
 
 const PRIVATE = { ...POLICY, hiddenServerKeys: new Set([SERVERS.quiet.key]) };
@@ -178,6 +181,35 @@ describe("a player who hid", () => {
 
     expect(anonymous.length).toBeGreaterThan(0);
     expect(anonymous.filter((row) => row.detail !== null)).toEqual([]);
+  });
+
+  test("moves no byte of the solves feed's steering: their solves are counted either way, and named in neither", () => {
+    const path = bodyPathFor({ kind: "solves" })!;
+
+    expect(decoded(hidden.dataset.bodies.get(path)!)).toBe(decoded(shown.dataset.bodies.get(path)!));
+  });
+
+  test("takes exactly their own row out of the players table, and moves no other", () => {
+    const rowsOf = (build: Build) => body<SitePlayersBody>(build.dataset, bodyPathFor({ kind: "players" })!).rows;
+    const theirs = rowsOf(shown).filter((row) => row.key === HIDDEN.key);
+
+    expect(theirs).toHaveLength(1);
+    expect(rowsOf(hidden)).toEqual(rowsOf(shown).filter((row) => row.key !== HIDDEN.key));
+  });
+
+  test("leaves their cleared list nowhere, though the same build with them shown prints it on their page", () => {
+    const clearedOf = (build: Build) =>
+      build.dataset.data.players.map((player) => body<SitePlayerBody>(build.dataset, `/data/player/${player.key}.json`).cleared);
+
+    // #6 is the one puzzle only the hidden player cleared.
+    expect(clearedOf(hidden).flat()).not.toContain(6);
+    expect(body<SitePlayerBody>(shown.dataset, `/data/player/${HIDDEN.key}.json`).cleared).toEqual([6]);
+    const fromDownload = Database.deserialize(hidden.dataset.sqlite, { readonly: true });
+    try {
+      expect(fromDownload.query("SELECT puzzle_id FROM player_clears WHERE puzzle_id = 6").all()).toEqual([]);
+    } finally {
+      fromDownload.close();
+    }
   });
 
   test("reaches the site at the next rebuild: the flip moves the snapshot the refresher hashes", () => {

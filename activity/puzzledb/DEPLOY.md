@@ -121,6 +121,21 @@ true. The two notes together come to 1,869 characters of the bot's 1,900
 bun -e 'const r = (await Bun.file("../changelog.json").json()).releases; console.log(r.some((x) => x.version === "beta 0.13") ? "carries beta 0.13" : "no beta 0.13")'   # "carries beta 0.13": the player data and the setting must be verified first
 ```
 
+**Beta 0.15 has a gate of its own.** The profile browser (the Players table,
+richer profiles and the recent-solves feed) is a separate player-visible release,
+so the older gates do not cover it. While the file carries `beta 0.15`, do not
+restart the bot until the `beta 0.13` gate above has passed and these checks from
+*Verify it publicly* pass too:
+
+- `/data/players.json` and `/data/solves.json` both answer `200`;
+- **Players** lets a reader sort and filter, and a profile shows its tier panels,
+  calendar and cleared puzzles;
+- **Solves** lets a reader filter and load older days.
+
+```sh
+bun -e 'const r = (await Bun.file("../changelog.json").json()).releases; console.log(r.some((x) => x.version === "beta 0.15") ? "carries beta 0.15" : "no beta 0.15")'   # "carries beta 0.15": the profile browser must be verified first
+```
+
 ---
 
 ## Before you start
@@ -362,6 +377,9 @@ Expect `"ok":true` with the banner's counts; `HTTP/1.1 200 OK` and both headers;
 ```sh
 curl -s 127.0.0.1:3002/leaderboards | grep -o '<title>[^<]*</title>'                 # <title>Leaderboards — Puzzle archive</title>
 curl -s -o /dev/null -w '%{http_code}\n' 127.0.0.1:3002/data/leaderboards.json        # 200
+curl -s 127.0.0.1:3002/solves | grep -o '<title>[^<]*</title>'                       # <title>Recent solves — Puzzle archive</title>
+curl -s -o /dev/null -w '%{http_code}\n' 127.0.0.1:3002/solves/                        # 404: one spelling per page
+for b in players solves; do curl -s -o /dev/null -w "$b %{http_code} %{content_type}\n" "127.0.0.1:3002/data/$b.json"; done   # each 200 application/json; charset=utf-8
 curl -s 127.0.0.1:3002/data/no-such-thing.json; echo                                   # {"error":"Not found"}
 curl -s 127.0.0.1:3002/puzzles.json | bun -e 'const d = await Bun.stdin.json(); console.log(`schema ${d.about.schema}: ${d.players.length} players listed, ${d.servers.length} servers (${d.servers.filter((s) => s.name === null).length} unnamed)`)'
 ```
@@ -375,7 +393,7 @@ index or any body; each line must print `0`:
 
 ```sh
 curl -s 127.0.0.1:3002/puzzles.json | grep -cE '[0-9]{17}'
-curl -s 127.0.0.1:3002/data/leaderboards.json | grep -cE '[0-9]{17}'
+for b in leaderboards players solves; do curl -s "127.0.0.1:3002/data/$b.json" | grep -cE '[0-9]{17}'; done
 ```
 
 A `1` is a stop: `pm2 stop puzzle-db` (under systemd, `sudo systemctl stop puzzle-db`)
@@ -404,12 +422,12 @@ bun -e 'import {Database} from "bun:sqlite"; const db = new Database(process.arg
 If any of these is wrong, `pm2 stop puzzle-db` (under systemd, `sudo systemctl stop puzzle-db`) and
 report it. Do not put the site in front of anybody.
 
-**The download** holds these eleven tables and nothing else:
+**The download** holds these twelve tables and nothing else:
 
 ```sh
 DL=$(mktemp -d)/tetrisatuci-puzzles.sqlite
 curl -s 127.0.0.1:3002/puzzles.sqlite -o "$DL"
-bun -e 'import {Database} from "bun:sqlite"; const db = new Database(process.argv[1], {readonly: true}); console.log(db.query("SELECT name FROM sqlite_master WHERE type = ?1 ORDER BY name").all("table").map((t) => t.name).join(" "))' "$DL"   # about day_boards day_puzzles lines players puzzle_stats puzzles rush_boards servers standings tier_boards
+bun -e 'import {Database} from "bun:sqlite"; const db = new Database(process.argv[1], {readonly: true}); console.log(db.query("SELECT name FROM sqlite_master WHERE type = ?1 ORDER BY name").all("table").map((t) => t.name).join(" "))' "$DL"   # about day_boards day_puzzles lines player_clears players puzzle_stats puzzles rush_boards servers standings tier_boards
 ```
 
 **Only now, under pm2, `pm2 save`**, and only once `pm2 list` shows every app as
@@ -533,6 +551,8 @@ does so itself, and Caddy and nginx need the lines above.
 curl -sI https://db.tetrisatuci.org/ | grep -iE '^(HTTP|content-security-policy|x-frame-options)'
 curl -s https://db.tetrisatuci.org/puzzle/1 | grep -o '<title>[^<]*</title>'
 curl -s https://db.tetrisatuci.org/health; echo
+curl -s -o /dev/null -w '%{http_code}\n' https://db.tetrisatuci.org/solves/      # 404
+for b in players solves; do curl -s -o /dev/null -w "$b %{http_code} %{content_type}\n" "https://db.tetrisatuci.org/data/$b.json"; done   # each 200 application/json; charset=utf-8
 ```
 
 Then, in a browser at <https://db.tetrisatuci.org/>, with the developer console open
@@ -542,7 +562,11 @@ the whole time:
   with the arrow keys, then open **Days** and one day;
 - on that day, the boards under the deal cards: pick a server chip and check the
   address gains `?server=`, then switch the tier tabs;
-- open **Leaderboards**, then **Players**, then one player's page;
+- open **Leaderboards**, then **Players**: press a column's heading and check the
+  address gains `?sort=`; then one player's page, which shows *By tier*, a
+  *Calendar* and *Puzzles cleared*;
+- open **Solves**: pick a tier and check the address gains `?tier=`, then press
+  **Show older days** if it is offered;
 - the console must show **no Content-Security-Policy errors**, and no 404s: the
   page's icon is `/assets/favicon-<hash>.svg`, so nothing asks for `/favicon.ico`.
 
@@ -575,8 +599,8 @@ Last, `git status` from the repository root must be clean: `puzzledb/dist/`,
 
 ## Only now, restart the bot
 
-Once both gates in rule 2 pass — `beta 0.12`'s, and `beta 0.13`'s while the file
-carries it. By its own name, as the root [`DEPLOY.md`](../../DEPLOY.md) describes —
+Once all gates in rule 2 pass — `beta 0.12`'s, `beta 0.13`'s and `beta 0.15`'s
+while the file carries them. By its own name, as the root [`DEPLOY.md`](../../DEPLOY.md) describes —
 never with `pm2 restart all`, which would take DIAYN down with it. That restart is
 what announces the site: the next `/puzzle` in each server carries every release note
 that server has not had.
@@ -700,6 +724,13 @@ site on the older checkout (the commands just below), and check:
 bun -e 'const r = (await Bun.file("../changelog.json").json()).releases; console.log(r.some((x) => x.version === "beta 0.13") ? "carries beta 0.13" : "no beta 0.13")'   # must print "no beta 0.13"
 ```
 
+**The profile-browser deploy (`beta 0.15`) failed verification**, and the bot has
+not restarted. Take the site back with the activity's rollback, then check:
+
+```sh
+bun -e 'const r = (await Bun.file("../changelog.json").json()).releases; console.log(r.some((x) => x.version === "beta 0.15") ? "carries beta 0.15" : "no beta 0.15")'   # must print "no beta 0.15"
+```
+
 Players whose results were published in the meantime stay in whatever copies were
 taken; a rollback cannot recall them, which is one more reason to start this deploy
 only when you can finish it.
@@ -770,6 +801,12 @@ reading while the files move.
 - **Discoveries counting more lines than the puzzle pages show.** The board counts
   as the game does, voided lines and lines on puzzles the site does not list
   included.
+- **A player's *Puzzles cleared* list shorter than their *Puzzles cleared* count.**
+  The count is the game's, any puzzle; the list holds only puzzles the site lists,
+  and the page says how many more there are.
+- **No solves from today in *Solves*, and no rushes at all.** The feed shows finished
+  days only, like every page, and daily solves only: each day's page has its rush
+  board.
 
 ## Things that are wrong
 

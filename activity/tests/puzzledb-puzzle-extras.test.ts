@@ -157,6 +157,17 @@ describe("how the puzzle went", () => {
     expect(stats["Solve rate"]).toBe("0%");
   });
 
+  test("links to every solve of the puzzle in the feed, once it has one", () => {
+    const link = renderPuzzleStats(ANSWERED, BODY, INDEX).querySelector('a[href^="/solves"]');
+    expect(link?.textContent).toBe("Every solve of this puzzle →");
+    expect(link?.getAttribute("href")).toBe(`/solves?puzzle=${ANSWERED.id}`);
+
+    const unsolved: SitePuzzleBody = { ...BODY, stats: { handIns: 3, solves: 0, fastestMs: null, medianMs: null, fastest: null } };
+    expect(renderPuzzleStats(ANSWERED, unsolved, INDEX).querySelector('a[href^="/solves"]')).toBeNull();
+    const never = renderPuzzleStats(BARE, { builtAt: BODY.builtAt, stats: null, lines: [] }, INDEX);
+    expect(never.querySelector('a[href^="/solves"]')).toBeNull();
+  });
+
   test("never says there are lines still to come", () => {
     for (const lines of [[], [LINE_ONE]]) {
       const text = renderPuzzleStats(ANSWERED, { ...BODY, lines }, INDEX).textContent ?? "";

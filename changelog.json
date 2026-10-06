@@ -2,6 +2,12 @@
   "$comment": "The project's version and its player-facing release notes. Newest first; order in this list IS the version order. Read by client/changelog.py — the bot's /puzzle announcement. Adding a release means putting it at the top. Keep `changes` to things a player can see.",
   "releases": [
     {
+      "version": "beta 0.15",
+      "changes": [
+        "**The archive now has a Players table and a recent-solves feed.** Sort players by days solved, best streak, puzzles cleared, lines found or best rush; search by name and narrow to a server. Each profile shows per-tier solve rates and times, a calendar and puzzles cleared. The Solves page lists daily solves by tier, server and puzzle. Players who choose to hide still appear only as \"a player\" and have no profile."
+      ]
+    },
+    {
       "version": "beta 0.14",
       "changes": [
         "**Anyone can run `/archive sync` now**, not only officers — it pulls new puzzles in from the club's sheet and makes them playable. It runs at most once every 10 minutes, shared by every server. Ask too soon and the bot tells you, privately, when the last sync started and when the next one can.",

@@ -1,10 +1,10 @@
 /**
- * The puzzle database over HTTP: seven pages, two downloads, the pages'
+ * The puzzle database over HTTP: eight pages, two downloads, the pages'
  * bodies, a health check and the built page's own files — and nothing else.
  *
  * | Path | Answers |
  * |---|---|
- * | `/`, `/days`, `/puzzle/:id`, `/day/:day`, `/leaderboards`, `/players`, `/player/:key` | the built page, with this page's head written in |
+ * | `/`, `/days`, `/puzzle/:id`, `/day/:day`, `/leaderboards`, `/players`, `/player/:key`, `/solves` | the built page, with this page's head written in, whatever the query string says |
  * | `/puzzles.json`, `/puzzles.sqlite` | the dataset's bytes, exactly as built |
  * | `/data/*` | one page's body, exactly as built, or the one JSON miss |
  * | `/health` | counts and times, never an error's text |
@@ -142,6 +142,7 @@ const PAGE_PATHS = [
   "/leaderboards",
   "/players",
   "/player/:key",
+  "/solves",
 ] as const;
 
 /** Every miss under `/data/`, byte for byte: a page's body is JSON, so its miss is too. */

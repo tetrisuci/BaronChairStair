@@ -12,12 +12,15 @@
  * hidden` on the body — this is a document, and it scrolls. `overlays.css` is
  * loaded for the replay's timeline and transport, `.note` and the selects; it
  * is class-scoped throughout, so it styles nothing it was not asked to.
+ * `profiles.css` is the profile browser's, after `site.css` whose ceiling it
+ * would have crossed.
  */
 
 import "../../client/src/styles/tokens.css";
 import "../../client/src/styles/panels.css";
 import "../../client/src/styles/overlays.css";
 import "./site.css";
+import "./profiles.css";
 
 import { loadSiteData } from "./api";
 import { SitePage } from "./page";

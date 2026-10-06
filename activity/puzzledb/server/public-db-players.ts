@@ -63,6 +63,7 @@ export const PLAYER_COLUMNS = Object.freeze({
     "rush_best_ms",
     "rush_best_day",
   ] as const),
+  player_clears: Object.freeze(["player_key", "puzzle_id"] as const),
   tier_boards: Object.freeze([
     "day",
     "tier",
@@ -132,6 +133,16 @@ CREATE TABLE players (
   rush_best       INTEGER,          -- most puzzles solved in one rush; NULL with no rush
   rush_best_ms    INTEGER,          -- that rush's time to its last solve
   rush_best_day   INTEGER           -- and its day
+);
+CREATE TABLE player_clears (
+  -- The puzzles this site lists that each shown player has cleared, in any mode, first cleared
+  -- before the newest finished day ended. A player who hid has no rows here at all: a list of
+  -- what someone cleared names them as surely as their name. A puzzle the site does not list is
+  -- left out, so a player can have fewer rows than players.puzzles_cleared. Never when a puzzle
+  -- was cleared, how often, or how fast.
+  player_key TEXT    NOT NULL,     -- players.key
+  puzzle_id  INTEGER NOT NULL,     -- puzzles.id
+  PRIMARY KEY (player_key, puzzle_id)
 );
 CREATE TABLE tier_boards (
   -- Every hand-in of a finished day's daily, one row per player per tier, ranked across every
@@ -229,6 +240,7 @@ export type PlayerRow = readonly [
   rushBestMs: number | null,
   rushBestDay: number | null,
 ];
+export type PlayerClearRow = readonly [playerKey: string, puzzleId: number];
 export type TierBoardRow = readonly [
   day: number,
   tier: DailyTier,
@@ -278,6 +290,7 @@ export type LineRow = readonly [puzzleId: number, position: number, attack: numb
 export interface PlayerRows {
   readonly servers: readonly ServerRow[];
   readonly players: readonly PlayerRow[];
+  readonly playerClears: readonly PlayerClearRow[];
   readonly tierBoards: readonly TierBoardRow[];
   readonly dayBoards: readonly DayBoardRow[];
   readonly rushBoards: readonly RushBoardRow[];
@@ -290,6 +303,7 @@ export interface PlayerRows {
 export const NO_PLAYER_ROWS: PlayerRows = Object.freeze({
   servers: [],
   players: [],
+  playerClears: [],
   tierBoards: [],
   dayBoards: [],
   rushBoards: [],
@@ -302,6 +316,7 @@ export const NO_PLAYER_ROWS: PlayerRows = Object.freeze({
 export const PLAYER_TABLE_ROWS: readonly (readonly [PlayerTable, keyof PlayerRows])[] = Object.freeze([
   ["servers", "servers"],
   ["players", "players"],
+  ["player_clears", "playerClears"],
   ["tier_boards", "tierBoards"],
   ["day_boards", "dayBoards"],
   ["rush_boards", "rushBoards"],
@@ -315,6 +330,8 @@ export interface PlayerData {
   /** Sorted by name as a reader sees it. */
   readonly players: readonly SitePlayerEntry[];
   readonly totals: ReadonlyMap<string, SitePlayerTotals>;
+  /** Each shown player's listed clears, ascending, by key; a player with none is absent. */
+  readonly cleared: ReadonlyMap<string, readonly number[]>;
   /** Sorted by name, the unnamed last. */
   readonly servers: readonly SiteServer[];
   /** By day, then `DAILY_TIERS` order, then rank. */
@@ -344,6 +361,7 @@ export function readPlayerData(db: Database): PlayerData {
   return {
     players,
     totals,
+    cleared: readClears(db, refOf),
     servers: readServers(db),
     tierRows: readTierRows(db, refOf),
     dayBoardRows: readDayBoardRows(db, refOf),
@@ -397,6 +415,21 @@ function playerRefs(players: readonly SitePlayerEntry[]): (key: string | null) =
     if (!found) throw new Error("A public board names a player key the players table does not hold");
     return found;
   };
+}
+
+/** Each key's clears, through `refOf`, so a list for a player `players` does not hold is a broken build. */
+function readClears(db: Database, refOf: (key: Key) => PlayerRef): Map<string, number[]> {
+  const rows = db
+    .query<{ player_key: string; puzzle_id: number }, []>(
+      `SELECT ${columnList("player_clears")} FROM player_clears ORDER BY player_key, puzzle_id`,
+    )
+    .all();
+  const cleared = new Map<string, number[]>();
+  for (const row of rows) {
+    const key = refOf(row.player_key)!.key;
+    cleared.set(key, [...(cleared.get(key) ?? []), row.puzzle_id]);
+  }
+  return cleared;
 }
 
 function readServers(db: Database): SiteServer[] {

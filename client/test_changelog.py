@@ -212,6 +212,20 @@ class ClaimingOnce(unittest.TestCase):
         self.assertIn("the second thing", message, "a skipped version was not announced")
         self.assertNotIn("the first thing", message, "a version already heard was repeated")
 
+    def test_a_fresh_server_hears_the_shipped_profile_browser_release(self):
+        message = changelog.announcement_for(self.db, 99)
+
+        self.assertIn("Players table", message)
+        self.assertLessEqual(len(message), changelog.MAX_MESSAGE_CHARS)
+        self.assertEqual(changelog.seen_version(self.db, 99), changelog.VERSION)
+
+    def test_a_server_on_beta_014_hears_the_profile_browser_release(self):
+        changelog.claim_announcement(self.db, 100, "beta 0.14")
+        message = changelog.announcement_for(self.db, 100)
+
+        self.assertIn("Players table", message)
+        self.assertEqual(changelog.seen_version(self.db, 100), changelog.VERSION)
+
     def test_a_new_version_is_announced_to_a_server_already_on_an_old_one(self):
         changelog.claim_announcement(self.db, 3, "beta 0.1")
         claimed, previously = changelog.claim_announcement(self.db, 3, "beta 0.2")

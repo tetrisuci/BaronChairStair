@@ -241,6 +241,19 @@ describe("the all-time boards", () => {
       expect(site.linesFound).toBe(store.profile(PLAYERS[role].id).discoveries);
     }
   });
+
+  test("list each shown player's cleared puzzles as the game does, less the ones the site does not list", () => {
+    const listed = new Set(dataset.data.puzzles.map((puzzle) => puzzle.id));
+    for (const role of ["visible", "unchosen"] as const) {
+      const site = body<SitePlayerBody>(`/data/player/${PLAYERS[role].key}.json`).cleared;
+      const game = [...store.clearedPuzzleIds(PLAYERS[role].id)].filter((id) => listed.has(id)).sort((a, b) => a - b);
+      expect(site).toEqual(game);
+      expect(game.length).toBeGreaterThan(0);
+    }
+    // The visible player's player-written puzzle: the game lists it, and the site withholds it.
+    const visible = body<SitePlayerBody>(`/data/player/${PLAYERS.visible.key}.json`).cleared;
+    expect(store.clearedPuzzleIds(PLAYERS.visible.id).size).toBeGreaterThan(visible.length);
+  });
 });
 
 describe("the lines", () => {
