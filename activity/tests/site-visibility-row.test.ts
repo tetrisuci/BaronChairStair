@@ -50,19 +50,17 @@ const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 function make(over: Partial<SiteVisibilityRowOptions> = {}) {
   const saves: boolean[] = [];
-  const changes: SiteVisibility[] = [];
   const opened: string[] = [];
   const row = createSiteVisibilityRow({
     guest: false,
     load: async () => SHOWN,
     save: async (hidden) => (saves.push(hidden), hidden ? HIDDEN : SHOWN),
     open: (url) => opened.push(url),
-    onChange: (v) => changes.push(v),
     ...over,
   });
   const toggle = row.element.querySelector<HTMLButtonElement>(".spec__toggle")!;
   const status = () => row.element.querySelector(".site-visibility__status")?.textContent ?? "";
-  return { row, toggle, status, saves, changes, opened };
+  return { row, toggle, status, saves, opened };
 }
 
 describe("loading", () => {
@@ -130,7 +128,7 @@ describe("loading", () => {
 describe("saving", () => {
   test("a click is not optimistic: disabled until the PUT answers, then painted from it", async () => {
     const answer = deferred<SiteVisibility>();
-    const { row, toggle, saves, changes } = make({
+    const { row, toggle, saves } = make({
       save: (hidden) => (saves.push(hidden), answer.promise),
     });
     row.refresh();
@@ -145,7 +143,6 @@ describe("saving", () => {
     await flush();
     expect(toggle.textContent).toBe("on");
     expect(toggle.disabled).toBe(false);
-    expect(changes.at(-1)).toEqual(HIDDEN);
   });
 
   test("the server's answer wins over what was asked for", async () => {

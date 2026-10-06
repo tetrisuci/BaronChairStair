@@ -22,20 +22,11 @@
  * anything was solved. A player who solves all four tiers on ten days is 40 and
  * 10. Both labels say which, because a screen with two unexplained numbers that
  * disagree is a screen nobody trusts.
- *
- * Your own profile also links to your page on db.tetrisatuci.org, and only
- * your own: the game knows the site's name for the player reading, from
- * `/api/site-visibility`, and for nobody else. That answer and the profile
- * arrive by different requests in either order, so each is kept and the link
- * is redrawn from both whenever either lands. It is drawn only when the site
- * would actually show this player — `profilePath` decides — so a player who
- * chose to be hidden is never handed a link to the page they asked not to have.
  */
 
-import type { PlayerProfile, SiteVisibility } from "../api";
+import type { PlayerProfile } from "../api";
 import { playerAvatar } from "./avatar";
 import { el, formatDuration, panel, replaceChildren, stat } from "./dom";
-import { type OpenLink, profilePath, siteLink } from "./site-link";
 
 /** One line this player found, as their profile lists it. */
 export interface FoundLine {
@@ -91,13 +82,6 @@ export interface Profile {
     /** Opens a puzzle's solutions. Only ever called for an `openable` line. */
     onOpen?: (puzzleId: number) => void,
   ): void;
-  /** Where the reader stands on db.tetrisatuci.org; null when unknown. */
-  setSiteVisibility(visibility: SiteVisibility | null): void;
-}
-
-export interface ProfileOptions {
-  /** Opens a db.tetrisatuci.org link. Without it the profile draws no link. */
-  readonly openSite?: OpenLink;
 }
 
 /** "3 days ago", roughly. A list of finds wants an age, not a timestamp. */
@@ -127,22 +111,8 @@ function totalTime(ms: number): string {
   return `${hours}h ${minutes - hours * 60}m`;
 }
 
-export function createProfile(options: ProfileOptions = {}): Profile {
+export function createProfile(): Profile {
   const name = el("h2", { class: "display profile__name", text: "" });
-  const site = el("span", { class: "profile__site" });
-  /** Whether the profile on screen is the reader's own; false while one is fetched. */
-  let showingSelf = false;
-  let visibility: SiteVisibility | null = null;
-
-  function drawSite(): void {
-    const path = showingSelf ? profilePath(visibility) : null;
-    const open = options.openSite;
-    replaceChildren(
-      site,
-      path && open ? siteLink("Your page on db.tetrisatuci.org", path, open) : null,
-    );
-  }
-
   /** Replaced on every update: the picture belongs to whoever is being shown. */
   const portrait = el("div", { class: "profile__portrait" });
   /** First and leftmost when it is shown, as every way out on this app is. */
@@ -165,7 +135,7 @@ export function createProfile(options: ProfileOptions = {}): Profile {
   const element = el(
     "div",
     { class: "profile" },
-    el("div", { class: "profile__head" }, back, portrait, name, site),
+    el("div", { class: "profile__head" }, back, portrait, name),
     el(
       "div",
       { class: "profile__cards" },
@@ -192,16 +162,8 @@ export function createProfile(options: ProfileOptions = {}): Profile {
       replaceChildren(found);
       foundCard.hidden = true;
       note.textContent = "Reading…";
-      showingSelf = false;
-      drawSite();
-    },
-    setSiteVisibility(next) {
-      visibility = next;
-      drawSite();
     },
     update(stats, onBack, onOpen) {
-      showingSelf = stats.isSelf === true;
-      drawSite();
       replaceChildren(
         back,
         onBack && stats.isSelf === false

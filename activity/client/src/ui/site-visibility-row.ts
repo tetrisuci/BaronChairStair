@@ -32,11 +32,6 @@ export interface SiteVisibilityRowOptions {
   readonly load: () => Promise<SiteVisibility>;
   readonly save: (hidden: boolean) => Promise<SiteVisibility>;
   readonly open: OpenLink;
-  /**
-   * Told every answer the server gives, so the links on the other screens can
-   * follow a change made here without asking again.
-   */
-  readonly onChange?: (visibility: SiteVisibility) => void;
 }
 
 export interface SiteVisibilityRow {
@@ -94,7 +89,6 @@ export function createSiteVisibilityRow(options: SiteVisibilityRowOptions): Site
 
   function accept(answer: SiteVisibility): void {
     paint({ hidden: answer.hidden, busy: false, message: "", retry: false });
-    options.onChange?.(answer);
   }
 
   function refresh(): void {
