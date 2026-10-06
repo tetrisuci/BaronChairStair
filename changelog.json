@@ -4,7 +4,8 @@
     {
       "version": "beta 0.15",
       "changes": [
-        "**The archive now has a Players table and a recent-solves feed.** Sort players by days solved, best streak, puzzles cleared, lines found or best rush; search by name and narrow to a server. Each profile shows per-tier solve rates and times, a calendar and puzzles cleared. The Solves page lists daily solves by tier, server and puzzle. Players who choose to hide still appear only as \"a player\" and have no profile."
+        "**The archive now has a Players table and a recent-solves feed.** Sort players by days solved, best streak, puzzles cleared, lines found or best rush; search by name and narrow to a server. Each profile shows per-tier solve rates and times, a calendar and puzzles cleared. The Solves page lists daily solves by tier, server and puzzle. Players who choose to hide still appear only as \"a player\" and have no profile.",
+        "**To leave yourself off the site**, open the activity's Settings → On the web and turn on **Hide me on db.tetrisatuci.org**. Your results there then read \"a player\", within a few minutes, and you can turn it off again whenever you like. The game's own boards are unchanged."
       ]
     },
     {
