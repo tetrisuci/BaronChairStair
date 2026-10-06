@@ -24,72 +24,60 @@ clear in it, so the columns line up in Discord's proportional font. The bot
 leaves the boards out; `render.py --highlights`, run by hand on a `.pkl` from
 `build_snapshots.py`, still draws them.
 
-### `/puzzle` — the daily puzzle
+### `/puzzle play` — the daily puzzle
 
 ```
-/puzzle               a short message and a link that opens the activity
+/puzzle play          a short message and a link that opens the activity
 ```
 
-One command, not a group. It used to be four; the other three rendered in
-Discord what the activity now shows on its own front screen — boards, rush and
-the rules all live one click away — and each was a second place for a board to
-be wrong. The one job left is the one Discord is actually for: announcing the
-day in a channel, with a way in.
+`/puzzle` is a group with `play` and `changelog` subcommands. Discord does not
+allow a command to be both directly invocable and a group, so `play` replaces
+the former bare `/puzzle`. It posts the activity link without release notes.
+Boards, rush, rules and scores live in the activity, one click away.
 
 The bot owns none of the game. Puzzle details and scores stay in the activity;
 the bot reads only the day number to record where a recap should reply. Needs
 `PUZZLE_APP_ID` and `PUZZLE_API`. Without the first the command still
 registers and says what is missing rather than failing shut; without the
 second it posts the launch link with no puzzle details. `PUZZLE_API_KEY` is
-for the recap below and for `/archive sync`, not for `/puzzle` itself.
+for the recap below and for `/archive sync`, not for `/puzzle play` itself.
 
 The daily recap is **off unless `PUZZLE_RECAP=on`** is set in `.env`, because it
 mentions everyone it names — turned on, it pings every player it names, every
 day. Turning it on posts the previous day's recap as soon as the bot starts,
 then one a day. When it is on, once a day after the puzzle turns over, the bot
-replies to that server's own `/puzzle` message with how yesterday went — who
+replies to that server's own `/puzzle play` message with how yesterday went — who
 solved which of the day's puzzles and how fast, who missed, and how long the
 server's run of solves is. It happens once per server per day, and only in
 servers that announced the puzzle in the first place, because the reply needs
 something to reply to.
 
-### Versions, and how a server hears about them
+### `/puzzle changelog` — changes on request
+
+```
+/puzzle changelog [count:5]
+```
+
+Requests the five most recent individual change bullets by default. `count` accepts
+1–20 changes, newest first, across release boundaries; it counts changes rather
+than releases. The reply is ephemeral, visible only to the person who requested
+it, and uses `AllowedMentions.none()` so release notes cannot ping anyone.
+Launching the activity never posts a changelog to the channel.
+
+The command can be used repeatedly. It does not track which releases a server
+has seen, and old `bot_versions` records do not hide notes or prevent another
+request. Each request produces one private reply with an inline preview capped
+at 1,900 UTF-16 units. If the requested changes do not fit, the reply attaches
+`puzzle-changelog.txt` containing every selected change in full. The preview
+notes any omitted bullets or shortened first bullet; the attachment preserves
+the full requested notes without adding channel messages.
 
 The project's version is the first release listed in `changelog.json` at the
-repository root — the same list that says what each one changed. Read by the
-bot's `/puzzle` announcement, below.
-
-**A server is told the first time somebody runs `/puzzle` on a build it has not
-heard about**, as a plain message behind the activity link. Not on a timer and
-not at boot: a deploy should not wake a channel up, so the note rides along
-behind something a person actually asked for, and only the first person to ask
-sees it arrive. It sends with `AllowedMentions.none()`, so a release note can
-never ping a room however it is worded.
-
-**It names every version the server missed, not just the newest one.**
-Production pulls when somebody deploys, which may be several releases after the
-last deploy — announcing only the tip would drop the middle ones silently. Past
-three releases the message says how many older ones it is not listing, because a
-server that has never heard from the bot is owed the entire history and nobody
-typing `/puzzle` asked to read it — and it is trimmed by *length* as well, since
-counting releases is not counting characters. Before that cap existed, three
-releases of eight wordy notes rendered to 2,029 characters, which Discord
-rejects outright; the same input now fits.
-
-Releasing is adding an entry at the top of `releases` in `changelog.json`;
-`VERSION` in `client/changelog.py` is read from it, and a test fails if it is
-not. Order in that list *is* the version order — comparing `beta 0.10` against
-`beta 0.9` as text is wrong and as numbers is a parser nobody needs.
-
-What each server has been told lives in `bot_versions`, one row per guild, and
-the claim is taken before the message is sent — the write is what stops a second
-caller, so it has to happen where two callers can still both be running.
-
-A send that fails therefore loses those notes **permanently**: the row already
-says the server has heard, and the next release names only what came after it.
-That is a trade, not a mitigation, and it is the right one only because nobody
-depends on a changelog. Something that mattered would claim after the send and
-dedupe instead.
+repository root — the same list that says what each one changed. Releasing is
+adding an entry at the top of `releases`; `VERSION` in `client/changelog.py`
+is read from it, and a test fails if it is not. Order in that list *is* the
+version order — comparing `beta 0.10` against `beta 0.9` as text is wrong and
+as numbers is a parser nobody needs.
 
 ### `/report` — a bug, without a GitHub account
 
@@ -102,8 +90,8 @@ unsolvable" without making an account. The title is their Discord display name
 and the category; the body is what they wrote, followed by a line saying who
 sent it and from which server.
 
-Its own command rather than `/puzzle report`: Discord will not let a command be
-both invocable and a group, and `/puzzle` is the one people already type.
+It stays a top-level command so a player can file a report directly without
+opening the puzzle command group.
 
 Needs `GITHUB_TOKEN` and `GITHUB_REPO`; without them the command still
 registers, and tells the player privately that an officer has yet to finish
@@ -151,9 +139,8 @@ board, queue, hold, target or answer voids that puzzle's discovered lines
 straight away. Neither `publish-archive` nor `bun run puzzles` is reachable
 from Discord.
 
-A group of its own rather than `/puzzle sync`, for the same reason `/report` is
-top-level: Discord will not let a command be both invocable and a group, and
-`/puzzle` is the one people already type.
+It stays in its own group, separate from the player-facing
+`/puzzle play` and `/puzzle changelog` commands.
 
 **Anyone may run it, once every 10 minutes.** It used to be limited to an
 allowlist of officers; now any member in any server may, and what bounds it is

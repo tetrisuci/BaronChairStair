@@ -3,14 +3,9 @@ archive_commands.py
 ~~~~~~~~~~~~~~~~~~~
 `/archive sync` — pull the club's spreadsheet into the puzzle database.
 
-A group rather than `/puzzle sync`, and that is worth recording because it is
-the second time the decision has been made. Discord will not let one name be
-both invocable and a group, so `/puzzle` becoming a parent would rename the
-command everybody already types — the command that also announces each new
-version to a server. `puzzle_commands.py` collapsed four subcommands into one
-for that reason, and `/report` is top-level for the same one. `/archive` is a
-name nobody types today, so it costs nothing and leaves room for the siblings
-this will want later: a status, and one day a publish.
+Archive operations keep their own `/archive` group, separate from the public
+`/puzzle play` and `/puzzle changelog` commands. This leaves room for status
+and publishing operations without mixing archive tools with daily play.
 
 **A sync from here is a published sync.** `bun run sync-archive` reads the
 sheet and upserts every puzzle it can replay; from a terminal everything it

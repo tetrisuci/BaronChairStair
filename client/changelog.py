@@ -1,16 +1,16 @@
 """
 changelog.py
 ~~~~~~~~~~~~
-What the bot is, what version it is, and what changed since a server last heard.
+What the bot is, what version it is, and recent player-facing changes.
 
 Split from the commands for the same reason `report_text.py` is: it is data and
 string building with no Discord in it, so it can be tested with bare `python3`
 on a box that has none of the bot's dependencies installed.
 
-The one rule everything here follows: **a server is told about every version it
-has not been told about**, not just the newest one. Production pulls whenever
-somebody deploys, which may be several versions after the last deploy, and a
-changelog that only ever described the tip would silently skip the middle.
+`/puzzle changelog` reads the newest individual changes on demand. Formatting is
+stateless: viewing the notes never records a guild as having seen a version.
+The older announcement and database helpers remain for compatibility, but the
+puzzle command no longer uses them or posts notes automatically.
 
 The notes themselves are **not** in this file. They live in `changelog.json` at
 the repository root. That was so the activity could show them too; that card was
@@ -83,7 +83,7 @@ def load_releases(path: Path = CHANGELOG_PATH) -> tuple[Release, ...]:
 #: Newest first. Read once, at import, like the rest of this module's data.
 RELEASES: tuple[Release, ...] = load_releases()
 
-#: What this build is. Read by `/puzzle` and by whatever announces a deploy.
+#: What this build is. Read by the puzzle command and legacy announcement API.
 #:
 #: `"unknown"` only when the notes could not be read at all, which
 #: `load_releases` has already said on stderr. Nothing announces under that name
@@ -91,7 +91,11 @@ RELEASES: tuple[Release, ...] = load_releases()
 #: and never lands in `bot_versions` to be compared against later.
 VERSION: str = RELEASES[0].version if RELEASES else "unknown"
 
-#: How many releases one message will spell out in full.
+#: Default and upper bound for individual changes requested on demand.
+DEFAULT_RECENT_CHANGES = 5
+MAX_RECENT_CHANGES = 20
+
+#: How many releases a legacy announcement will spell out in full.
 #:
 #: A server that has never heard from the bot has "not been told" about every
 #: version there has ever been, and reading the project's whole history is not
@@ -107,6 +111,97 @@ MAX_RELEASES_IN_MESSAGE = 3
 #: hears, not one it hears late. So the message is trimmed by length as well as
 #: by release count, and says what it dropped.
 MAX_MESSAGE_CHARS = 1900
+
+
+def format_recent_changes(
+    count: int = DEFAULT_RECENT_CHANGES, *, truncate: bool = True
+) -> str:
+    """Return up to `count` newest changes, grouped by version.
+
+    Changes follow release order and then their order within each release;
+    `count` counts individual bullets rather than whole releases. No guild state
+    is read or written. When the requested notes exceed the message budget,
+    omit whole older bullets first and say how many were omitted. An oversized
+    first bullet is shortened with an explicit truncation notice. `truncate=False`
+    returns the complete requested notes for an attachment rather than a message.
+    """
+    if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= MAX_RECENT_CHANGES:
+        raise ValueError(f"count must be an integer between 1 and {MAX_RECENT_CHANGES}")
+
+    selected = [
+        (release.version, change)
+        for release in RELEASES
+        for change in release.changes
+    ][:count]
+    if not selected:
+        return "No changes are available in the puzzle bot changelog yet."
+
+    opening = (
+        f"**Puzzle bot changelog — {len(selected)} most recent "
+        f"{'change' if len(selected) == 1 else 'changes'}**"
+    )
+    if not truncate:
+        return _render_recent(opening, selected, "", limit_versions=False)
+    for shown in range(len(selected), 0, -1):
+        omitted = len(selected) - shown
+        notice = (
+            f"_{omitted} requested {'change' if omitted == 1 else 'changes'} "
+            "omitted to fit one message._"
+        ) if omitted else ""
+        text = _render_recent(opening, selected[:shown], notice)
+        if _discord_chars(text) <= MAX_MESSAGE_CHARS:
+            return text
+
+    # Even one bullet is oversized. Preserve the heading and notice, shortening
+    # only the bullet text so Markdown headings cannot be cut open mid-message.
+    omitted = len(selected) - 1
+    notice = "_This change was truncated to fit one message"
+    if omitted:
+        notice += (
+            f"; {omitted} more requested {'change' if omitted == 1 else 'changes'} omitted"
+        )
+    notice += "._"
+    version, change = selected[0]
+    fixed = _render_recent(opening, [(version, "")], notice)
+    available = MAX_MESSAGE_CHARS - _discord_chars(fixed) - 1
+    prefix = []
+    used = 0
+    for char in change:
+        width = 2 if ord(char) > 0xFFFF else 1
+        if used + width > available:
+            break
+        prefix.append(char)
+        used += width
+    shortened = "".join(prefix).rstrip() + "…"
+    return _render_recent(opening, [(version, shortened)], notice)
+
+
+def _render_recent(
+    opening: str, changes: list[tuple[str, str]], notice: str, *, limit_versions: bool = True
+) -> str:
+    """Group consecutive notes under their version and append any limit notice."""
+    lines = [opening]
+    previous_version = None
+    for version, change in changes:
+        if version != previous_version:
+            # Release versions are short labels. Bound even a hand-edited label
+            # so there is always room for an oversized-note truncation notice.
+            label = version if not limit_versions or len(version) <= 100 else version[:99] + "…"
+            lines.extend(("", f"__{label}__"))
+            previous_version = version
+        lines.append(f"• {change}")
+    if notice:
+        lines.extend(("", notice))
+    return "\n".join(lines)
+
+
+def _discord_chars(text: str) -> int:
+    """Count UTF-16 units, keeping replies safe even with emoji in a note."""
+    return sum(2 if ord(char) > 0xFFFF else 1 for char in text)
+
+
+# ── Legacy announcement API ─────────────────────────────────────────────────
+# Kept for old callers and database compatibility; `/puzzle` does not use it.
 
 
 def releases_since(seen: str | None) -> tuple[Release, ...]:
@@ -133,11 +228,10 @@ def is_current(seen: str | None) -> bool:
 
 def format_announcement(releases: tuple[Release, ...]) -> str:
     """
-    The message a server gets, or `""` when there is nothing to say.
+    Legacy announcement text, or `""` when there is nothing to say.
 
-    Deliberately plain text and no embed: this rides along behind the puzzle
-    announcement, which *is* an embed, and two in a row reads as two things to
-    deal with rather than one thing and a footnote.
+    Preserves the historical plain-text format for old callers. The puzzle
+    command now uses `format_recent_changes` only when notes are requested.
     """
     if not releases:
         return ""
@@ -183,9 +277,10 @@ def _render(releases: tuple[Release, ...], count: int) -> str:
 
 # ── What each server has already been told ───────────────────────────────────
 #
-# Per guild rather than per process. Two servers can first run `/puzzle` days
-# apart, and the one that has been quiet must still hear about the versions it
-# slept through rather than only the newest.
+# Legacy state, retained rather than deleting existing guild records. In the
+# former automatic announcement flow, different servers heard about releases
+# at different times, so tracking belonged to the guild rather than the process.
+# On-demand viewing does not consult or update any of these records.
 
 
 def init_db(db: sqlite3.Connection) -> None:
@@ -214,8 +309,8 @@ def claim_announcement(
     Takes the right to announce `version` to one server, once.
 
     Returns ``(claimed, previously_seen)``. `claimed` is false when this server
-    has already been told — including when a concurrent `/puzzle` won the race a
-    moment ago.
+    has already been told — including when a concurrent announcement caller won
+    the race a moment ago.
 
     Claimed *before* the send and not after, for the reason `puzzle_recap.claim`
     gives: the write is what excludes the second caller, so it has to happen
@@ -249,9 +344,10 @@ def announcement_for(
     db: sqlite3.Connection, guild_id: int, version: str = VERSION
 ) -> str:
     """
-    The message this server should see now, or `""` if it should see nothing.
+    Legacy message this server should see, or `""` if it should see nothing.
 
-    Claims as it goes, so calling it twice announces once.
+    Claims as it goes, so calling it twice announces once. This is deliberately
+    separate from stateless, on-demand viewing and is not used by `/puzzle`.
 
     With no notes on disk there is nothing to announce and, more to the point,
     nothing that may be *claimed*: recording `"unknown"` against a server would

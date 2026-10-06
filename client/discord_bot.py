@@ -94,9 +94,8 @@ from build_snapshots import build_rounds
 from render import top_attack_bursts
 import presence_tracker
 import puzzle_commands
-import changelog
 import puzzle_recap
-from puzzle_commands import puzzle_command
+from puzzle_commands import puzzle
 import report_commands
 import archive_commands
 import sync_window
@@ -314,16 +313,6 @@ if recap_error is None and not puzzle_recap.enabled():
     print("puzzle recap off: set PUZZLE_RECAP=on in .env to turn it on",
           file=sys.stderr)
 
-# bot_versions, owned by client/changelog.py. Same policy again: without the
-# table nobody is told what changed, and `/puzzle` carries on regardless.
-try:
-    changelog.init_db(db)
-    puzzle_commands.version_db = db
-    changelog_error = None
-except sqlite3.Error as e:
-    changelog_error = f"{type(e).__name__}: {e}"
-    print(f"version announcements disabled: {changelog_error}", file=sys.stderr)
-
 # archive_sync_window, owned by client/sync_window.py: when /archive sync
 # last started, so a restart does not reopen its ten-minute window. Without
 # the table the window still holds, but only until the next restart.
@@ -336,7 +325,7 @@ except sqlite3.Error as e:
 
 # presence_samples, owned by client/presence_tracker.py. A schema mismatch
 # disables presence tracking instead of taking the whole bot down with it --
-# same policy as the recap and changelog tables above.
+# same policy as the recap table above.
 try:
     presence_tracker.init_db(db)
     presence_error = None
@@ -716,16 +705,9 @@ async def activity_now(interaction: discord.Interaction,
 
 
 bot.tree.add_command(activity)
-bot.tree.add_command(puzzle_command)
-# Its own top-level command rather than `/puzzle report`: Discord will not
-# let a command be both invocable and a group, and `/puzzle` is the one
-# people already type. See report_commands.py's header.
+bot.tree.add_command(puzzle)
+# Reports and archive operations keep their existing commands.
 bot.tree.add_command(report_commands.report_command)
-# A group of its own rather than `/puzzle sync`, for the reason two lines up:
-# `/puzzle` is the command people type, and making it a parent would rename it.
-# `/archive` is a name nobody types, so the subcommands cost nothing and there
-# is room beside `sync` for the status and publish this will want later. See
-# archive_commands.py's header.
 bot.tree.add_command(archive_commands.archive)
 
 
