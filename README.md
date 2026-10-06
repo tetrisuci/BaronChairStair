@@ -37,7 +37,8 @@ for as long as you leave it there — and undo and redo are always one key away.
 
 | Command | What it does |
 | :-- | :-- |
-| `/puzzle` | A short message and the link that opens the activity |
+| `/puzzle play` | A short message and the link that opens the activity |
+| `/puzzle changelog [count:5]` | The most recent changes, shown privately; choose 1–20 individual changes. Long notes include a full text attachment |
 | `/highlights` | Attach a `.ttrm` replay — get each player's biggest attack bursts, clear by clear |
 | `/report` | File a bug or a suggestion. No GitHub account needed |
 | `/activity graph`<br>`/activity now` | Who is online, right now or across the last week |
@@ -91,7 +92,7 @@ flowchart LR
   A["Activity · activity/"]
   E["Engine bridge · server/"]
 
-  D -->|"/puzzle"| B
+  D -->|"/puzzle play"| B
   D -->|"opens the activity"| A
   B -->|"the day's results, over HTTP"| A
   B -->|"parses .ttrm replays"| E
@@ -119,7 +120,7 @@ BaronChairStair/
 ├── activity/                the Discord Activity — own README, own tests, own .env
 ├── client/
 │   ├── discord_bot.py       the bot: commands, schedulers, entry point
-│   ├── puzzle_commands.py   /puzzle, and the daily recap
+│   ├── puzzle_commands.py   /puzzle play, /puzzle changelog, and the daily recap
 │   ├── archive_commands.py  /archive sync, open to anyone once every 10 minutes
 │   ├── report_commands.py   /report — files a GitHub issue for a player
 │   ├── teto_client.py       Python client for the engine bridge
@@ -179,9 +180,9 @@ Copy `example.env` to `.env` at the repo root — every variable is documented
 inline. The ones that matter:
 
 - **`DISCORD_TOKEN`** — the bot. Required.
-- **`PUZZLE_APP_ID`, `PUZZLE_API`** — the `/puzzle` command.
+- **`PUZZLE_APP_ID`, `PUZZLE_API`** — the `/puzzle play` command.
 - **`PUZZLE_API_KEY`** — the daily recap, and `/archive sync` telling the
-  activity to reload; `/puzzle` itself never sends it. It must match
+  activity to reload; `/puzzle play` itself never sends it. It must match
   `BOT_API_KEY` in `activity/.env` — different names on either side, and a
   mismatch is a 401: the recap silently never posts, and a sync publishes but
   the activity refuses to reload, so nothing goes live until its next restart.

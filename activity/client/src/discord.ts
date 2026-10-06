@@ -74,6 +74,10 @@ async function connectToDiscord(api: Api, clientId: string): Promise<Connection>
   const { code } = await step("authorising", () => sdk.commands.authorize({
     client_id: clientId,
     response_type: "code",
+    // Reuse Discord's existing approval on returning launches. Still perform
+    // the fresh code exchange/authenticate handshake; do not persist identity
+    // or access tokens across accounts or activity instances.
+    prompt: "none",
     // `identify` names the player on the leaderboard; `guilds` lets the server
     // confirm they are really in the server whose leaderboard they are writing
     // to. Neither is used for anything else.

@@ -26,9 +26,10 @@ with an ordering rule inside it, and it is the half worth having your full atten
 
 **Two exceptions, for as long as each holds.** First, while `changelog.json` carries the
 `beta 0.12` entry, which announces https://db.tetrisatuci.org, and that site is not yet
-up and verified on this box, do not restart the bot. A restart announces every release a
-server has not been told about — not only the newest, so a later release on top changes
-nothing — the next time `/puzzle` runs there, and an announcement cannot be withdrawn.
+up and verified on this box, do not restart the bot. Players can request older
+changes through `/puzzle changelog`, so a newer release on top does not hide that
+site announcement. Keep this verification gate even though `/puzzle play` no
+longer posts release notes automatically.
 Bring the site up first — [`activity/puzzledb/DEPLOY.md`](activity/puzzledb/DEPLOY.md),
 rule 2. From `activity/`:
 
@@ -43,8 +44,8 @@ that site is verified too — `https://db.tetrisatuci.org/data/leaderboards.json
 answering `200`, and the setting tested in Discord, both ways. The `beta 0.12` gate
 alone is not enough: the site from before the pull passes it while having none of
 the pages `beta 0.13` describes. The checks are in
-[`activity/puzzledb/DEPLOY.md`](activity/puzzledb/DEPLOY.md), rule 2; if neither note
-has been announced, one restart announces both once both gates pass. From
+[`activity/puzzledb/DEPLOY.md`](activity/puzzledb/DEPLOY.md), rule 2. Both gates
+must pass before a restart makes these release notes available on request. From
 `activity/`:
 
 ```sh
@@ -126,8 +127,8 @@ grep -oE '^[A-Z_][A-Z0-9_]*=' .env | tr -d '='
 | Key | Needed for | Unset means |
 |---|---|---|
 | `DISCORD_TOKEN` | everything | the bot does not start |
-| `PUZZLE_APP_ID` | the launch link | `/puzzle` cannot build its button |
-| `PUZZLE_API` | `/puzzle`'s day number for recap replies; the recap; `/archive sync` telling the activity to reload | `/puzzle` posts only the launch link, with "puzzle details are unavailable right now"; the recap has nowhere to read from; a sync publishes, but the activity is not told |
+| `PUZZLE_APP_ID` | the launch link | `/puzzle play` cannot build its button |
+| `PUZZLE_API` | `/puzzle play`'s day number for recap replies; the recap; `/archive sync` telling the activity to reload | `/puzzle play` posts only the launch link, with "puzzle details are unavailable right now"; the recap has nowhere to read from; a sync publishes, but the activity is not told |
 | `PUZZLE_API_KEY` | the recap; `/archive sync` telling the activity to reload | the recap never posts; once a day is owed, the log names the key every 5 minutes (`recap failed for guild …`); a sync publishes, but the activity is not told |
 | `PUZZLE_RECAP` | the recap | the recap is off — the default, because it pings every player it names |
 | `GITHUB_TOKEN` | `/report` | `/report` answers "Reports aren't wired up yet" |
@@ -247,8 +248,11 @@ propagate. To push the tree into one guild immediately, and tidy up afterwards, 
    `on_ready`, after the command sync; a reconnect can print it again. It does not list
    the guilds. It goes to stdout, unlike the lines below, so a bot not run on a terminal
    and started without `python -u` or `PYTHONUNBUFFERED=1` can hold it back for a long
-   time; under a service, `/puzzle` answering is the surer sign.
-2. `/puzzle` returns the launch button, and the activity opens from it.
+   time; under a service, `/puzzle play` answering is the surer sign.
+2. `/puzzle play` returns the launch button, and the activity opens from it.
+   `/puzzle changelog count:5` requests five changes privately, attaching all
+   selected notes as `puzzle-changelog.txt` if the inline preview is too long.
+   Launching the activity posts no release notes to the channel.
 3. The daily recap is **off unless `PUZZLE_RECAP=on`**, and the log says so at start-up
    (`puzzle recap off: …`). Turning it on posts the previous day's recap as soon as the
    bot starts, then one a day. If it is on and does not post, read the log. An unset

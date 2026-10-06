@@ -1,6 +1,18 @@
 {
-  "$comment": "The project's version and its player-facing release notes. Newest first; order in this list IS the version order. Read by client/changelog.py — the bot's /puzzle announcement. Adding a release means putting it at the top. Keep `changes` to things a player can see.",
+  "$comment": "The project's version and its player-facing release notes. Newest first; order in this list IS the version order. Read by client/changelog.py for /puzzle changelog, requested privately. Adding a release means putting it at the top. Keep `changes` to things a player can see.",
   "releases": [
+    {
+      "version": "beta 0.18",
+      "changes": [
+        "**Reopening the activity now asks Discord to reuse your existing permission approval.** The sign-in still verifies your identity and server. First-time access, changed permissions or a revoked approval can still show the consent screen."
+      ]
+    },
+    {
+      "version": "beta 0.17",
+      "changes": [
+        "**Release notes now appear only when you ask.** Use `/puzzle play` to open the activity without posting a changelog to the channel. Use `/puzzle changelog` to see the five most recent changes privately, or set `count` from 1 to 20."
+      ]
+    },
     {
       "version": "beta 0.16",
       "changes": [

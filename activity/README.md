@@ -157,20 +157,32 @@ bun run tools/e2e-submit.ts http://localhost:3998
    detects it is running inside Discord; the server accepts both forms, so no
    further configuration is needed.
 6. **Launch it** from the activity picker in any voice channel, or post a link
-   with `/puzzle`.
+   with `/puzzle play`.
 
 The activity asks for two OAuth scopes. `identify` names the player on the
 leaderboard. `guilds` lets the server confirm a player is really in the server
 whose leaderboard they are writing to — without it, the guild is whatever the
 client claims, and anyone could post into any server's standings.
 
+Each launch still performs a fresh SDK authorization-code exchange and
+authentication handshake. The client passes `prompt: "none"` so Discord can
+reuse an existing approval for these scopes rather than requesting consent
+again. First-time players, changed scopes, revoked grants, or a different
+Discord account can still require approval. Access tokens and player sessions
+remain in memory; the game does not cache another account's credentials to
+skip sign-in.
+
+If returning players see the permission screen on every launch, confirm that
+the deployed client bundle includes `prompt: "none"`. Rebuild with
+`bun run build` from `activity/` and follow [the deployment guide](DEPLOY.md);
+pulling code and restarting the server alone leaves the old bundle in place.
+
 ### The bot commands
 
-`client/puzzle_commands.py` adds one command, `/puzzle`, which announces the
-day in a channel with a way in. It used to be a group of four; the other three
-rendered in Discord what the activity now shows on its own front screen, each
-in its own embed, each a second place for a board to be wrong. The bot owns
-none of the game — it reads the activity server so the two can never disagree.
+`client/puzzle_commands.py` registers `/puzzle play`, which posts the activity
+link, and `/puzzle changelog`, which returns recent changes privately on request.
+Puzzle details and boards stay in the activity. The bot reads the day number
+only to remember where tomorrow's recap should reply.
 Set these in the repo-root `.env`:
 
 ```

@@ -22,10 +22,8 @@ The line between them is whether the answer is about the *player*. Too long,
 too often, and not set up yet are all private. A GitHub outage is public,
 because it is about the world and the next person to try will hit it too.
 
-Not a subcommand of `/puzzle`. Discord will not let a command be both invocable
-and a group, and `/puzzle` is the one people type to announce the day; making it
-a group to fit this in would rename the command everybody already knows for the
-sake of a word.
+Reports keep the existing top-level `/report` command, separate from
+`/puzzle play` and the privately requested `/puzzle changelog`.
 
 Environment (see example.env):
     GITHUB_TOKEN    A fine-grained token with Issues: read and write on the one

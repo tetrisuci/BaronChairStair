@@ -1,37 +1,21 @@
-"""
-That the changelog actually reaches a channel, and reaches it silently.
+"""Puzzle command behavior without a Discord connection or activity HTTP calls.
 
-`test_changelog.py` covers what the message says and who is owed one. This
-covers the wiring: that `/puzzle` posts it, that it posts once, and — the part
-the club asked for explicitly — that it **cannot ping anybody**.
-
-`puzzle_commands` imports `discord` and `aiohttp` at module scope, and neither
-is installed on a box running the suite with bare `python3`. Rather than skip,
-the two are stubbed with just the surface this module touches: the point of
-these tests is our own control flow, and a real gateway library would not make
-them truer. Everything stubbed here is asserted against, so a stub that drifts
-from the real thing shows up as a failing test rather than as a false pass.
-
-One deliberate side effect, stated because it is surprising: installing the
-stubs makes `puzzle_recap` importable too, so `test_puzzle_recap.py` stops
-skipping on a bare-`python3` box and its checks run against the same stubs.
-That is more coverage rather than less, but it does mean this file changes
-whether another one skips.
-
-`/puzzle` calling it at all is pinned by reading the source, not by driving the
-command — driving it means an HTTP round trip to the activity, and the failure
-worth catching is somebody deleting one line.
+The same small stubs keep archive/recap tests importable on a bare Python box.
+Run with real discord.py to also verify Discord's registered command schema.
 """
 
 import asyncio
+import ast
+import os
+from pathlib import Path
 import sqlite3
 import sys
 import types
 import unittest
+from unittest.mock import AsyncMock, patch
 
 
 def _install_stubs() -> bool:
-    """Fakes `discord` and `aiohttp`, unless the real ones are installed."""
     try:
         import discord  # noqa: F401
         import aiohttp  # noqa: F401
@@ -65,287 +49,266 @@ def _install_stubs() -> bool:
         def from_rgb(*rgb):
             return rgb
 
-    discord.AllowedMentions = AllowedMentions
-    discord.Embed = Embed
-    discord.Colour = Colour
-    discord.Interaction = object
-    discord.Message = object
     class HTTPException(Exception):
-        # discord.py's takes (response, message). Constructing it with one
-        # argument works here and raises there, which would make a test that
-        # passes on a bare box fail on the bot's own machine.
         def __init__(self, response, message=None):
             super().__init__(message or "http error")
             self.response, self.text = response, message
 
+    class File:
+        def __init__(self, fp, filename):
+            self.fp, self.filename = fp, filename
+
+        def close(self):
+            self.fp.close()
+
+    class Group:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+            self.commands = []
+
+        def command(self, **kwargs):
+            def decorate(fn):
+                fn.name = kwargs["name"]
+                self.commands.append(fn)
+                return fn
+            return decorate
+
+        def get_command(self, name):
+            return next((command for command in self.commands if command.name == name), None)
+
+    class Range:
+        def __class_getitem__(cls, parameters):
+            return parameters[0]
+
+    discord.AllowedMentions = AllowedMentions
+    discord.Embed = Embed
+    discord.Colour = Colour
     discord.HTTPException = HTTPException
-
+    discord.File = File
+    discord.Interaction = object
+    discord.Message = object
     app_commands = types.ModuleType("discord.app_commands")
-
-    def command(**_kwargs):
-        return lambda fn: fn
-
-    app_commands.command = command
+    app_commands.command = lambda **_kwargs: (lambda fn: fn)
+    app_commands.describe = lambda **_kwargs: (lambda fn: fn)
+    app_commands.Group = Group
+    app_commands.Range = Range
     discord.app_commands = app_commands
     sys.modules["discord"] = discord
     sys.modules["discord.app_commands"] = app_commands
-
     aiohttp = types.ModuleType("aiohttp")
     aiohttp.ClientError = type("ClientError", (Exception,), {})
-    aiohttp.ClientTimeout = lambda **kwargs: None
+    aiohttp.ClientTimeout = lambda **_kwargs: None
     aiohttp.ClientSession = object
     sys.modules["aiohttp"] = aiohttp
     return True
 
 
-_install_stubs()
+_STUBBED = _install_stubs()
 
 import changelog  # noqa: E402
 import puzzle_commands  # noqa: E402
+import puzzle_recap  # noqa: E402
 
 
-class FailedResponse:
-    """The bare minimum `discord.HTTPException` needs to be constructible.
+class Response:
+    def __init__(self):
+        self.sent = []
+        self.deferred = []
 
-    Which class that is depends on the box. `_install_stubs` above leaves the
-    real `discord.py` alone when it is installed, so on the bot's own machine
-    this exception is `discord.errors.HTTPException` — and its constructor reads
-    `response.status` outright, then formats `'{0.status} {0.reason}'`. Both, not
-    just the first: fixing only `status` moves the failure one line down.
+    async def send_message(self, content=None, **kwargs):
+        self.sent.append({"content": content, **kwargs})
 
-    This used to be `object()`, which has neither, so these tests errored on
-    every machine with the bot's dependencies installed and passed everywhere
-    else. The stub's own `HTTPException` carries a comment warning about exactly
-    that asymmetry; the fake that raised it did the thing the comment warned
-    against.
-    """
-
-    status = 500
-    reason = "Internal Server Error"
+    async def defer(self, **kwargs):
+        self.deferred.append(kwargs)
 
 
 class Followup:
-    """Records what the command tried to send."""
-
-    def __init__(self, explode: bool = False):
-        self.sent: list[dict] = []
-        self.explode = explode
+    def __init__(self):
+        self.sent = []
+        self.message = types.SimpleNamespace(channel=types.SimpleNamespace(id=22), id=33)
 
     async def send(self, content=None, **kwargs):
-        if self.explode:
-            raise sys.modules["discord"].HTTPException(FailedResponse(), "nope")
         self.sent.append({"content": content, **kwargs})
-        return object()
+        return self.message
 
 
 class Interaction:
-    def __init__(self, guild_id: int | None, followup: Followup):
+    def __init__(self, guild_id=1):
         self.guild_id = guild_id
-        self.followup = followup
+        self.response = Response()
+        self.followup = Followup()
 
 
-class Announcing(unittest.TestCase):
+def invoke(command, interaction, **kwargs):
+    callback = getattr(command, "callback", command)
+    asyncio.run(callback(interaction, **kwargs))
+
+
+class LaunchWithoutAutomaticNotes(unittest.TestCase):
     def setUp(self):
+        self.environment = patch.dict(os.environ, {"PUZZLE_APP_ID": "123"})
+        self.environment.start()
         self.db = sqlite3.connect(":memory:")
-        changelog.init_db(self.db)
-        self._saved = puzzle_commands.version_db
-        puzzle_commands.version_db = self.db
+        puzzle_recap.init_db(self.db)
+        self.database = patch.object(puzzle_commands, "recap_db", self.db)
+        self.database.start()
+        self.no_announcements = patch.object(changelog, "announcement_for", side_effect=AssertionError("automatic changelog"))
+        self.no_announcements.start()
+        self.no_notes = patch.object(changelog, "format_recent_changes", side_effect=AssertionError("notes during launch"))
+        self.no_notes.start()
 
     def tearDown(self):
-        puzzle_commands.version_db = self._saved
+        self.no_notes.stop()
+        self.no_announcements.stop()
+        self.database.stop()
         self.db.close()
+        self.environment.stop()
 
-    def announce(self, guild_id=1, followup=None):
-        followup = followup or Followup()
-        asyncio.run(puzzle_commands._announce_new_version(Interaction(guild_id, followup)))
-        return followup
+    def test_launch_posts_once_and_still_records_recap_reply(self):
+        interaction = Interaction()
+        with patch.object(puzzle_commands, "_get", AsyncMock(return_value={"day": 17})):
+            invoke(puzzle_commands.puzzle_command, interaction)
+        self.assertEqual(interaction.response.sent, [])
+        self.assertEqual(interaction.response.deferred, [{"thinking": True}])
+        self.assertEqual(interaction.followup.sent, [{
+            "content": "Today's puzzle is up. https://discord.com/activities/123", "wait": True,
+        }])
+        row = self.db.execute("SELECT day, channel_id, message_id FROM puzzle_plays").fetchone()
+        self.assertEqual(row, (17, 22, 33))
 
-    def test_the_first_run_posts_the_changelog(self):
-        followup = self.announce()
-        self.assertEqual(len(followup.sent), 1)
-        self.assertIn(changelog.VERSION, followup.sent[0]["content"])
+    def test_outage_also_posts_only_the_launch_reply(self):
+        interaction = Interaction()
+        with patch.object(puzzle_commands, "_get", AsyncMock(side_effect=puzzle_commands.PuzzleServerUnavailable("offline"))):
+            with self.assertLogs("puzzle_commands", level="WARNING"):
+                invoke(puzzle_commands.puzzle_command, interaction)
+        self.assertEqual(len(interaction.followup.sent), 1)
+        self.assertIn("https://discord.com/activities/123", interaction.followup.sent[0]["content"])
+        self.assertEqual(self.db.execute("SELECT COUNT(*) FROM puzzle_plays").fetchone()[0], 0)
 
-    def test_it_cannot_ping_anybody(self):
-        # The club asked for no pings, and the text is ours rather than a
-        # player's — so a release note containing @everyone must still be inert.
-        mentions = self.announce().sent[0]["allowed_mentions"]
-        self.assertFalse(mentions.everyone)
-        self.assertFalse(mentions.users)
-        self.assertFalse(mentions.roles)
-
-    def test_the_second_run_posts_nothing(self):
-        self.announce()
-        self.assertEqual(self.announce().sent, [])
-
-    def test_a_direct_message_is_left_alone(self):
-        # No guild, nowhere to record it, and nobody to tell.
-        self.assertEqual(self.announce(guild_id=None).sent, [])
-
-    def test_without_a_database_it_stays_quiet_rather_than_raising(self):
-        puzzle_commands.version_db = None
-        self.assertEqual(self.announce().sent, [])
-
-    def test_a_send_that_fails_does_not_take_the_command_down(self):
-        # `/puzzle` has already answered by this point. Raising here would cost
-        # the player the thing they actually asked for.
-        #
-        # Wrapped in assertLogs for two reasons. It asserts the failure is
-        # actually reported rather than swallowed in silence — a bare `except`
-        # that logged nothing would pass this test without it. And it captures
-        # the record instead of letting it reach the root handler, which was
-        # printing a full traceback into the output of a passing run: a deploy
-        # check that looks red while reporting OK is a check people stop reading.
-        with self.assertLogs("puzzle_commands", level="WARNING") as logged:
-            self.announce(followup=Followup(explode=True))
-
-        self.assertIn("could not post the changelog", logged.output[0])
-
-    def test_a_send_that_fails_is_not_retried_into_a_double_post(self):
-        # The claim is taken before the send, deliberately: losing one
-        # announcement is better than posting it twice.
-        with self.assertLogs("puzzle_commands", level="WARNING"):
-            self.announce(followup=Followup(explode=True))
-
-        self.assertEqual(self.announce().sent, [])
+    def test_missing_configuration_has_one_private_error(self):
+        interaction = Interaction()
+        with patch.dict(os.environ, {"PUZZLE_APP_ID": ""}):
+            with patch.object(puzzle_commands, "_get", AsyncMock(side_effect=AssertionError("network"))):
+                invoke(puzzle_commands.puzzle_command, interaction)
+        self.assertEqual(len(interaction.response.sent), 1)
+        self.assertTrue(interaction.response.sent[0]["ephemeral"])
+        self.assertEqual(interaction.followup.sent, [])
 
 
+class NotesOnlyWhenRequested(unittest.TestCase):
+    def setUp(self):
+        self.history = patch.object(changelog, "RELEASES", (
+            changelog.Release("new", ("first change", "second change @everyone")),
+            changelog.Release("old", ("third change", "fourth change", "fifth change", "sixth change")),
+        ))
+        self.history.start()
+        self.no_network = patch.object(puzzle_commands, "_get", AsyncMock(side_effect=AssertionError("changelog must be offline")))
+        self.no_network.start()
+        self.no_state = patch.object(changelog, "announcement_for", side_effect=AssertionError("no seen-version state"))
+        self.no_state.start()
+
+    def tearDown(self):
+        self.no_state.stop()
+        self.no_network.stop()
+        self.history.stop()
+
+    def test_requested_number_of_changes_is_private_and_cannot_ping(self):
+        interaction = Interaction()
+        invoke(puzzle_commands.puzzle_changelog, interaction, count=2)
+        self.assertEqual(len(interaction.response.sent), 1)
+        message = interaction.response.sent[0]
+        self.assertIn("first change", message["content"])
+        self.assertIn("second change", message["content"])
+        self.assertNotIn("third change", message["content"])
+        self.assertTrue(message["ephemeral"])
+        for flag in ("everyone", "users", "roles"):
+            self.assertFalse(getattr(message["allowed_mentions"], flag))
+        self.assertEqual(interaction.followup.sent, [])
+
+    def test_repeat_requests_and_direct_messages_work_without_configuration(self):
+        interaction = Interaction(guild_id=None)
+        with patch.dict(os.environ, {"PUZZLE_APP_ID": "", "PUZZLE_API": ""}):
+            for _ in range(2):
+                invoke(puzzle_commands.puzzle_changelog, interaction)
+        self.assertEqual(len(interaction.response.sent), 2)
+        for message in interaction.response.sent:
+            self.assertIn("fifth change", message["content"])
+            self.assertNotIn("sixth change", message["content"])
+            self.assertTrue(message["ephemeral"])
+        self.assertEqual(interaction.response.sent[0]["content"], interaction.response.sent[1]["content"])
+
+    def test_invalid_direct_callback_count_gets_private_error(self):
+        interaction = Interaction()
+        invoke(puzzle_commands.puzzle_changelog, interaction, count=0)
+        self.assertEqual(len(interaction.response.sent), 1)
+        self.assertIn("between 1 and 20", interaction.response.sent[0]["content"])
+        self.assertTrue(interaction.response.sent[0]["ephemeral"])
+
+    def test_empty_history_still_answers_the_request(self):
+        interaction = Interaction()
+        with patch.object(changelog, "RELEASES", ()):
+            invoke(puzzle_commands.puzzle_changelog, interaction)
+        self.assertEqual(len(interaction.response.sent), 1)
+        self.assertTrue(interaction.response.sent[0]["content"])
+        self.assertTrue(interaction.response.sent[0]["ephemeral"])
+
+    def test_long_request_attaches_every_selected_change_in_one_private_reply(self):
+        interaction = Interaction()
+        changes = tuple(f"change-{index}: " + "🌱" * 700 for index in range(4))
+        with patch.object(changelog, "RELEASES", (changelog.Release("long", changes),)):
+            invoke(puzzle_commands.puzzle_changelog, interaction, count=3)
+        self.assertEqual(len(interaction.response.sent), 1)
+        reply = interaction.response.sent[0]
+        self.assertTrue(reply["ephemeral"])
+        self.assertEqual(interaction.followup.sent, [])
+        self.assertLessEqual(len(reply["content"].encode("utf-16-le")) // 2, 2000)
+        self.assertIn("full requested changelog is attached", reply["content"])
+        attachment = reply["file"]
+        self.assertEqual(attachment.filename, "puzzle-changelog.txt")
+        full_text = attachment.fp.read().decode("utf-8")
+        attachment.close()
+        for change in changes[:3]:
+            self.assertIn(change, full_text)
+        self.assertNotIn("change-3:", full_text)
 
 
-class TheCommandActuallyCallsIt(unittest.TestCase):
-    """
-    That `/puzzle` still announces.
+class SlashCommandRegistration(unittest.TestCase):
+    def test_group_contains_launch_and_changelog(self):
+        self.assertEqual(puzzle_commands.puzzle.name, "puzzle")
+        self.assertEqual({command.name for command in puzzle_commands.puzzle.commands}, {"play", "changelog"})
+        self.assertIs(puzzle_commands.puzzle.get_command("play"), puzzle_commands.puzzle_command)
+        self.assertIs(puzzle_commands.puzzle.get_command("changelog"), puzzle_commands.puzzle_changelog)
+        source = Path(puzzle_commands.__file__).with_name("discord_bot.py").read_text()
+        module = ast.parse(source)
+        registered = [node.args[0].id for node in ast.walk(module)
+                      if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                      and node.func.attr == "add_command" and node.args and isinstance(node.args[0], ast.Name)]
+        self.assertIn("puzzle", registered)
+        self.assertNotIn("puzzle_command", registered)
 
-    Read off the source rather than driven: running the command means reaching
-    the activity over HTTP, and the mistake worth catching is a deleted line,
-    which no amount of stubbing the network would surface.
-    """
+    @unittest.skipIf(_STUBBED, "Install discord.py to check Discord's command schema")
+    def test_real_discord_schema_has_optional_bounded_count(self):
+        import discord
+        from discord import app_commands
 
-    @staticmethod
-    def _command_source() -> str:
-        """
-        `puzzle_command`'s body, read off the file.
+        async def schema():
+            client = discord.Client(intents=discord.Intents.none())
+            tree = app_commands.CommandTree(client)
+            tree.add_command(puzzle_commands.puzzle)
+            result = puzzle_commands.puzzle.to_dict(tree)
+            await client.close()
+            return result
 
-        Not `inspect.getsource(puzzle_commands.puzzle_command)`: with the real
-        `discord.py` installed the decorator has replaced the function with an
-        `app_commands.Command`, and `getsource` raises on it. The stub here
-        returns the function untouched, so that version passed on a bare box and
-        would have failed on the bot's own machine.
-        """
-        import pathlib
-
-        text = pathlib.Path(puzzle_commands.__file__).read_text()
-        start = text.index("async def puzzle_command(")
-        end = text.index("\ndef ", start)
-        return text[start:end]
-
-    def test_puzzle_command_announces_after_it_answers(self):
-        body = self._command_source()
-        self.assertIn(
-            "_announce_new_version",
-            body,
-            "/puzzle no longer announces new versions. A server would sit on an "
-            "old build forever without being told, and nothing else calls this.",
-        )
-        # After the puzzle is sent, not before: the changelog is a footnote to
-        # the thing somebody asked for, and a failure to send it must not
-        # displace the puzzle.
-        #
-        # Checked per call site rather than once. There are two now — the
-        # unreachable-server branch announces as well — and an assertion
-        # anchored on `body.index(...)` only ever saw the first, so adding the
-        # second silently moved what was being tested.
-        announces = [
-            i for i in range(len(body))
-            if body.startswith("_announce_new_version", i)
-            and body[i - 6:i] == "await "
-        ]
-        self.assertEqual(
-            len(announces), 2,
-            "expected /puzzle to announce on both the answered and the "
-            "unreachable-server path",
-        )
-        for at in announces:
-            before = body[:at]
-            self.assertIn(
-                "followup.send",
-                before,
-                "the changelog is being sent before the message it rides behind",
-            )
-            # And nothing else may sit between this announce and its send.
-            self.assertLess(
-                before.rindex("followup.send"),
-                at,
-                "the changelog is being sent before the message it rides behind",
-            )
-
-
-class WhenThePuzzleServerIsUnreachable(unittest.TestCase):
-    """
-    That an outage does not also swallow the changelog.
-
-    The announcement is about this bot's version, not the activity's health.
-    It used to sit only on the happy path, so for as long as `/api/today` was
-    unreachable — a dead tunnel, a stopped server — every `/puzzle` answered
-    with the fallback and nobody was ever told what had changed. The claim is
-    made at send time, so nothing was lost, only withheld for the length of the
-    outage.
-    """
-
-    def _command_source(self) -> str:
-        import pathlib
-
-        text = pathlib.Path(puzzle_commands.__file__).read_text()
-        start = text.index("async def puzzle_command(")
-        end = text.index("\ndef ", start)
-        return text[start:end]
-
-    def test_the_fallback_branch_still_announces(self):
-        body = self._command_source()
-        start = body.index("except (PuzzleServerUnavailable")
-        branch = body[start:body.index("    message = await interaction.followup.send", start)]
-        self.assertIn(
-            "_announce_new_version",
-            branch,
-            "an unreachable puzzle server now also silences the changelog, so a "
-            "server hears nothing about a new build for the whole outage",
-        )
-
-    def test_it_announces_after_saying_the_puzzle_is_up(self):
-        body = self._command_source()
-        start = body.index("except (PuzzleServerUnavailable")
-        branch = body[start:body.index("    message = await interaction.followup.send", start)]
-        self.assertLess(
-            branch.index("followup.send"),
-            branch.index("_announce_new_version"),
-            "the changelog is jumping ahead of the launch link the player asked for",
-        )
-
-
-class ItsOwnDatabaseHandle(unittest.TestCase):
-    """
-    That a recap failure cannot switch version announcements off.
-
-    Both tables live in one file, but each feature is enabled only if its own
-    table was made. Sharing `recap_db` meant a locked database during the
-    recap's `init_db` disabled the changelog too, with the boot log naming the
-    recap and `changelog_error` still None.
-    """
-
-    def test_the_two_features_have_separate_handles(self):
-        self.assertIsNot(
-            puzzle_commands.recap_db,
-            "sentinel",
-            "recap_db must still exist for the recap",
-        )
-        self.assertTrue(hasattr(puzzle_commands, "version_db"))
-
-    def test_the_announcer_reads_its_own_handle(self):
-        import inspect
-
-        body = inspect.getsource(puzzle_commands._announce_new_version)
-        self.assertIn("version_db", body)
-        self.assertNotIn("recap_db", body,
-                         "the changelog is gated on the recap's handle again")
+        registered = asyncio.run(schema())
+        subcommands = {command["name"]: command for command in registered["options"]}
+        self.assertEqual(set(subcommands), {"play", "changelog"})
+        options = subcommands["changelog"]["options"]
+        self.assertEqual(len(options), 1)
+        count = options[0]
+        self.assertEqual(count["name"], "count")
+        self.assertFalse(count["required"])
+        self.assertEqual(count["min_value"], 1)
+        self.assertEqual(count["max_value"], 20)
 
 
 if __name__ == "__main__":

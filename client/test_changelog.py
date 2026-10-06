@@ -1,5 +1,5 @@
 """
-What a server is told when the bot is updated, and how often.
+On-demand recent changes, plus compatibility checks for legacy announcements.
 
     python3 -m unittest discover -s client
 
@@ -7,8 +7,8 @@ No skip guard: `changelog.py` imports only the standard library, for the same
 reason `report_text.py` does — the rule it enforces is worth checking on a box
 with none of the bot's dependencies installed, which is most boxes.
 
-The rule under test, in one sentence: **a server hears about every version it
-has not heard about, exactly once.**
+On-demand notes count individual changes and never claim a guild announcement.
+The older once-per-guild helpers retain their previous behavior for old callers.
 """
 
 import contextlib
@@ -18,9 +18,162 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import changelog
 from changelog import Release
+
+
+class RecentChanges(unittest.TestCase):
+    """Bounded, stateless changelog replies requested by a player."""
+
+    HISTORY = (
+        Release("beta 0.3", ("newest change", "second change", "third change")),
+        Release("beta 0.2", ("fourth change", "fifth change", "sixth change")),
+        Release("beta 0.1", ("oldest change",)),
+    )
+
+    def setUp(self):
+        self.history = patch.object(changelog, "RELEASES", self.HISTORY)
+        self.history.start()
+        self.addCleanup(self.history.stop)
+
+    def test_default_is_five_individual_changes_across_release_boundaries(self):
+        text = changelog.format_recent_changes()
+        self.assertEqual(changelog.DEFAULT_RECENT_CHANGES, 5)
+        self.assertEqual(text.count("• "), 5)
+        self.assertIn("5 most recent changes", text)
+        self.assertIn("• fifth change", text)
+        self.assertNotIn("sixth change", text)
+        self.assertNotIn("oldest change", text)
+
+    def test_custom_count_stops_in_the_middle_of_a_release(self):
+        text = changelog.format_recent_changes(4)
+        self.assertEqual(text.count("• "), 4)
+        self.assertIn("• fourth change", text)
+        self.assertNotIn("fifth change", text)
+
+    def test_changes_stay_in_newest_first_order_and_group_under_versions(self):
+        text = changelog.format_recent_changes(7)
+        self.assertEqual(text.count("__beta 0.3__"), 1)
+        self.assertEqual(text.count("__beta 0.2__"), 1)
+        self.assertEqual(text.count("__beta 0.1__"), 1)
+        expected = [
+            "__beta 0.3__", "• newest change", "• second change", "• third change",
+            "__beta 0.2__", "• fourth change", "• fifth change", "• sixth change",
+            "__beta 0.1__", "• oldest change",
+        ]
+        positions = [text.index(part) for part in expected]
+        self.assertEqual(positions, sorted(positions))
+        self.assertNotIn("since this server last heard", text)
+
+    def test_one_change_has_a_singular_heading(self):
+        text = changelog.format_recent_changes(1)
+        self.assertIn("1 most recent change**", text)
+        self.assertEqual(text.count("• "), 1)
+
+    def test_request_larger_than_history_shows_only_available_changes(self):
+        text = changelog.format_recent_changes(changelog.MAX_RECENT_CHANGES)
+        self.assertEqual(changelog.MAX_RECENT_CHANGES, 20)
+        self.assertEqual(text.count("• "), 7)
+        self.assertIn("7 most recent changes", text)
+        self.assertNotIn("omitted", text)
+
+    def test_maximum_count_is_supported(self):
+        many = (Release("beta 9", tuple(f"change {i}" for i in range(30))),)
+        with patch.object(changelog, "RELEASES", many):
+            text = changelog.format_recent_changes(20)
+        self.assertEqual(text.count("• "), 20)
+        self.assertIn("• change 19\n", text + "\n")
+        self.assertNotIn("• change 20", text)
+
+    def test_invalid_counts_are_rejected_including_booleans(self):
+        for count in (0, -1, 21, True, False, 2.0, "5", None):
+            with self.subTest(count=count), self.assertRaises(ValueError):
+                changelog.format_recent_changes(count)
+
+    def test_empty_history_returns_a_safe_user_facing_reply(self):
+        for history in ((), (Release("beta 0", ()),)):
+            with self.subTest(history=history), patch.object(changelog, "RELEASES", history):
+                self.assertEqual(
+                    changelog.format_recent_changes(),
+                    "No changes are available in the puzzle bot changelog yet.",
+                )
+
+    def test_request_never_calls_the_legacy_guild_state_helpers(self):
+        with patch.object(changelog, "claim_announcement") as claim, \
+                patch.object(changelog, "seen_version") as seen, \
+                patch.object(changelog, "init_db") as init:
+            first = changelog.format_recent_changes(4)
+            second = changelog.format_recent_changes(4)
+        self.assertEqual(first, second)
+        claim.assert_not_called()
+        seen.assert_not_called()
+        init.assert_not_called()
+
+    def test_wordy_notes_drop_whole_older_bullets_with_an_omission_notice(self):
+        wordy = (Release("beta 9", tuple(
+            f"Note {i}: " + "a" * 470 + "." for i in range(5)
+        )),)
+        with patch.object(changelog, "RELEASES", wordy):
+            text = changelog.format_recent_changes(5)
+        self.assertLessEqual(len(text), changelog.MAX_MESSAGE_CHARS)
+        self.assertEqual(text.count("• "), 3)
+        self.assertIn("• Note 2: " + "a" * 470 + ".", text)
+        self.assertNotIn("Note 3", text)
+        self.assertIn("2 requested changes omitted to fit one message", text)
+        self.assertNotIn("truncated", text)
+
+    def test_enormous_first_note_is_truncated_with_a_notice(self):
+        huge = (Release("beta 9", ("x" * 4000, "older note")),)
+        with patch.object(changelog, "RELEASES", huge):
+            text = changelog.format_recent_changes(2)
+        self.assertLessEqual(len(text), changelog.MAX_MESSAGE_CHARS)
+        self.assertIn("__beta 9__", text)
+        self.assertEqual(text.count("• "), 1)
+        self.assertIn("…\n\n_This change was truncated", text)
+        self.assertIn("1 more requested change omitted", text)
+        self.assertNotIn("older note", text)
+        self.assertTrue(text.endswith("._"))
+
+    def test_untruncated_attachment_text_keeps_all_requested_long_notes(self):
+        notes = tuple(f"Long note {i}: " + "🙂" * 600 + "." for i in range(6))
+        history = (
+            Release("beta 9", notes[:3]),
+            Release("beta 8", notes[3:]),
+        )
+        with patch.object(changelog, "RELEASES", history):
+            text = changelog.format_recent_changes(5, truncate=False)
+        self.assertGreater(len(text.encode("utf-16-le")) // 2, changelog.MAX_MESSAGE_CHARS)
+        self.assertEqual(text.count("• "), 5)
+        for note in notes[:5]:
+            self.assertIn(f"• {note}", text)
+        self.assertNotIn("Long note 5", text)
+        self.assertIn("__beta 9__", text)
+        self.assertIn("__beta 8__", text)
+        self.assertNotIn("omitted", text)
+        self.assertNotIn("truncated", text)
+
+    def test_untruncated_attachment_text_keeps_the_complete_version_label(self):
+        version = "version-" + "v" * 3000
+        with patch.object(changelog, "RELEASES", (Release(version, ("a change",)),)):
+            text = changelog.format_recent_changes(1, truncate=False)
+        self.assertIn(f"__{version}__", text)
+
+    def test_one_enormous_note_still_mentions_truncation_without_omissions(self):
+        with patch.object(changelog, "RELEASES", (Release("beta 9", ("🙂" * 4000,)),)):
+            text = changelog.format_recent_changes(1)
+        self.assertLessEqual(len(text), changelog.MAX_MESSAGE_CHARS)
+        self.assertLessEqual(len(text.encode("utf-16-le")) // 2, changelog.MAX_MESSAGE_CHARS)
+        self.assertIn("This change was truncated to fit one message", text)
+        self.assertNotIn("omitted", text)
+
+    def test_even_an_oversized_version_label_cannot_exceed_the_message_budget(self):
+        with patch.object(changelog, "RELEASES", (Release("v" * 3000, ("x" * 4000,)),)):
+            text = changelog.format_recent_changes(1)
+        self.assertLessEqual(len(text), changelog.MAX_MESSAGE_CHARS)
+        self.assertIn("v" * 99 + "…__", text)
+        self.assertIn("truncated", text)
 
 
 class ReleasesSince(unittest.TestCase):
