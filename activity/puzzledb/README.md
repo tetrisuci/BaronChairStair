@@ -10,8 +10,9 @@ download. No sign-in, no cookies, and nothing it does can write to
 the game.
 
 The owner's aim is that players play in the Discord activity and look things up
-here. The game keeps its own leaderboards, profile and solutions for now, and links
-to the matching page on this site from each.
+here. Until players prefer the site, the game keeps its own leaderboards, profile and
+solutions, and does not link from them to this site: players asked to keep browsing
+in the activity. Its only link here is beside the *Hide me* setting.
 
 It is a third long-running process in this tree, beside the game and the bot, and
 not more routes in the game server. Four reasons, each of which would be lost by
@@ -39,7 +40,7 @@ promises, and why it is shaped the way it is.
 | Path | What it is |
 |---|---|
 | `/` | The archive: the latest finished day first, then every puzzle as a card, with the game's own search and filters |
-| `/puzzle/:id` | One puzzle: its board and next pieces, its facts and goal, how it went on the finished days that dealt it (hand-ins, solves, solve rate, fastest and median time), its answers behind **Show the answer** (**answers** once players have found more) — the maker's first, then each line players found, as chips over one replay — and the finished days that dealt it. `#answer` opens the maker's; `#lines`, where the game links, scrolls to them and leaves them shut |
+| `/puzzle/:id` | One puzzle: its board and next pieces, its facts and goal, how it went on the finished days that dealt it (hand-ins, solves, solve rate, fastest and median time), its answers behind **Show the answer** (**answers** once players have found more) — the maker's first, then each line players found, as chips over one replay — and the finished days that dealt it. `#answer` opens the maker's; `#lines` scrolls to them and leaves them shut |
 | `/days` | Every finished day, newest first, with what each tier dealt |
 | `/day/:day` | One finished day: a card per tier, then how it went — each tier's field, the day's board across tiers, each tier's board and the rush board — for every server at once or for one |
 | `/leaderboards` | The all-time boards over finished days, top fifty each: rush records, daily solves, current streak, best streak, puzzles cleared and Discoveries |
@@ -118,8 +119,8 @@ sign-in to the activity. Never an avatar, whose URL embeds the Discord id, and n
 an id. Their page's address is a key: ten characters from
 `23456789abcdefghjkmnpqrstuvwxyz`, drawn at random by the game once
 (`server/site-identity.ts`) and never changed. The game draws it, not the site,
-because the site holds no secret to derive one with, and because the game is what
-hands a player the link to their own page.
+because the site holds no secret to derive one with, and so that the game can link a
+player to their own page if it links to the site again.
 
 **Listed** means a player who has not hidden and has something before today: a daily
 hand-in, a solved daily, a rush, a cleared puzzle or a credited line. A listed player

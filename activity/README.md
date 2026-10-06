@@ -379,7 +379,8 @@ run from the `Store`'s constructor:
   (`players.public_key`, `guilds.public_key`), drawn once and never changed. The site
   addresses a player's page by it and never by a Discord id. The game draws them,
   rather than the site deriving them, so that the site holds no secret, and so that
-  the game can link a player to their own page.
+  the game could link a player to their own page. It does not today: its screens
+  were taken off the site's links, below.
 - **Each server's name**, as Discord gave it at the last sign-in from there. The
   session route already asks Discord whether the player is in the server they
   launched from, and the answer carries the name, so recording it costs no new
@@ -406,18 +407,17 @@ only from the server's answer to a save.
 | `GET /api/site-visibility` | `{ hidden, playerKey, hasFinishedDay, serverKey }`. Writes nothing — the site rebuilds on any commit, so a read that wrote would rebuild it every time somebody opened Settings |
 | `PUT /api/site-visibility` | Body `{ hidden: true \| false }`; answers the same shape, read back after the write. `400` for anything but a boolean, `403` for a guest, who has no name on the site; twenty saves a minute per caller |
 
-`playerKey` is the player's key only when the site would show them, so it is what
-the game's profile links with: `/player/<key>` once they have something on a finished
-day (`hasFinishedDay`), `/players` before that, and no link at all while hidden.
-`serverKey` is the session's server, for the leaderboards' link. The site picks a
-change up within about a minute.
+`playerKey` is the player's key only when the site would show them, and null while
+hidden; `hasFinishedDay` says whether their page there exists yet; `serverKey` is the
+session's server. The game reads only `hidden` today. The keys are kept so that links
+to the site can come back without a server change. The site picks a change up within
+about a minute.
 
-The game links out from three places — inside Discord through its own
-`openExternalLink`, which asks before leaving, and in a browser as a new tab: the
-leaderboards (*See more on db.tetrisatuci.org*, to that server's boards), your own
-profile (*Your page on db.tetrisatuci.org*), and a solved puzzle's solutions (*Every
-line on db.tetrisatuci.org*, never for a puzzle a player wrote, which the site does
-not list).
+The game links out from one place: the setting's *What the site shows*, inside
+Discord through its own `openExternalLink`, which asks before leaving, and in a
+browser as a new tab. Its leaderboards, profile and solutions do not link to the
+site. Players asked to keep browsing those in the activity, so the links added with
+the site were taken off again.
 
 ## 1v1
 

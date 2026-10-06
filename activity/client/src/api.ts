@@ -274,8 +274,9 @@ export interface PuzzleSubmitResponse {
  *
  * `hidden` is only the player's own choice. `playerKey` is the site's name for
  * them, and it is null whenever the site would not give them a page — hidden,
- * a guest, not yet keyed, or a username the site refuses to print — so the
- * game links to a profile when this is not null, never when `hidden` is false.
+ * a guest, not yet keyed, or a username the site refuses to print. The game
+ * reads only `hidden` today; the keys are kept so links to the site can return
+ * without a server change.
  * `hasFinishedDay` says whether that page exists yet: the site builds it only
  * from finished days, so a player whose every result is from today has a key
  * and no page. `serverKey` is the site's name for the server this session
@@ -515,8 +516,8 @@ export class Api {
   }
 
   /**
-   * Whether this player is hidden on db.tetrisatuci.org, and the keys the
-   * game's links to it are built from. Reads only; the server writes nothing.
+   * Whether this player is hidden on db.tetrisatuci.org, and their keys there.
+   * Reads only; the server writes nothing.
    */
   siteVisibility(): Promise<SiteVisibility> {
     return this.request("/api/site-visibility");

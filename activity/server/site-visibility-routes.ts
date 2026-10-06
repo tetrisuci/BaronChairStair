@@ -29,12 +29,16 @@ import type { SiteIdentity, SiteVisibility } from "./site-identity";
 
 export const SITE_VISIBILITY_ROUTE = "/api/site-visibility";
 
-/** What both routes answer: the setting, and the two keys the game links with. */
+/**
+ * What both routes answer: the setting, and the two keys the site knows this
+ * player and server by. The game reads only the setting today; the keys are
+ * kept so links to the site can return without a change here.
+ */
 export interface SiteVisibilityBody extends SiteVisibility {
   /**
-   * The site's key for the server this session plays in, for the "see more"
-   * link on the leaderboards. Null outside a server, or for one the game has
-   * not keyed yet, and then the link goes to every server's boards.
+   * The site's key for the server this session plays in, which a link to that
+   * server's boards would carry. Null outside a server, or for one the game
+   * has not keyed yet.
    */
   readonly serverKey: string | null;
 }

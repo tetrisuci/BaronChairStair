@@ -9,9 +9,9 @@
  * here — ten random characters, drawn once and never changed — and the site
  * reads that instead. The game draws them, not the site, for two reasons: the
  * site is meant to hold no secret at all (`puzzledb/.env.example` says so),
- * and a key derived from the id would need one; and the game is what hands a
- * player the link to their own page, which it can only do if it already knows
- * the key.
+ * and a key derived from the id would need one; and the game can only link a
+ * player to their own page — which it does not do today, but may again — if it
+ * already knows the key.
  *
  * Three more facts live here because the site cannot learn them any other way:
  *
@@ -156,8 +156,8 @@ function isKeyCollision(error: unknown): boolean {
  * Seventeen ASCII digits in a row, anywhere: what a Discord id looks like.
  *
  * The site's SQL holds the same rule as a GLOB and is what actually keeps such
- * a name off the site; this copy only stops the game linking to a page the
- * site will refuse to build.
+ * a name off the site; this copy keeps the key the game hands out from
+ * pointing at a page the site will refuse to build.
  */
 const DIGIT_RUN = /[0-9]{17}/;
 

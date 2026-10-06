@@ -18,26 +18,15 @@
  * also why `scope` is printed under the heading rather than assumed: two of
  * these boards are this server's and three are everybody's, and "why am I not
  * on this" is the first question a reader asks.
- *
- * **The header points at db.tetrisatuci.org**, which keeps every finished
- * day's boards rather than these five, and this server's among them. The link
- * opens on this server's boards once the game knows the site's name for it —
- * the key arrives separately, from `/api/site-visibility`, so the link starts
- * out on every server and is repointed by `setServerKey` rather than waiting
- * for it. The Discoveries board is on the same page there, so one link covers
- * it.
  */
 
 import type { BoardCategory, BoardEntry, DailyStats } from "../api";
 import { playerAvatar } from "./avatar";
 import { el, formatDuration, panel, replaceChildren } from "./dom";
-import { type OpenLink, leaderboardsPath, siteLink } from "./site-link";
 
 export interface LeaderboardsCallbacks {
   /** Open somebody's profile. */
   readonly onPlayer: (id: string) => void;
-  /** Opens a db.tetrisatuci.org link. Without it the header draws no link. */
-  readonly openSite?: OpenLink;
 }
 
 export interface Leaderboards {
@@ -45,8 +34,6 @@ export interface Leaderboards {
   update(categories: readonly BoardCategory[], selfId: string, daily?: DailyStats): void;
   /** Whether anything has ever been loaded into it. */
   readonly hasData: boolean;
-  /** Points the site link at this server's boards there, or at every server's. */
-  setServerKey(serverKey: string | null): void;
 }
 
 const SCOPE_WORDS: Readonly<Record<string, string>> = {
@@ -81,27 +68,11 @@ export function createLeaderboards(callbacks: LeaderboardsCallbacks): Leaderboar
    */
   const day = el("div", { class: "boards__day" });
   const dayCard = panel("Today's four", { class: "boards__day-card" }, day);
-  const site = el("span", { class: "boards__site" });
-
-  /** Redrawn whole on a new key: an anchor's href and its click must agree. */
-  function drawSite(serverKey: string | null): void {
-    const open = callbacks.openSite;
-    replaceChildren(
-      site,
-      open ? siteLink("See more on db.tetrisatuci.org", leaderboardsPath(serverKey), open) : null,
-    );
-  }
-  drawSite(null);
 
   const element = el(
     "div",
     { class: "boards" },
-    el(
-      "div",
-      { class: "boards__head" },
-      el("h2", { class: "display boards__title", text: "Leaderboards" }),
-      site,
-    ),
+    el("h2", { class: "display boards__title", text: "Leaderboards" }),
     tabs,
     dayCard,
     panel("", { class: "boards__card" }, scope, list),
@@ -226,7 +197,6 @@ export function createLeaderboards(callbacks: LeaderboardsCallbacks): Leaderboar
     get hasData() {
       return shown.length > 0;
     },
-    setServerKey: drawSite,
     update(categories, selfId, daily) {
       shown = categories;
       self = selfId;

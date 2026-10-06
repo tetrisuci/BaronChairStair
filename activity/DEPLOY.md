@@ -151,13 +151,13 @@ half in three ways:
   environment variable.**
 - **Two routes**, `GET` and `PUT /api/site-visibility`: the setting's read and its
   save, twenty saves a minute per caller.
-- **The page**: an *On the web* section in Settings, and links out to the site from
-  the leaderboards, your own profile and a solved puzzle's solutions. So `bun run
-  build` is part of this deploy, as always, and the bundle check below has a string
-  to look for.
+- **The page**: an *On the web* section in Settings, whose one link goes to the site.
+  The game's own leaderboards, profile and solutions do not link to the site; players
+  asked to keep browsing them in the activity. So `bun run build` is part of this
+  deploy, as always, and the bundle check below has a string to look for.
 
 **The site goes up in the same sitting**, straight after this guide's verification:
-the game's new links point at pages only the new site has, and the bot must not
+the setting's link points at the new site, the setting hides players there, and the bot must not
 restart while `beta 0.13` or `beta 0.15` is unverified — the root [`../DEPLOY.md`](../DEPLOY.md)
 and [`puzzledb/DEPLOY.md`](puzzledb/DEPLOY.md), rule 2, have the gate.
 
@@ -312,6 +312,7 @@ saw the bug because `dist` had not been rebuilt.
 
 ```sh
 grep -l "Hide me on db.tetrisatuci.org" dist/assets/*.js    # a filename: the setting is in the bundle
+grep -l "Every line on db.tetrisatuci.org" dist/assets/*.js  # nothing: the game's screens link nowhere
 bun -e 'import {Database} from "bun:sqlite";
         import {resolve} from "node:path";
         const p = resolve(process.env.DATABASE_PATH ?? "data/daily.sqlite");

@@ -2,12 +2,11 @@
  * The names the game and db.tetrisatuci.org must spell the same way.
  *
  * Two programs read these. The game writes a player's and a server's public
- * key when it first sees them, and builds links to the site from them; the
- * site reads those keys out of the game's database and routes `/player/<key>`
- * by them. A key the game draws from one alphabet and the site matches with
- * another is a player whose page 404s from the very link the game handed them,
- * and nothing anywhere throws — so the alphabet, the length and the pattern
- * live here, once, in a file both may import.
+ * key when it first sees them; the site reads those keys out of the game's
+ * database and routes `/player/<key>` by them. A key the game draws from one
+ * alphabet and the site matches with another is a player whose page 404s, and
+ * nothing anywhere throws — so the alphabet, the length and the pattern live
+ * here, once, in a file both may import.
  *
  * **Pure, and free of any Node or Bun API**, because the game's client, its
  * server and both halves of the site all import it, and

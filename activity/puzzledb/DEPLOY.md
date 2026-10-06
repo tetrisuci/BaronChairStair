@@ -14,8 +14,8 @@ deploy** whenever it brings anything for the activity: the activity's guide does
 from the pull to its verification, and the site's own steps follow (rule 1, below).
 The commit that brought this site did bring the activity something: two of the
 game's own files, though not what the game does. The commit that brings its player
-data (beta 0.13) brings the activity a great deal — a migration, two routes, a new
-setting and three links in the game's page — so it is an activity deploy with a
+data (beta 0.13) brings the activity a great deal — a migration, two routes and a new
+setting, with its one link to the site — so it is an activity deploy with a
 build, and the site cannot publish a player until the game has run it. The site's
 own steps restart neither the game nor the bot.
 The only ones that can touch the game are a cloudflared restart and a Caddy reload,
@@ -577,8 +577,7 @@ Discord cached while you were setting up, so change the number to try again.
 **The setting, end to end** — the `beta 0.13` gate's second half, and the only check
 here that needs the game. In Discord, open the activity, then Settings: the
 *On the web* section must show its switch rather than "Couldn't load this setting."
-Your own profile in the game links to your page while you are shown. Find your key
-without printing anything but keys and names — from `activity/`, with your own
+Find your key without printing anything but keys and names — from `activity/`, with your own
 Discord username:
 
 ```sh
@@ -715,7 +714,7 @@ restart until the site is up.
 **The player-data deploy (`beta 0.13`) failed verification**, and the bot has not
 restarted. The note must not reach a restart while the site cannot back it, so the
 checkout goes back, by the activity's rollback, as above — and with it the game's
-setting and links, which point at pages the old site does not have. The game's
+setting, which hides players on a site the old checkout does not have. The game's
 migration only added columns and tables, so the older code runs on the migrated
 database unchanged (`../DEPLOY.md`, *Rolling back*). Then rebuild and restart the
 site on the older checkout (the commands just below), and check:
