@@ -40,19 +40,6 @@ ACTIVITY_LAUNCH_URL = "https://discord.com/activities/{app_id}"
 
 HTTP_TIMEOUT = aiohttp.ClientTimeout(total=8)
 
-# The club's own yellow, so the embed matches tetrisatuci.org and the activity.
-PUZZLE_COLOUR = discord.Colour.from_rgb(0xFC, 0xD7, 0x50)
-
-# The archive's difficulty is a loose vibe scale, so it is shown as a band.
-GRADE_BANDS = (
-    (2, "I · gentle"),
-    (4, "II · steady"),
-    (6, "III · firm"),
-    (8, "IV · hard"),
-    (10, "V · severe"),
-)
-
-
 # Lent by discord_bot at boot so /puzzle can note where it announced the
 # day. Left as None when nothing wired it up: this module stays importable on
 # its own, and a missing recap must never stop the commands working.
@@ -72,15 +59,6 @@ def _app_id() -> str:
 
 def _api_base() -> str:
     return os.environ.get("PUZZLE_API", "").rstrip("/")
-
-
-def _grade(difficulty: float) -> str:
-    if difficulty <= 0:
-        return "ungraded"
-    for ceiling, label in GRADE_BANDS:
-        if difficulty <= ceiling:
-            return label
-    return "VI · brutal"
 
 
 def _not_configured(missing: str) -> str:
@@ -158,9 +136,7 @@ async def puzzle_command(interaction: discord.Interaction):
 
     try:
         today = await _get("/api/today")
-        puzzles = today["puzzles"]
         day = today["day"]
-        solved = today["solvedCount"]
     except (PuzzleServerUnavailable, KeyError, TypeError) as exc:
         log.warning("puzzle /api/today unusable: %s", exc)
         await interaction.followup.send(
@@ -173,34 +149,10 @@ async def puzzle_command(interaction: discord.Interaction):
         # activity is the one most likely to want to know what just changed.
         await _announce_new_version(interaction)
         return
-    embed = discord.Embed(
-        title=f"Puzzle #{day}",
-        description="Solving any one of today's keeps your streak.",
-        colour=PUZZLE_COLOUR,
-        url=launch)
-    # One field per tier rather than one embed each: they are one day's puzzle,
-    # and splitting them would read as several announcements to scroll past.
-    for entry in puzzles:
-        tier = str(entry.get("tier", "")).title() or "Puzzle"
-        embed.add_field(
-            name=f"{tier} · {_grade(entry.get('difficulty', 0))}",
-            value=(f"{entry.get('goal') or 'Match the reference solution.'}\n"
-                   f"{entry.get('pieces', '?')} pieces · "
-                   f"{entry.get('targetAttack', '?')} attack\n"
-                   f"_“{entry.get('title', 'untitled')}” "
-                   f"by {entry.get('author', 'unknown')}_"),
-            inline=False)
-    # People, not results: the server counts players who solved anything today,
-    # so this does not treble now that a day holds one per tier.
-    embed.add_field(name="Solved by", value=f"{solved} so far", inline=False)
-    # Leaderboards, rush and the rules all live one click away now, so the
-    # embed says where rather than reproducing any of them.
-    embed.set_footer(text="Boards, rush and 1v1 are inside — open it to see them.")
-
     # `wait=True` so the send comes back with a message: without it discord.py
     # returns None and there is nothing for tomorrow's recap to reply to.
     message = await interaction.followup.send(
-        f"Today's puzzle is up. {launch}", embed=embed, wait=True)
+        f"Today's puzzle is up. {launch}", wait=True)
     _remember_play(interaction, day, message)
     await _announce_new_version(interaction)
 

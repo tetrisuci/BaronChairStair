@@ -302,7 +302,7 @@ class WhenThePuzzleServerIsUnreachable(unittest.TestCase):
     def test_the_fallback_branch_still_announces(self):
         body = self._command_source()
         start = body.index("except (PuzzleServerUnavailable")
-        branch = body[start:body.index("embed = discord.Embed", start)]
+        branch = body[start:body.index("    message = await interaction.followup.send", start)]
         self.assertIn(
             "_announce_new_version",
             branch,
@@ -313,7 +313,7 @@ class WhenThePuzzleServerIsUnreachable(unittest.TestCase):
     def test_it_announces_after_saying_the_puzzle_is_up(self):
         body = self._command_source()
         start = body.index("except (PuzzleServerUnavailable")
-        branch = body[start:body.index("embed = discord.Embed", start)]
+        branch = body[start:body.index("    message = await interaction.followup.send", start)]
         self.assertLess(
             branch.index("followup.send"),
             branch.index("_announce_new_version"),

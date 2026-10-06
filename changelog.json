@@ -2,6 +2,12 @@
   "$comment": "The project's version and its player-facing release notes. Newest first; order in this list IS the version order. Read by client/changelog.py — the bot's /puzzle announcement. Adding a release means putting it at the top. Keep `changes` to things a player can see.",
   "releases": [
     {
+      "version": "beta 0.16",
+      "changes": [
+        "**`/puzzle` now posts a short message and the activity link.** The daily puzzle summary, difficulty tiers, solve count and streak reminder are gone from its Discord reply. Open the activity to see today's puzzles."
+      ]
+    },
+    {
       "version": "beta 0.15",
       "changes": [
         "**The archive now has a Players table and a recent-solves feed.** Sort players by days solved, best streak, puzzles cleared, lines found or best rush; search by name and narrow to a server. Each profile shows per-tier solve rates and times, a calendar and puzzles cleared. The Solves page lists daily solves by tier, server and puzzle. Players who choose to hide still appear only as \"a player\" and have no profile.",
