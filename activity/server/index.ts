@@ -910,10 +910,12 @@ app.get("/api/archive", requireSession, (c) => {
 /**
  * Files a practice solve, so it counts towards what a player has cleared.
  *
- * Practice has always been unscored and stays unscored: nothing here touches a
- * leaderboard, a streak, a rush board or a discovery. The single thing it
- * records is "this person has solved this board", which is what ticks the
- * Explore list and unlocks the puzzle's solutions.
+ * Practice is unscored: nothing here touches a daily leaderboard, a streak or
+ * a rush board. It records two things. "This person has solved this board",
+ * which ticks the Explore list and unlocks the puzzle's solutions. And the line
+ * they played, through `recordDiscovery`, exactly as a daily run's is filed, so
+ * it reaches the Solutions menu, and a line nobody had found counts on the
+ * Discoveries board.
  *
  * **The log is replayed, not believed** — but be clear about what that buys.
  * It stops a body with no run in it counting as a solve, which keeps
@@ -932,35 +934,56 @@ app.get("/api/archive", requireSession, (c) => {
  * reader does not spoil a puzzle they were about to try, not to keep a secret
  * there is none of.
  *
- * Today's puzzles are refused outright. A player could otherwise practise the
- * board they are about to be scored on and read its answers first — the exact
- * rehearsal `lockedPuzzleIds` exists to stop, arriving through a different
- * door. The client already refuses it; this is the half that cannot be edited
- * out in a console.
+ * Today's puzzles are refused until this player has solved that tier
+ * (`maySeeSolution`). A player could otherwise practise the board they are
+ * about to be scored on and read its answers first — the exact rehearsal
+ * `lockedPuzzleIds` exists to stop, arriving through a different door. Once
+ * solved, the rehearsal is over, and the verdict card's "Play again" files its
+ * replay here. The client applies the same rule; this is the half that cannot
+ * be edited out in a console.
  */
 app.post("/api/puzzles/:id/clear", requireSession, async (c) => {
   const session = c.get("session");
   const puzzle = archive.get(Number.parseInt(c.req.param("id") ?? "", 10));
   if (!puzzle) throw new HTTPException(404, { message: "No such puzzle" });
-  if (schedule.tierOfDay(archive.currentDay(), puzzle.id)) {
+  // `maySeeSolution`, not "is it one of today's": a player who has solved this
+  // tier today replays it from the verdict card, and a line found that way is
+  // one this route must file. The gate still refuses everybody else, and a
+  // duel's puzzle in play.
+  if (!maySeeSolution(c.get("session"), puzzle.id)) {
     throw new HTTPException(403, { message: "That is one of today's — play it on the daily" });
   }
 
   const body = await readJsonBody(c);
   const handling = sanitizeHandling(body.handling);
+  const events = parseInputLog(body.events);
   const verified = verifyRun(
     { board: decodeBoard(puzzle.board, ENGINE_ROWS), queue: puzzle.queue, hold: puzzle.hold },
     handling,
-    parseInputLog(body.events),
+    events,
   );
   const solved = solvedUnderPolicy(verified.attack, verified.clears, puzzle, "daily");
   if (solved) {
     store.recordClear({
+      // Upserted first, as the daily route does: `puzzle_clears` references
+      // `players`, and a session whose player has no row yet — the guest, in
+      // development — would otherwise answer a solve with a 500.
+      player: session.player,
       playerId: session.player.id,
       puzzleId: puzzle.id,
       durationMs: verified.durationMs,
     });
   }
+  // The line goes on record exactly as a daily run's does, and after the clear
+  // for the same reason: a line found from Explore is a line on this puzzle,
+  // and the Solutions menu promises "Solve it another way and yours lands
+  // here". This route used to skip it, so only lines played on the day a puzzle
+  // was dealt ever reached the menu. `recordDiscovery` decides what is worth
+  // filing, and catches its own failures so a solve is never lost to one.
+  recordDiscovery(store, puzzle, verified, events, handling, {
+    playerId: session.player.id,
+    guildId: session.guildId,
+  });
   // The verdict goes back so the client can stop asking. It is not a score.
   //
   // And the answer, but only on a solve. The sheet was fetched when this player
