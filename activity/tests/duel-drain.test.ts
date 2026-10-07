@@ -65,8 +65,12 @@ const live: DuelSocket[] = [];
 let minted = 0;
 
 /** A socket for a player of its own, so no two cases share a seat. */
-async function connect(name: string): Promise<Player> {
-  const id = `${name}-${++minted}`;
+function connect(name: string): Promise<Player> {
+  return connectAs(`${name}-${++minted}`, name);
+}
+
+/** A socket for this player: a second one for the same id is a second tab. */
+async function connectAs(id: string, name: string): Promise<Player> {
   const { token } = await mintSession({ id, username: name, avatarUrl: null }, "drain-guild");
   const socket = await openDuelSocket(`${socketBase}/api/duel?token=${encodeURIComponent(token)}`, id);
   live.push(socket);
@@ -189,6 +193,37 @@ describe("a handover", () => {
     expect(duels.duelCounts()).toEqual({ duelsInMatch: 0, lobbies: 0 });
   });
 
+  // The lifecycle refuses an upgrade that arrives once the drain has begun,
+  // but one that arrived a moment earlier is still verifying its token when
+  // the drain runs, and is upgraded after it. Calling `drainDuels` directly,
+  // with the lifecycle still serving, is exactly that moment.
+  test("sends away a socket that opens after the drain began, without a welcome", async () => {
+    duels.drainDuels();
+
+    const late = await connect("late");
+
+    expect(await late.closed).toEqual(handover);
+    expect(lastNotice(late)).toMatch(/open duel again/i);
+    // No lobby list from a process nobody should be opening a lobby on.
+    expect(late.received.some((event) => event.type === "welcome")).toBe(false);
+  });
+
+  test("a second tab that reaches the leaving process does not cut the first one's match short", async () => {
+    const { host, guest } = await inMatch();
+    duels.drainDuels();
+
+    const secondTab = await connectAs(host.id, "host");
+
+    expect(await secondTab.closed).toEqual(handover);
+    host.send({
+      type: "progress",
+      progress: { piecesPlaced: 1, pieceBudget: 5, attack: 0, targetAttack: 4, solved: 0 },
+    });
+    await guest.take("opponent");
+    expect(host.isOpen() && guest.isOpen()).toBe(true);
+    expect(guest.received.some((event) => event.type === "matchOver")).toBe(false);
+  });
+
   test.skipIf(!hasSolutions)("a match won while handing over is not offered again", async () => {
     const { host, guest, round } = await inMatch();
     duels.drainDuels();
@@ -218,6 +253,15 @@ describe("a stop", () => {
     expect(host.received.some((event) => event.type === "matchOver")).toBe(false);
     expect(lastNotice(guest)).toMatch(/restarting/i);
     expect(duels.duelCounts()).toEqual({ duelsInMatch: 0, lobbies: 0 });
+  });
+
+  test("sends away with 1012 restart a socket that opens after the rest were closed", async () => {
+    duels.closeEveryDuel();
+
+    const late = await connect("late");
+
+    expect(await late.closed).toEqual(restart);
+    expect(late.received.some((event) => event.type === "welcome")).toBe(false);
   });
 
   test("after a handover, ends the matches that were still being played", async () => {

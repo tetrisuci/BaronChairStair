@@ -45,7 +45,7 @@ import { playerPrompt, solvedUnderPolicy } from "./solve-verdict";
 type DuelServer = Server<SocketData>;
 import type { PlayerProfile } from "./db";
 import { type Session, readSession } from "./auth";
-import { sendAway } from "./going-away";
+import { type GoingAway, sendAway } from "./going-away";
 import {
   DUEL_CLAIM_GRACE_MS,
   DUEL_INTERMISSION_MS,
@@ -197,12 +197,18 @@ const duels = new Map<string, Duel>();
 const socketsByPlayer = new Map<string, ServerWebSocket<SocketData>>();
 
 /**
- * Set once this process is handing over to a newer one on the same port
- * (`SIGHUP`, see `server/lifecycle.ts`). From then on a socket is kept only
- * while it is in a match: everyone else is sent away to reopen on the new
- * process, and a match that ends is not offered again here.
+ * Set once this process is going away, to how it is going.
+ *
+ * `handover` (`SIGHUP`, see `server/lifecycle.ts`): a newer process is
+ * listening on the same port. From then on a socket is kept only while it is
+ * in a match: everyone else is sent away to reopen on the new process, and a
+ * match that ends is not offered again here. `restart` (`SIGINT`/`SIGTERM`):
+ * every socket has been closed and the process is about to exit.
+ *
+ * Either way a socket that opens afterwards is sent away at once — see
+ * {@link duelSocket}'s `open` for how one still can.
  */
-let handingOver = false;
+let goingAway: GoingAway | null = null;
 
 /** Set once at startup, so this module does not load the archive itself. */
 let puzzlePool: readonly Puzzle[] = [];
@@ -405,13 +411,13 @@ function finish(duel: Duel, winnerId: string | null, reason: RoundEnd): void {
   for (const seat of duel.seats) seat.wantsRematch = false;
   // No rematch on a process that is leaving: it would be a second match for
   // the deploy to wait on, on the one process nobody can reach any more.
-  duel.finishedAt = bothSeated(duel) && !handingOver ? Date.now() : null;
+  duel.finishedAt = bothSeated(duel) && goingAway === null ? Date.now() : null;
   // Sent after that, so the view inside it already says whether there is
   // anything to ask for.
   broadcast(duel, { type: "matchOver", winnerId, reason, duel: view(duel) });
   if (duel.finishedAt === null) discard(duel);
-  if (handingOver) {
-    for (const seat of duel.seats) if (seat.socket) sendAway(seat.socket, "handover");
+  if (goingAway) {
+    for (const seat of duel.seats) if (seat.socket) sendAway(seat.socket, goingAway);
   }
 }
 
@@ -948,6 +954,20 @@ export const duelSocket = {
   maxPayloadLength: MAX_FRAME_BYTES,
 
   open(socket: ServerWebSocket<SocketData>) {
+    // The lifecycle refuses an upgrade that arrives once the process is going
+    // away, but it can only look before the route runs, and the route awaits
+    // the token check before it upgrades. An upgrade that arrived just before
+    // the drain is upgraded just after it, and lands here.
+    //
+    // Sent away before it touches the registry. A player whose match is on
+    // this process and who opens a second tab would ordinarily lose the first
+    // tab to it, and with it the match; while handing over, the second tab
+    // would have reached the new process had it been a moment later, and the
+    // match here would have carried on — so that is what happens.
+    if (goingAway) {
+      sendAway(socket, goingAway);
+      return;
+    }
     const playerId = socket.data.session.player.id;
     const previous = socketsByPlayer.get(playerId);
     // One socket per player: a second tab would otherwise hold both seats, or
@@ -975,7 +995,7 @@ export const duelSocket = {
     }
     // Whatever that command was, a socket it left outside a match — a leave, a
     // forfeit — has nothing left to wait for on a process that is leaving.
-    if (handingOver && !inMatch(socket)) sendAway(socket, "handover");
+    if (goingAway && !inMatch(socket)) sendAway(socket, goingAway);
   },
 
   close(socket: ServerWebSocket<SocketData>) {
@@ -1060,7 +1080,7 @@ export function resetDuels(): void {
   }
   duels.clear();
   socketsByPlayer.clear();
-  handingOver = false;
+  goingAway = null;
 }
 
 // ── Going away ───────────────────────────────────────────────────────────────
@@ -1084,7 +1104,8 @@ export function duelCounts(): { duelsInMatch: number; lobbies: number } {
 
 /**
  * The handover: every socket not in a match is closed with 1012 "handover",
- * every match is kept to its end, and none is played again here.
+ * every match is kept to its end, and none is played again here. A socket
+ * that opens from now on is closed the same way as soon as it opens.
  *
  * Lobbies and finished matches are dropped from the registry *before* their
  * sockets close, quietly. Closing a host's socket with its lobby still
@@ -1093,7 +1114,7 @@ export function duelCounts(): { duelsInMatch: number; lobbies: number } {
  * played.
  */
 export function drainDuels(): void {
-  handingOver = true;
+  goingAway = "handover";
   for (const duel of [...duels.values()]) {
     if (duel.phase !== "playing") discard(duel);
   }
@@ -1103,13 +1124,16 @@ export function drainDuels(): void {
 }
 
 /**
- * The stop: every socket closed with 1012 "restart", matches included.
+ * The stop: every socket closed with 1012 "restart", matches included, and
+ * any that opens in the moment before the process exits closed the same way
+ * rather than left to die with it.
  *
  * The registry is emptied first, for the reason {@link drainDuels} empties the
  * lobbies: closing one player's socket with their match still registered
  * would hand the other a forfeit win, and a restart is nobody's forfeit.
  */
 export function closeEveryDuel(): void {
+  goingAway = "restart";
   const sockets = [...socketsByPlayer.values()];
   for (const duel of [...duels.values()]) {
     if (duel.round?.timer) clearTimeout(duel.round.timer);
