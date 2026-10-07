@@ -23,6 +23,8 @@ thing.
   listening (every new connection now reaches the new process), keeps its
   matches going, and reports when it is drained. Then it is stopped. If the
   new slot never comes up, it is stopped and the live slot was never touched.
+  (The exception is a live slot running code from before the status
+  contract: see `--allow-cold`.)
 - **The site is replaced** (delete, start, wait for `/health`): it is
   stateless, and refuses to share its port, so a second or two of 502 is the
   whole cost.
@@ -34,7 +36,11 @@ thing.
 Everything the tool decides about a running process comes from that
 process's status file (`activity/shared/runtime-status.ts`). Anything it
 cannot read — missing, stale, written by a dead pid, naming another build —
-counts as "no", so the tool waits or stops instead of guessing.
+counts as "no", so the tool waits or stops instead of guessing. A draining
+slot whose status goes stale is *unknown*, not idle: the tool keeps waiting,
+to the drain limit if need be, and ends the wait early only when the process
+is gone (its pid dead, or a fresh status from a new pid because pm2 restarted
+it).
 
 ## Layout
 
@@ -92,12 +98,12 @@ cd ~/bcs/releases/<sha>/activity && bun run deploy <command>
 |---|---|
 | `prepare <ref>` | `git fetch`; resolve `<ref>` (a branch means `origin/<branch>`); add the worktree; link shared files; `bun install --frozen-lockfile` at the root and in `activity/`; `py_compile` of `client/*.py` and the bot's `unittest`; `bun x tsc --noEmit`; `bun test` (must report `0 fail`); `BUILD_ID=<sha> bun run build` (must record the sha in `dist/build.json`); `bun run build:puzzledb`; the marker. Stops at the first failure and shows its output. Re-running rechecks a failed release in place. |
 | `backup [<ref>]` | `VACUUM INTO shared/backups/<daily\|stats>-<UTC time>-<sha>.sqlite` from a read-only connection. Refuses to overwrite a file, and refuses if either database is not in `shared/`. |
-| `switch game <ref> [--allow-cold] [--force]` | The handover above. Timeouts: 90 s for the new slot to serve, `drainLimitMinutes` for the drain (progress every 30 s). At the limit the old slot is stopped anyway, which ends its remaining matches with a "restarted" notice. |
+| `switch game <ref> [--allow-cold] [--force]` | The handover above. Timeouts: 90 s for the new slot to serve, `drainLimitMinutes` for the drain (progress every 30 s, saying "status stale" when the old slot has stopped writing). At the limit the old slot is stopped anyway, which ends its remaining matches with a "restarted" notice. If its process exits, or pm2 restarts it, mid-drain, it is stopped at once. |
 | `switch site <ref> [--force]` | Delete, start, wait up to 60 s for `/health` to answer `ok: true`. |
 | `switch bot <ref> [--now] [--force]` | If no `botFiles` file differs from the bot's release, records the new release without restarting. Otherwise waits up to `botQuietLimitMinutes` for quiet, deletes the old bot, checks its pid is gone, starts the new one and waits up to 120 s for `ready` on the new build. |
 | `deploy <ref> [--allow-cold] [--now] [--force]` | `prepare`, `backup`, then switch the game, the site and the bot. Stops at the first failure, saying what already moved and the `rollback` commands that move it back. |
-| `rollback game\|site\|bot [--allow-cold] [--now]` | Switches the app to the release `state.json` recorded as its previous one, with the same checks. Code goes back; data does not — that is what the backups are for. |
-| `status [--wait-quiet] [--timeout <minutes>]` | One line per app. `--wait-quiet` waits (default `botQuietLimitMinutes`) until no duel is in a match, no rush can still be handed in, and the bot is quiet; exit 1 if the time runs out. |
+| `rollback game [--allow-cold]`, `rollback site`, `rollback bot [--now]` | Switches the app to the release `state.json` recorded as its previous one, with the same checks. Code goes back; data does not — that is what the backups are for. |
+| `status [--wait-quiet [--timeout <minutes>]]` | One line per app. `--wait-quiet` waits (`--timeout`, default `botQuietLimitMinutes`) until no duel is in a match, no rush can still be handed in, and the bot is quiet; exit 1 if the time runs out. |
 | `ecosystem` | Rewrite `shared/ecosystem.config.cjs` from `state.json`. |
 | `prune [--keep <n>]` | Remove release worktrees beyond the newest `n` (default `keepReleases`), never one `state.json` names (current or previous), one a pm2 app runs from, or the one the tool runs from. |
 
@@ -109,12 +115,23 @@ Flags:
   plan is computed from the real box. The fetch is skipped, so refs resolve
   to what was fetched last.
 - `--allow-cold`: the live game slot writes no status file (code from before
-  the status contract, or hung), so it cannot drain. Accept stopping it
-  outright, which ends its duels like a restart.
+  the status contract, or hung), so it cannot drain — and code from before
+  the contract binds the port without `reusePort`, so nothing can start
+  beside it. The flag accepts a restart: the old slot is stopped *first*
+  (`pm2 stop`), then the new one started, so the game is down until the new
+  one serves and its duels end like a restart. The old slot's pm2 entry is
+  deleted only once the new one serves; if the new one never does, the tool
+  says the game is down, and `pm2 start <old name>` brings the old process
+  back. Prefer the first-time setup's way: `pm2 stop` the old game yourself
+  at a quiet hour, and switch with nothing running.
 - `--now`: switch the bot without waiting for quiet. Required when the running
   bot writes no status file.
 - `--force`: switch even when the app already runs that release (for the game,
   a restart that drops no duel), or the bot's files did not change.
+
+A flag the command does not take (`switch bot main --timeout 5`,
+`prune --force`) is refused with exit 2, never ignored. `--config` and
+`--dry-run` go with any command.
 
 Exit codes: 0 done; 1 the deploy stopped, and the message says why and what to
 do; 2 the command line was wrong.
@@ -141,14 +158,25 @@ the next `pm2 start` of the file).
 
 All with `interpreter: "none"`, `exec_mode: "fork"`, `watch: false`.
 
-- `DATABASE_PATH` is always `shared/daily.sqlite`. An inherited variable beats
-  both a `.env` Bun loads and an `--env-file` (checked on Bun 1.3.13), so the
-  file the game writes, the site reads, the bot's `/archive sync` writes and
-  `backup` copies is one file, whatever the env files say. Set the same path
-  in `activity.env` and `puzzledb.env` anyway, so commands run by hand from a
-  release agree.
-- `PATH` puts bun's directory first: the bot's `/archive sync` and
-  `/highlights` run bun.
+- `DATABASE_PATH` is always `shared/daily.sqlite`. For the game and the site,
+  an inherited variable beats both a `.env` Bun loads and an `--env-file`
+  (checked on Bun 1.3.13), whatever `activity.env` and `puzzledb.env` say. Set
+  the same path in both anyway, so commands run by hand from a release agree.
+- **The bot is the other way round.** It loads `.env` (shared/bot.env) with
+  `load_dotenv(..., override=True)`, so anything bot.env sets beats the
+  ecosystem, for the bot and for the `bun run sync-archive` its `/archive sync`
+  starts with the bot's environment. So **bot.env must not set
+  `DATABASE_PATH`, `BUILD_ID`, `STATUS_FILE`, `STATS_DB`, `PATH` or
+  `PUZZLE_ACTIVITY_DIR`** (unset, the sync runs in the bot's own release).
+  `prepare` and `switch bot` refuse a bot.env that sets any of them, naming
+  the variable and never its value. Only then is the file the game writes,
+  the site reads, the bot's sync writes and `backup` copies one file.
+- `PATH` puts bun's directory first (the bot's `/archive sync` and
+  `/highlights` run bun), then the tool's own PATH with every
+  `node_modules/.bin` taken out: `bun run deploy` puts the release's — and
+  every ancestor directory's — in front, and baked into the ecosystem they
+  would tie every app to the release the tool ran from, which a prune
+  deletes. Commands the tool runs get the same PATH.
 - Every command, and so every app pm2 starts, gets a **clean environment**
   (`PATH`, `HOME`, `USER`, locale, `PM2_HOME` and a few more). `bun run deploy`
   loads the `.env` of the directory it is started in — the game's secrets,
@@ -170,8 +198,11 @@ All with `interpreter: "none"`, `exec_mode: "fork"`, `watch: false`.
   game and the bot would quietly create an empty one), and a release without
   its marker.
 - `pm2 jlist` carries every app's environment; only name, pid, status and
-  working directory are kept, and only for the config's apps. Status files
-  hold counts only. Nothing the tool prints contains a secret or a Discord id.
+  working directory are kept, and only for the config's apps. When jlist
+  fails or prints something that does not parse, the error gives its exit
+  code and the first line of stderr, never its output. Status files hold
+  counts only, and bot.env is read for variable names only. Nothing the tool
+  prints contains a secret or a Discord id.
 - One deploy at a time (`shared/run/deploy.lock`); a lock left by a dead run is
   taken over. A dry run takes none.
 - A stopped game slot is deleted from pm2, and `pm2 save` runs only after a
@@ -214,9 +245,14 @@ pm2's daemon. Do not touch DIAYN.
    switched): `<checkout>/activity/.env` to `shared/activity.env`,
    `<checkout>/.env` to `shared/bot.env`, `<checkout>/activity/puzzledb/.env` to
    `shared/puzzledb.env`; `chmod 600 ~/bcs/shared/*.env`. In `activity.env` and
-   `puzzledb.env` set `DATABASE_PATH=<home>/shared/daily.sqlite`. Copy
-   `<checkout>/activity/data/solutions.json` to `shared/solutions.json` if it
-   exists.
+   `puzzledb.env` set `DATABASE_PATH=<home>/shared/daily.sqlite`. In
+   `bot.env`, look for the names only —
+   `grep -nE '^[[:space:]]*(export[[:space:]]+)?(DATABASE_PATH|BUILD_ID|STATUS_FILE|STATS_DB|PATH|PUZZLE_ACTIVITY_DIR)[[:space:]]*=' ~/bcs/shared/bot.env | cut -d= -f1`
+   — and delete every line it finds: the bot loads bot.env over the
+   ecosystem, so an old `PUZZLE_ACTIVITY_DIR` or `DATABASE_PATH` would send
+   `/archive sync` to the old checkout (`prepare` refuses the file until they
+   are gone). Copy `<checkout>/activity/data/solutions.json` to
+   `shared/solutions.json` if it exists.
 4. **A venv outside any release** for `botPython`, e.g.
    `python3 -m venv ~/bcs/shared/venv` and install the bot's packages into it
    (the root README's "Run the bot" lists them; `discord_bot.py` names the
@@ -229,15 +265,20 @@ pm2's daemon. Do not touch DIAYN.
 6. **Prepare the first release.** The tool lives inside releases, so the first
    run uses the clone: `cd ~/bcs/repo/activity && bun install --frozen-lockfile && bun run deploy prepare main`.
    From then on, run it from a release.
-7. **At a quiet hour, move the databases and switch.** Check quiet the way the
-   guides do today: old code writes no status files.
-   - `pm2 stop <site>` and `pm2 stop <game>`; move the game's database — the
-     file its `DATABASE_PATH` names, with its `-wal` and `-shm` — to
-     `shared/daily.sqlite`; `bun run deploy switch game <sha>`, then
-     `bun run deploy switch site <sha>`. With nothing running, each simply
-     starts (the stopped entries are replaced).
-   - `pm2 stop <bot>`; move `<checkout>/stats.db` (and any `-wal`/`-shm`) to
-     `shared/stats.db`; `bun run deploy switch bot <sha>`.
+7. **At a quiet hour, stop all three, move the databases, and switch.** Check
+   quiet the way the guides do today: old code writes no status files.
+   - `pm2 stop <bot>`, `pm2 stop <site>` and `pm2 stop <game>` — by name,
+     never `all` — before anything moves. **The bot too:** while it runs from
+     the old checkout, an `/archive sync` runs `sync-archive` against the old
+     database path, and once that file has moved, the sync creates a new
+     empty one there and writes into it instead of `shared/daily.sqlite`.
+   - Move the game's database — the file its `DATABASE_PATH` names, with its
+     `-wal` and `-shm` — to `shared/daily.sqlite`, and `<checkout>/stats.db`
+     (with any `-wal`/`-shm`) to `shared/stats.db`.
+   - `bun run deploy switch game <sha>`, `bun run deploy switch site <sha>`,
+     `bun run deploy switch bot <sha>`. With nothing running, each simply
+     starts (the stopped entries are replaced); a stopped bot is not waited
+     on for quiet.
    - `bun run deploy status`, then the guides' verification.
 8. **Keep the old checkout** until the new layout has run through a few
    deploys; it is the only way back to code from before the move. Its
