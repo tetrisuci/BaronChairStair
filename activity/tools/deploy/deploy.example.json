@@ -1,0 +1,16 @@
+{
+  "home": "/home/bcs/bcs",
+  "pm2": {
+    "bot": "bcs-bot",
+    "gameSlots": ["puzzle-activity", "puzzle-activity-green"],
+    "site": "puzzle-db"
+  },
+  "gamePort": 3001,
+  "sitePort": 3002,
+  "botPython": "/home/bcs/bcs/shared/venv/bin/python",
+  "drainLimitMinutes": 20,
+  "botQuietSeconds": 60,
+  "botQuietLimitMinutes": 30,
+  "keepReleases": 3,
+  "botFiles": ["client/**", "server/**", "package.json", "bun.lock", "changelog.json"]
+}
