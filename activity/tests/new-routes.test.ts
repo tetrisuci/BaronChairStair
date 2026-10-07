@@ -12,9 +12,12 @@
  */
 
 import { beforeAll, describe, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { archive } from "./archive";
+import { archive, hasSolutions } from "./archive";
+import { solvingLog } from "./solving-log";
+import { GUEST_ID } from "../shared/site";
 import { DEFAULT_HANDLING } from "../shared/tetris/handling";
 
 const DB = join(tmpdir(), `puzzle-routes-${process.pid}.sqlite`);
@@ -145,14 +148,53 @@ describe("filing a practice clear", () => {
     expect((await get(`/api/puzzles/${id}/solutions`)).status).toBe(403);
   });
 
-  test("today's puzzles are refused outright", async () => {
+  test("today's puzzles are refused until this player has solved them", async () => {
     // Otherwise it is a back door to the rehearsal `lockedPuzzleIds` prevents.
-    const today = (await (await get("/api/today")).json()).puzzles[0].id;
+    // The last tier, because `server.test.ts` shares this database and this
+    // guest, and solves today's easy one — which, solved, is let through.
+    const puzzles: { id: number }[] = (await (await get("/api/today")).json()).puzzles;
+    const today = puzzles.at(-1)!.id;
     const filed = await post(`/api/puzzles/${today}/clear`, {
       handling: DEFAULT_HANDLING,
       events: [],
     });
     expect(filed.status).toBe(403);
+  });
+});
+
+describe.skipIf(!hasSolutions)("a line solved from Explore", () => {
+  test("lands in that puzzle's solutions, credited to whoever played it", async () => {
+    // The bug this pins: only the daily route filed a solve's line, so a line
+    // found by replaying a puzzle from Explore never reached the Solutions menu
+    // — whose own empty state says "Solve it another way and yours lands here".
+    //
+    // The only line this harness can play is the maker's own, which boot seeds
+    // as the puzzle's reference row, and replaying it would collide with that
+    // row and file nothing. Voiding the row first makes the same placements
+    // arrive as a line nobody has on file — which is exactly what a player's
+    // genuinely different line is to the store.
+    const id = await anArchivePuzzle();
+    const puzzle = archive.find((entry) => entry.id === id)!;
+    const db = new Database(DB);
+    try {
+      db.run("UPDATE puzzle_solutions SET voided_at = 1 WHERE puzzle_id = ?1 AND voided_at IS NULL", [id]);
+    } finally {
+      db.close();
+    }
+
+    const filed = await post(`/api/puzzles/${id}/clear`, {
+      handling: DEFAULT_HANDLING,
+      events: solvingLog(puzzle),
+    });
+    expect(filed.status).toBe(200);
+    expect((await filed.json()).solved).toBe(true);
+
+    const gallery = (await (await get(`/api/puzzles/${id}/solutions`)).json()) as {
+      solutions: { source: string; finder: { id: string } | null }[];
+    };
+    expect(gallery.solutions.some((line) => line.source === "player" && line.finder?.id === GUEST_ID)).toBe(
+      true,
+    );
   });
 });
 

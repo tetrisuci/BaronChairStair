@@ -1466,9 +1466,9 @@ export class Store {
     player?: PlayerProfile;
   }): void {
     // `puzzle_clears.player_id` is `NOT NULL REFERENCES players(id)` and foreign
-    // keys are on, so a player this box has never written throws — which the
-    // rush and the practice route both can, since neither writes a `players`
-    // row of its own. Every other write path here upserts first;
+    // keys are on, so a player this box has never written throws. Every route
+    // that files a clear — the daily, the rush and the practice route — passes
+    // `player` for that reason, and every other write path here upserts first;
     // `recordSubmission` documents the same hazard three methods up.
     if (entry.player) this.upsertPlayer(entry.player);
     const now = Date.now();

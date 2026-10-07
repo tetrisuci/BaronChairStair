@@ -2,6 +2,12 @@
   "$comment": "The project's version and its player-facing release notes. Newest first; order in this list IS the version order. Read by client/changelog.py for /puzzle changelog, requested privately. Adding a release means putting it at the top. Keep `changes` to things a player can see.",
   "releases": [
     {
+      "version": "beta 0.19",
+      "changes": [
+        "**Every line you find now lands in the puzzle's Solutions**: a puzzle from Explore, and a replay of a daily you have already solved (**Play again**), as well as the daily itself. Until now only the daily run reached the Solutions menu, so solving a puzzle another way afterwards left no trace. A new line found this way also counts on the Discoveries board."
+      ]
+    },
+    {
       "version": "beta 0.18",
       "changes": [
         "**Reopening the activity now asks Discord to reuse your existing permission approval.** The sign-in still verifies your identity and server. First-time access, changed permissions or a revoked approval can still show the consent screen."

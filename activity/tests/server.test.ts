@@ -12,28 +12,24 @@
  */
 
 import { beforeAll, describe, expect, test } from "bun:test";
-import { archive, hasSolutions, solutionOf } from "./archive";
+import { Database } from "bun:sqlite";
+import { archive, hasSolutions } from "./archive";
+import { setupFor, solvingLog } from "./solving-log";
 import { readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-// Type-only, so nothing under `server/` is loaded before `beforeAll` has set the
-// environment `config` reads once at import.
+// Nothing imported here may load `server/config.ts`, which reads the
+// environment once, before `beforeAll` has set it: the app would then serve
+// `data/daily.sqlite` while this file reads and writes `DB`. `server/db.ts`
+// does not load it; `server/http.ts` does, through `auth.ts`, which is why
+// `GUEST_ID` comes from `shared/site`.
 import { Store, type StoredRushRun } from "../server/db";
-import {
-  decodeBoard,
-  ENGINE_ROWS,
-  meetsTarget,
-  pieceBudget,
-  type Puzzle,
-  type PuzzlePrompt,
-} from "../shared/puzzle";
+import { meetsTarget, type Puzzle, type PuzzlePrompt } from "../shared/puzzle";
 import { RUSH_DURATION_MS, RUSH_SEQUENCE_LENGTH, RUSH_SKIPS } from "../shared/rush";
-import { GUEST_ID } from "../server/http";
+import { GUEST_ID } from "../shared/site";
 import { SOLUTION_KEY_VERSION } from "../shared/solution-key";
-import { createPuzzleEngine, toLetter } from "../shared/tetris/engine";
 import { DEFAULT_HANDLING } from "../shared/tetris/handling";
-import { findPaths } from "../shared/tetris/pathfinder";
-import { MAX_FRAMES, type GameKey, type InputEvent, verifyRun } from "../shared/tetris/verify";
+import { MAX_FRAMES, type InputEvent, verifyRun } from "../shared/tetris/verify";
 
 const DB = join(tmpdir(), `puzzle-routes-${process.pid}.sqlite`);
 
@@ -259,49 +255,11 @@ interface RushSegment {
   readonly events: readonly InputEvent[];
 }
 
-function setupFor(puzzle: Puzzle) {
-  return { board: decodeBoard(puzzle.board, ENGINE_ROWS), queue: puzzle.queue, hold: puzzle.hold };
-}
-
 /** The archived puzzle a served prompt was cut from, answer included. */
 function answerFor(prompt: PuzzlePrompt): Puzzle {
   const puzzle = archive.find((entry) => entry.id === prompt.id);
   if (!puzzle) throw new Error(`A rush served puzzle ${prompt.id}, which is not in the archive`);
   return puzzle;
-}
-
-/**
- * Keystrokes that play a puzzle's archived solution.
- *
- * The archive records where each piece came to rest, not how it got there, so
- * the route back has to be searched for — a spin only counts if the last input
- * before the drop was a rotation.
- */
-function solvingLog(puzzle: Puzzle): InputEvent[] {
-  const { engine } = createPuzzleEngine(setupFor(puzzle), DEFAULT_HANDLING);
-  const events: InputEvent[] = [];
-  let frame = 0;
-  const tap = (key: GameKey) => {
-    events.push({ frame, type: "keydown", data: { key, subframe: 0 } });
-    events.push({ frame: frame + 1, type: "keyup", data: { key, subframe: 0 } });
-    frame += 2;
-  };
-
-  for (const step of solutionOf(puzzle).slice(0, pieceBudget(puzzle))) {
-    if (toLetter(engine.falling.symbol) !== step.piece) {
-      tap("hold");
-      engine.hold(false, true);
-    }
-    const route = findPaths(engine, step.cells)[0];
-    if (!route) throw new Error(`No route to the archived placement for puzzle ${puzzle.id}`);
-    for (const key of route) {
-      tap(key);
-      engine.press(key);
-    }
-    tap("hardDrop");
-    engine.press("hardDrop");
-  }
-  return events;
 }
 
 /** What the server should make of a segment, worked out independently of it. */
@@ -357,6 +315,12 @@ async function errorOf(response: Response): Promise<string> {
  * looks broken by their own checkout.
  */
 describe.skipIf(!hasSolutions)("what a solved run teaches the archive", () => {
+  /**
+   * The session the last test below minted, reused by the one after it.
+   * `/api/session` allows ten a minute per caller, and one more mint in this
+   * file pushes the rush block's over that limit.
+   */
+  let lastSession = "";
   /** Plays today's easy puzzle by its own answer, and returns the response. */
   async function playTheAnswer(token: string): Promise<{
     run: { solved: boolean };
@@ -431,7 +395,7 @@ describe.skipIf(!hasSolutions)("what a solved run teaches the archive", () => {
     // test on that half is the board query and its guild scoping: weaker
     // versions pass on an empty board, which is exactly what a scoping mistake
     // produces, so it asserts the player is *there* by id.
-    const token = await guestToken();
+    const token = (lastSession = await guestToken());
     const played = await playTheAnswer(token);
 
     expect(played.run.solved).toBe(true);
@@ -465,6 +429,45 @@ describe.skipIf(!hasSolutions)("what a solved run teaches the archive", () => {
 
     expect(body.board.some((row) => row.player.id === GUEST_ID)).toBe(true);
     for (const row of body.board) expect(row.found).toBeGreaterThan(0);
+  });
+
+  test("a line found replaying today's puzzle, once solved, is filed too", async () => {
+    // "Play again" on a solved daily replays it unscored and files the replay
+    // through the Explore route. That route used to refuse every one of today's
+    // puzzles, solved or not, so a second line found on the day a puzzle was
+    // dealt was dropped without a word — the client's `fileClear` swallows the
+    // 403. The tests above have already solved today's easy puzzle as this
+    // guest, which is the state "Play again" is offered in; no daily run is
+    // posted here, and no session minted, because this block's rate-limit
+    // budget is spoken for.
+    const token = lastSession;
+    const daily = (await (await get("/api/daily", token)).json()) as {
+      puzzles: { tier: string; puzzle: PuzzlePrompt }[];
+    };
+    const puzzle = archive.find((entry) => entry.id === daily.puzzles[0]!.puzzle.id)!;
+    // The only line this harness can play is the maker's, already on file, so
+    // the puzzle's live rows are voided first and the replay arrives as a line
+    // nobody has — which is what a genuinely different line is to the store.
+    const db = new Database(DB);
+    try {
+      db.run("UPDATE puzzle_solutions SET voided_at = 1 WHERE puzzle_id = ?1 AND voided_at IS NULL", [puzzle.id]);
+    } finally {
+      db.close();
+    }
+
+    const replay = await post(
+      `/api/puzzles/${puzzle.id}/clear`,
+      { handling: DEFAULT_HANDLING, events: solvingLog(puzzle) },
+      token,
+    );
+    expect(replay.status).toBe(200);
+
+    const gallery = (await (await get(`/api/puzzles/${puzzle.id}/solutions`, token)).json()) as {
+      solutions: { source: string; finder: { id: string } | null }[];
+    };
+    expect(gallery.solutions.some((line) => line.source === "player" && line.finder?.id === GUEST_ID)).toBe(
+      true,
+    );
   });
 });
 

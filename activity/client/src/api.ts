@@ -477,9 +477,10 @@ export class Api {
   /**
    * Files a practice solve so it counts towards what this player has cleared.
    *
-   * Unscored, like the run it describes: nothing here reaches a leaderboard, a
-   * streak or the discovery board. The log is sent because the server replays
-   * it — a bare claim would let `puzzle_clears` fill with puzzles nobody played,
+   * Unscored, like the run it describes: nothing here reaches a daily
+   * leaderboard or a streak. The line played is filed like a daily's, so it
+   * reaches the Solutions menu and, if new, the Discoveries board. The log is
+   * sent because the server replays it — a bare claim would let `puzzle_clears` fill with puzzles nobody played,
    * and the Explore ticks and the Archive board both read it as fact.
    */
   clearPuzzle(
