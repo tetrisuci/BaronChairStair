@@ -73,7 +73,9 @@ interface Opened {
  *
  * Store, then the archive out of the club's file *and* this database — accepted
  * puzzles and corrections both — then the backfill. Two of these never overlap:
- * nothing sets `busy_timeout`, so a second writer on one file fails instantly.
+ * each is closed before the next opens, the way a plain restart runs. Two
+ * stores writing one file at once is a handover's question, answered in
+ * `tests/store-busy-timeout.test.ts`.
  */
 function open(): Opened {
   const store = new Store(databasePath);

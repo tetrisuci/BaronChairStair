@@ -894,6 +894,17 @@ const RUN_COLUMNS = `
  * Five seconds because every write here is short — a run, a clear, a pin — so
  * any honest wait is milliseconds, and a lock still held after five seconds is
  * something wrong that a client's error says better than a hung request.
+ *
+ * **A transaction that reads before it writes must be begun IMMEDIATE**
+ * (`db.transaction(fn).immediate()`), or this wait does not reach it.
+ * `db.transaction(fn)()` is DEFERRED: its first SELECT takes a read lock, and
+ * when its first write then asks for the write lock while another connection
+ * holds it, SQLite fails at once rather than wait. It never waits to turn a
+ * read into a write: by the time the other writer let go, what this one read
+ * could be out of date. IMMEDIATE takes the write lock at BEGIN, where the
+ * wait applies. A single statement, or a transaction that writes first, needs
+ * nothing. `tests/store-busy-timeout.test.ts` holds the lock from another
+ * process against each one that does.
  */
 export const STORE_BUSY_TIMEOUT_MS = 5_000;
 
@@ -1083,12 +1094,13 @@ export class Store {
     if (this.db.query<{ one: number }, []>("SELECT 1 AS one FROM day_puzzles LIMIT 1").get()) {
       return;
     }
+    // IMMEDIATE: it reads the runs before it writes. See STORE_BUSY_TIMEOUT_MS.
     this.db.transaction(() => {
       this.pinDaysAlreadyPlayed();
       for (let day = 1; day <= pastDays.throughDay; day++) {
         this.insertDay(day, pastDays.puzzleIdsFor(day));
       }
-    })();
+    }).immediate();
   }
 
   /**

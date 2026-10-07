@@ -429,6 +429,14 @@ export interface DuelResult {
   update(duel: DuelView, selfId: string, winnerId: string | null): void;
   /** Whether each side has asked to go again. */
   setRematch(asked: boolean, theyAsked: boolean, available: boolean): void;
+  /** One line from the server about the result: a rematch it refused, or that it is going. */
+  say(message: string): void;
+  /**
+   * The socket is gone, so nothing on the card can reach the other player:
+   * the rematch is withdrawn, and `message` says why and what to do instead.
+   * The result itself stays — it was decided before the close.
+   */
+  withdrawRematch(message: string): void;
 }
 
 export function createDuelResult(callbacks: DuelResultCallbacks): DuelResult {
@@ -489,6 +497,16 @@ export function createDuelResult(callbacks: DuelResultCallbacks): DuelResult {
           : asked && !theyAsked
             ? "Waiting for them to accept…"
             : "";
+    },
+
+    say(message) {
+      rematchNote.textContent = message;
+    },
+
+    withdrawRematch(message) {
+      rematch.hidden = true;
+      rematch.disabled = true;
+      rematchNote.textContent = message;
     },
   };
 }

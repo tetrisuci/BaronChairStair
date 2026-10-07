@@ -191,8 +191,9 @@ interface Opened {
  * not be caught by this file — so the comment there is what guards that, and
  * this is what proves the order works.
  *
- * Two of these never overlap. Nothing sets `busy_timeout`, so a second writer
- * on one file fails instantly rather than waiting.
+ * Two of these never overlap: each is closed before the next opens, the way a
+ * plain restart runs. Two stores writing one file at once is a handover's
+ * question, answered in `tests/store-busy-timeout.test.ts`.
  */
 function open(): Opened {
   const store = new StoreClass(databasePath);

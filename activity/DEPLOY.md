@@ -276,12 +276,16 @@ Restart again after editing `.env`.
 The server stops politely. On SIGINT — pm2's own stop and restart — or SIGTERM —
 systemd's, and `kill`'s — it stops listening, gives the requests in flight up to 8
 seconds, closes every duel socket with "The server restarted, so the duel ended.",
-writes its last status and exits 0. A second signal exits at once. Around that:
+writes its last status and exits 0. A second signal more than 2 seconds after the first
+exits at once: the duels still get that message and the status is still written, but
+the requests in flight are not waited for. One inside those 2 seconds is the same stop
+arriving twice, and changes nothing. Around that:
 
 - **Hand-ins ride out the gap.** A page built from this code retries a daily filing, a
   rush hand-in or a practice clear on a lost connection, a 502, 503 or 504, for about
-  15 seconds in all (after 0.5, 1, 2, 3, 4 and 4 seconds), saying "Reconnecting…"
-  meanwhile. A restart that is listening again inside that loses nobody's solve. A
+  15 seconds in all (after 0.5, 1, 2, 3, 4 and 4 seconds). A daily filing or a rush
+  hand-in says "Reconnecting…" meanwhile; a practice clear retries without a word. A
+  restart that is listening again inside that loses nobody's solve. A
   rush ended by the buzzer has less — about 9 seconds, the server's 10-second grace
   less one — so a slow restart can still cost a ranked rush.
 - **Duels end.** Every lobby and every match in progress closes, and a match gets no
@@ -299,8 +303,83 @@ writes its last status and exits 0. A second signal exits at once. Around that:
 1600 ms, after which it kills the server part-way through those 8 seconds, the hand-in
 it was answering included. The root [`../DEPLOY.md`](../DEPLOY.md), *Restarting*, shows
 how to see each app's value without printing its environment, and how to set it; it is
-the same for the game. Under systemd nothing is needed: `TimeoutStopSec` defaults to 90
-seconds.
+the same for the game. Under systemd the timeout needs nothing: `TimeoutStopSec`
+defaults to 90 seconds.
+
+### Under pm2 or systemd, run Bun on the file — not `bun run start`
+
+**The manager must start the game as `bun run server/index.ts`, from `activity/`, with
+`NODE_ENV=production` in the manager's own environment.** Not through the `start`
+script in `package.json`, though it runs the same file: Bun's script runner is a second
+process, and it passes a stop signal on to the game. pm2's stop signals every process in
+the app's tree as well (its `treekill`, on unless turned off), and so does systemd's
+(its default `KillMode=control-group` signals every process in the unit). So one
+`pm2 restart` or `systemctl restart` reaches the game twice, from the manager and again
+from the script runner, well under a millisecond apart.
+
+The game now treats a repeat inside 2 seconds as the same stop: the log says
+`[lifecycle] the same stop signal again, … ms later: still stopping`, and the stop goes
+on as above. A stop handler from before that window took the repeat as the "exit now" a
+second signal means — no 8 seconds for the hand-ins in flight, duel sockets cut as a
+lost connection rather than closed with the restart's message, and no last status — and
+its log said `[lifecycle] a second stop signal: exiting now` on an ordinary restart.
+Run on the file all the same, because the repeat is not the only reason:
+
+- **one stop, once** — nothing depends on the 2-second window, and a real second stop
+  still means "exit now";
+- **the PID the manager reports is the game** — `pm2 pid` and systemd's `MainPID` name
+  the server itself, the same PID as the status file's `pid`, so a signal sent by exact
+  PID, a handover's included, reaches the game rather than a runner that may or may not
+  pass it on;
+- **`NODE_ENV` is set where you can see it**, in the manager's entry, rather than
+  inside a script.
+
+`NODE_ENV=production` belongs in the manager's environment because the `start` script
+is the only place this repository sets it, and without it the server runs as a
+development copy: a missing `SESSION_SECRET` or `DISCORD_CLIENT_SECRET` no longer stops
+it at start-up (a throwaway session secret signs everybody out at each restart), and an
+unset `TRUST_PROXY` counts as `true`. The shape, with bun's absolute path from
+`command -v bun`:
+
+```js
+// pm2, in the game's ecosystem entry
+script: "<bun's absolute path>", args: ["run", "server/index.ts"], interpreter: "none",
+cwd: "/path/to/BaronChairStair/activity", kill_timeout: 10000,
+env: { NODE_ENV: "production", STATUS_FILE: "<abs path>" },
+```
+
+```ini
+# systemd, in the game's unit
+[Service]
+WorkingDirectory=/path/to/BaronChairStair/activity
+Environment=NODE_ENV=production
+Environment=STATUS_FILE=<abs path>
+ExecStart=<bun's absolute path> run server/index.ts
+```
+
+`interpreter: "none"` is for the reason [`puzzledb/DEPLOY.md`](puzzledb/DEPLOY.md), *Start
+it under pm2*, gives: pm2 6 and later wrap a Bun interpreter in a loader of their own.
+pm2 takes a changed entry only on a fresh start, so this is `pm2 delete <its name>` and
+a start from the entry, at the quiet moment below. To see what the manager runs, before
+the change and again after it:
+
+```sh
+ps -o args= -p "$(pm2 pid <the game's name>)"       # bun run server/index.ts — not bun run start
+systemctl show <the game's unit> -p ExecStart        # under systemd instead
+```
+
+**Under pm2, finish with `pm2 save`.** Until then pm2's saved list still holds the old
+`bun run start` entry, with its old `kill_timeout` and no `STATUS_FILE`, and the next
+reboot's `pm2 resurrect` quietly brings it back. `pm2 save` records every app `pm2 list`
+shows, so first check that it lists the game and everything else on the box — the bot,
+the site, DIAYN — the way you want them. Under systemd the unit file is the saved
+definition: `sudo systemctl daemon-reload` after editing it, before the restart.
+
+Run on the file, the game has no child process, so pm2's `treekill` and systemd's
+`KillMode` make no difference to it. **Only if an entry must keep `bun run start` for
+now**, `treekill: false` in its pm2 entry (`--no-treekill` on `pm2 start`), or
+`KillMode=mixed` in its unit's `[Service]`, makes the manager signal the script runner
+alone, which passes the stop on once. That is a stopgap; the entry above is the fix.
 
 ### The first restart onto this code needs a quiet moment
 
@@ -313,10 +392,11 @@ Two things the above relies on are not there yet the first time:
   of this: no retries, no *Update ready*, and the old duel behaviour, in which a dropped
   duel leaves the Duel button doing nothing until the player switches mode.
 
-So make the first restart at a quiet hour, as every restart was before it, and set the
-`kill_timeout` and `STATUS_FILE` (below) in the same sitting. On a box moving to
-releases, the migration's first game switch is this restart, and the tool sets both
-(`tools/deploy/README.md`, *First-time migration*).
+So make the first restart at a quiet hour, as every restart was before it, and in the
+same sitting set the `kill_timeout`, the entry that runs Bun on the file (above) and
+`STATUS_FILE` (below). On a box moving to releases, the migration's first game switch
+is this restart, and the tool sets all three (`tools/deploy/README.md`, *First-time
+migration*).
 
 ### Signals
 
@@ -328,6 +408,10 @@ releases, the migration's first game switch is this restart, and the tool sets b
 
 Send any of them by exact PID — `pm2 pid <its name>`, or the `ps` line in
 [`puzzledb/DEPLOY.md`](puzzledb/DEPLOY.md), *Before you start* — never with `pkill -f`.
+**A game under pm2 or systemd is stopped through its manager**, though — `pm2 stop` or
+`pm2 restart <its name>`, `systemctl stop` or `restart <its unit>` — which sends the
+stop signal itself. A bare SIGINT or SIGTERM by PID ends the process, the game exits 0,
+and the manager may start it straight back (*The handover*, below, says when).
 
 **A terminal that goes away sends SIGHUP.** A game run in the foreground, in `tmux`, or
 under `nohup` — which no longer protects it, because the game handles the signal —
@@ -337,18 +421,28 @@ pm2 or systemd.
 ### The handover
 
 The server can be replaced on one port with no gap. Both copies bind the port with
-`SO_REUSEPORT` (`reusePort: true` in `server/index.ts`), so:
+`SO_REUSEPORT` (`reusePort: true` in `server/index.ts`).
 
-1. start the new release on the same `PORT` while the old one serves, with a status
-   file of its own;
-2. wait for that file to say `"state":"serving"`;
+**A handover needs two process-manager entries for the game** — two pm2 apps, or two
+systemd units — each with its own `STATUS_FILE`, and the new release built where the
+new entry serves it from. That is what the deploy tool does. Nothing on this box is set
+up that way yet; until it is, a deploy restarts the game's one entry as above. **A single
+pm2 app or systemd unit cannot hand over**, because the old copy and the new one must
+run at once: restart it through its manager, never with a signal of your own. In
+outline, what a handover does:
+
+1. start the new release's entry on the same `PORT` while the old one serves;
+2. wait for its status file to say `"state":"serving"`;
 3. send the old process SIGHUP, by exact PID. It stops listening, after which every new
    connection reaches the new one; sends each lobby away with "The server is updating —
    open the lobby again"; keeps each match to its end, with no rematch; answers what
    still arrives on an old connection with `Connection: close`; and reports `draining`;
 4. wait for its file to say `"state":"draining"` with `"duelsInMatch":0` and
    `"inflight":0`, or for 20 minutes at most, since it never exits by itself;
-5. send it SIGTERM.
+5. stop the old **entry** through its manager, which sends the stop signal and keeps it
+   stopped: `pm2 stop <its name>`, `pm2 delete <its name>`, then `pm2 save` (stopped
+   alone, it stays in pm2's table, and pm2's saved list can bring it back at a reboot);
+   under systemd, `systemctl stop <its unit>`.
 
 It needs a second process-manager entry for the game, with its own `STATUS_FILE`, and
 the new release built where the new process serves it from. The deploy tool does all of
@@ -356,12 +450,19 @@ it — two pm2 slots, a release directory each, the wait, the drain and the stop
 `bun run deploy switch game <ref>` ([`tools/deploy/README.md`](tools/deploy/README.md)).
 On a box not yet migrated to it, a deploy restarts the game as above.
 
+**Never end a managed copy with a bare SIGTERM.** The game exits 0 after a stop, and pm2
+restarts an app that exits, 0 or not, unless its `autorestart` is off; systemd does the
+same under `Restart=always`. The old entry comes straight back, on its old build, binds
+the port beside the new release without an error, and takes about half the connections
+— the stray copy below. SIGHUP and then SIGTERM by exact PID, by hand, is a handover
+only for game processes started by hand, outside any manager.
+
 **`reusePort` has a cost: a second copy no longer fails to start.** A stray second game
 used to die with `EADDRINUSE`. Now it binds beside the first and quietly takes about
 half the connections. Outside a handover, exactly one process listens:
 
 ```sh
-ss -ltnp | grep ':3001\b'      # one pid. Two is a stray copy: stop it by its name or its exact PID
+ss -ltnp | grep ':3001\b'      # one pid. Two is a stray copy: stop it through its manager by name, or by exact PID if started by hand
 ```
 
 The puzzle database site does the opposite on purpose (`reusePort: false`): it never
@@ -711,11 +812,16 @@ Accept nothing until you are confident in the upgrade, and rollback stays free.
 
 - **The game's process is running but nothing listens on 3001**, and its log's last
   `[lifecycle]` line says `draining`. It was sent SIGHUP: its terminal closed (`tmux`,
-  `nohup`), or somebody sent it. Stop it with SIGTERM by its exact PID, and start it
+  `nohup`), or somebody sent it. If it is the service's own process, restart it
+  through its manager (`pm2 restart <its name>`, `systemctl restart <its unit>`).
+  If it was started by hand, stop it with SIGTERM by its exact PID, and start the game
   under its service.
 - **Two processes listen on 3001, and no handover is under way.** A stray second copy:
   `reusePort` let it bind without an error, and it takes about half the connections.
-  Stop the one that is not the service, by its name or its exact PID.
+  Stop the one that is not the service: through its manager if it has one
+  (`pm2 stop <its name>`, then `pm2 delete` and `pm2 save` if it should not exist;
+  `systemctl stop <its unit>`), by its exact PID only if it was started by hand — a
+  managed copy ended by PID is started straight back.
 - **Every page shows *Update ready* right after a build, and reloading does not clear
   it.** The server was not restarted after the build, and still names the old one.
   Restart it.

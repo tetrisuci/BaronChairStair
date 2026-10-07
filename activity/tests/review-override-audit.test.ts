@@ -140,8 +140,8 @@ async function listed(who = "hannah"): Promise<ReviewPuzzle[]> {
  * second table would answer it without changing the first, and a probe that
  * only knew about `puzzle_overrides` would go on failing after the bug was
  * fixed. A second connection, read-only, the way `tests/migration.test.ts`
- * inspects a store's file: nothing sets `busy_timeout`, so a second *writer*
- * would fail instantly, and this never writes.
+ * inspects a store's file: it never writes, so it never contends for the
+ * store's write lock.
  */
 function tracesOf(needle: string): number {
   const db = new Database(databasePath, { readonly: true });

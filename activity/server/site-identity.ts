@@ -184,10 +184,14 @@ export function migrateSiteIdentity(db: Database, timeZone?: string): void {
   // collide with itself on the UNIQUE index on the second row.
   addColumnIfMissing(db, "players", "public_key", "TEXT");
   db.run(SITE_IDENTITY_TABLES);
+  // IMMEDIATE: both read what is missing before they write it, and this runs at
+  // every boot — during a handover, while the old process is still filing
+  // hand-ins. Deferred, it would fail at once rather than wait for that
+  // process's write. See STORE_BUSY_TIMEOUT_MS in `server/db.ts`.
   db.transaction(() => {
     keyUnkeyedPlayers(db);
     keyServersWithRuns(db);
-  })();
+  }).immediate();
   if (timeZone !== undefined) recordTimeZone(db, timeZone);
 }
 

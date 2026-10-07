@@ -23,7 +23,10 @@
  * **Stop is an exit.** Stop listening, give the requests already in flight a
  * few seconds — a hand-in is a replay of somebody's run, and cutting it off is
  * losing it — close every duel socket with 1012 "restart", write the last
- * status, exit 0. A second stop signal exits at once.
+ * status, exit 0. A second stop signal exits at once, still closing the duel
+ * sockets on the way out; one that arrives within
+ * {@link STOP_REPEAT_WINDOW_MS} of the first is not a second stop but the same
+ * one delivered twice, and changes nothing.
  *
  * Nothing in here reads the environment or imports the server's
  * configuration: `server/index.ts` hands it everything, so the tests can drive
@@ -43,6 +46,23 @@ import { StatusFile, type StatusLog } from "./status-file";
 
 /** How long a stop waits for requests in flight before it ends the duels and exits. */
 const STOP_GRACE_MS = 8_000;
+/**
+ * How soon after a stop another stop signal is that same stop arriving twice,
+ * rather than somebody asking for an exit now.
+ *
+ * `bun run start` puts Bun's script runner between the process manager and the
+ * game, and the runner forwards SIGINT and SIGTERM to the game. pm2 signals
+ * the whole process tree on a stop or restart (its `treekill` default),
+ * systemd's default `KillMode=control-group` signals every process in the
+ * unit, and a Ctrl-C in a terminal signals the whole foreground group — so the
+ * game is sent one stop twice, once directly and once forwarded, measured on
+ * Bun 1.3.13 at well under a millisecond apart. Read as a person's second
+ * Ctrl-C, it skipped the grace and the 1012 closes on every ordinary restart.
+ *
+ * Two seconds is thousands of times that gap, and still less time than a
+ * person takes to decide the first Ctrl-C is not working.
+ */
+export const STOP_REPEAT_WINDOW_MS = 2_000;
 const INFLIGHT_POLL_MS = 25;
 /**
  * A beat between closing the duel sockets and exiting, for the close frames to
@@ -112,7 +132,8 @@ export class Lifecycle {
   private listener: Listener | null = null;
   private statusTimer: ReturnType<typeof setInterval> | null = null;
   private keepAlive: ReturnType<typeof setInterval> | null = null;
-  private stopRequested = false;
+  /** When the first stop signal arrived, and the stop it started. */
+  private stopping: { readonly at: number; readonly done: Promise<void> } | null = null;
 
   constructor(options: LifecycleOptions) {
     this.buildId = options.buildId;
@@ -222,14 +243,29 @@ export class Lifecycle {
     this.log.log(`[lifecycle] draining: no longer listening, ${duelsInMatch} match(es) still being played`);
   }
 
-  /** `SIGINT` or `SIGTERM`: finish what is in flight, end the duels, exit 0. */
-  async stop(): Promise<void> {
-    if (this.stopRequested) {
-      this.log.warn("[lifecycle] a second stop signal: exiting now");
-      this.exit(0);
-      return;
+  /**
+   * `SIGINT` or `SIGTERM`: finish what is in flight, end the duels, exit 0.
+   *
+   * A repeat within {@link STOP_REPEAT_WINDOW_MS} of the first is answered
+   * with the stop already under way; one after it exits at once.
+   */
+  stop(): Promise<void> {
+    if (!this.stopping) {
+      const at = this.now();
+      const done = this.stopGracefully();
+      this.stopping = { at, done };
+      return done;
     }
-    this.stopRequested = true;
+    const since = this.now() - this.stopping.at;
+    if (since < STOP_REPEAT_WINDOW_MS) {
+      this.log.log(`[lifecycle] the same stop signal again, ${since} ms later: still stopping`);
+      return this.stopping.done;
+    }
+    this.exitNow();
+    return Promise.resolve();
+  }
+
+  private async stopGracefully(): Promise<void> {
     const stillListening = this.current !== "draining";
     this.current = "stopping";
     if (stillListening) this.listener?.stop();
@@ -241,6 +277,22 @@ export class Lifecycle {
     this.clearTimers();
     this.writeStatus();
     this.log.log("[lifecycle] stopped");
+    this.exit(0);
+  }
+
+  /**
+   * A second stop: no more waiting, so whatever is still in flight is cut off.
+   *
+   * The duel sockets are still closed with 1012 "restart" on the way out,
+   * because it costs nothing: `closeAll` is synchronous, and a close frame
+   * written just before `process.exit` still reaches the far end — measured on
+   * Bun 1.3.13 over loopback, 1012 for every socket, where exiting without it
+   * gives 1006, which a player is shown as a lost connection.
+   */
+  private exitNow(): void {
+    this.log.warn("[lifecycle] a second stop signal: exiting now");
+    this.duels.closeAll();
+    this.writeStatus();
     this.exit(0);
   }
 

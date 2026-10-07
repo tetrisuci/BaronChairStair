@@ -437,6 +437,9 @@ function nextCommunityPuzzleId(db: Database): number {
  * a losing accept leaves the band exactly where it found it.
  */
 export function acceptSubmission(db: Database, id: number, accept: Acceptance): Decided {
+  // IMMEDIATE: the id is read before the row is written, and a deferred
+  // transaction fails at once rather than wait for another writer at that
+  // point. See STORE_BUSY_TIMEOUT_MS in `server/db.ts`.
   return db.transaction(() =>
     writeSubmissionDecision(db, id, {
       status: "accepted",
@@ -445,7 +448,7 @@ export function acceptSubmission(db: Database, id: number, accept: Acceptance): 
       puzzleId: nextCommunityPuzzleId(db),
       difficulty: accept.difficulty,
     }),
-  )();
+  ).immediate();
 }
 
 /** Turns one down. No id, no rating: a rejected puzzle never becomes one. */

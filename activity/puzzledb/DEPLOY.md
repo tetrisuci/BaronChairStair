@@ -592,9 +592,10 @@ Last, `git status` from the repository root must be clean: `puzzledb/dist/`,
 
 Only once everything above has passed. The root [`DEPLOY.md`](../../DEPLOY.md) says
 whether this deploy needs a bot restart at all — only a change to `client/` or
-`changelog.json` does — and how: by the bot's own name, never with `pm2 restart all`,
-which would take DIAYN down with it. The restart posts nothing. It makes the new release
-notes readable through `/puzzle changelog`, to whoever asks.
+`changelog.json` since the commit the running bot started on does, which is not
+always the commit before this pull — and how: by the bot's own name, never with
+`pm2 restart all`, which would take DIAYN down with it. The restart posts nothing. It
+makes the new release notes readable through `/puzzle changelog`, to whoever asks.
 
 ---
 
@@ -711,7 +712,9 @@ pm2 save    # or the next reboot brings puzzle-db back; --force if the list is n
 Under systemd, `sudo systemctl disable --now puzzle-db` instead.
 
 That leaves the checkout where the activity's deploy put it, release notes about the
-site and all, so leave the bot running on what it loaded until the site is back.
+site and all, so leave the bot running on what it loaded until the site is back. The
+checkout is then ahead of the bot, which is why the root guide's restart check compares
+against the commit the running bot started on, not the one before the next pull.
 Putting the checkout back is the **activity's** rollback, never a step of the site's:
 the game runs the pulled code and serves the page built from it, and a bare
 `git checkout` would move neither, leaving the game's next restart to boot the old
