@@ -23,7 +23,7 @@ import {
   type GameStatus,
 } from "../shared/runtime-status";
 import { readBuildId } from "../server/build-id";
-import { Lifecycle, type DuelControl, type LifecycleLog } from "../server/lifecycle";
+import { Lifecycle, STOP_REPEAT_WINDOW_MS, type DuelControl, type LifecycleLog } from "../server/lifecycle";
 
 const START = 1_791_300_000_000;
 /** Shaped like a Discord id, so finding it in a status file would mean one leaked. */
@@ -49,6 +49,8 @@ interface Harness {
   readonly lifecycle: Lifecycle;
   readonly exits: number[];
   readonly duelCalls: string[];
+  /** The duel calls and the exits together, in the order they happened. */
+  readonly order: string[];
   readonly warnings: string[];
   readonly listener: { stops: number; readonly port: number; stop(): void };
   setDuels(counts: ReturnType<DuelControl["counts"]>): void;
@@ -61,6 +63,7 @@ function harness(options: { statusFile?: string | null; stopGraceMs?: number } =
   let duelCounts = { duelsInMatch: 0, lobbies: 0 };
   const exits: number[] = [];
   const duelCalls: string[] = [];
+  const order: string[] = [];
   const warnings: string[] = [];
   const log: LifecycleLog = {
     log: () => {},
@@ -79,12 +82,21 @@ function harness(options: { statusFile?: string | null; stopGraceMs?: number } =
     statusFile: options.statusFile ?? null,
     duels: {
       counts: () => duelCounts,
-      drain: () => duelCalls.push("drain"),
-      closeAll: () => duelCalls.push("closeAll"),
+      drain: () => {
+        duelCalls.push("drain");
+        order.push("drain");
+      },
+      closeAll: () => {
+        duelCalls.push("closeAll");
+        order.push("closeAll");
+      },
     },
     now: () => now,
     pid: 4242,
-    exit: (code) => exits.push(code),
+    exit: (code) => {
+      exits.push(code);
+      order.push(`exit ${code}`);
+    },
     log,
     stopGraceMs: options.stopGraceMs ?? 200,
     flushMs: 0,
@@ -94,6 +106,7 @@ function harness(options: { statusFile?: string | null; stopGraceMs?: number } =
     lifecycle,
     exits,
     duelCalls,
+    order,
     warnings,
     listener,
     setDuels: (counts) => {
@@ -345,16 +358,42 @@ describe("stop", () => {
     expect(exits).toEqual([0]);
   });
 
-  test("a second stop signal exits at once", async () => {
-    const { lifecycle, listener, duelCalls, exits } = harness({ stopGraceMs: 5_000 });
+  test("the same stop delivered twice in a moment is one stop: it still waits, and still closes the duels", async () => {
+    // `bun run start` forwards the signal it gets to the game, and pm2's tree
+    // kill or systemd's control-group kill sends the game that signal directly
+    // as well: one stop, arriving twice, a millisecond apart.
+    const { lifecycle, listener, duelCalls, exits, advance } = harness({ stopGraceMs: 5_000 });
+    lifecycle.listening(listener);
+    const pending = deferred();
+    const answered = lifecycle.handle(new Request("http://game/api/rush/run"), undefined, () => pending.promise);
+
+    const first = lifecycle.stop();
+    advance(1);
+    const second = lifecycle.stop();
+    await Bun.sleep(30);
+    // The hand-in is still being answered, so nothing has been cut off.
+    expect(exits).toEqual([]);
+    expect(duelCalls).toEqual([]);
+
+    pending.resolve(ok());
+    expect(await (await answered).text()).toBe("ok");
+    await Promise.all([first, second]);
+    expect(duelCalls).toEqual(["closeAll"]);
+    expect(exits).toEqual([0]);
+  });
+
+  test("a second stop signal after that moment exits at once, closing every duel socket first", async () => {
+    // A person pressing Ctrl-C again because the first one is taking too long.
+    const { lifecycle, listener, order, warnings, advance } = harness({ stopGraceMs: 5_000 });
     lifecycle.listening(listener);
     const pending = deferred();
     void lifecycle.handle(new Request("http://game/api/rush/run"), undefined, () => pending.promise);
 
     const first = lifecycle.stop();
+    advance(STOP_REPEAT_WINDOW_MS);
     await lifecycle.stop();
-    expect(exits).toEqual([0]);
-    expect(duelCalls).toEqual([]);
+    expect(order).toEqual(["closeAll", "exit 0"]);
+    expect(warnings.some((line) => line.includes("second stop signal"))).toBe(true);
 
     pending.resolve(ok());
     await first;
