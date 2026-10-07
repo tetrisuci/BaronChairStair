@@ -96,6 +96,35 @@
 .pdb-sort:hover { color: var(--ink); text-decoration: underline; }
 .pdb-sort--on { color: var(--ink); font-weight: 700; }
 .pdb-sort--on::after { content: " \25BC"; font-size: 9px; }
+/* The alternates table runs either way: up for ascending, down (above) for descending. */
+.pdb-sort--on.pdb-sort--asc::after { content: " \25B2"; }
+
+/* ── Alternates ───────────────────────────────────────────────────────────── */
+
+/* The puzzle column carries two sorts, by number and by name. */
+.pdb-alternates__puzzle-head .pdb-sort + .pdb-sort { margin-left: 12px; }
+
+.pdb-alternates thead th:first-child,
+.pdb-alternates .pdb-table__lead {
+  position: sticky;
+  left: 0;
+  background: var(--cream);
+}
+
+.pdb-alternates tbody tr:nth-child(odd) .pdb-table__lead { background: var(--cream-shade); }
+.pdb-alternates .pdb-table__lead a { font-weight: 700; text-decoration: none; }
+.pdb-alternates .pdb-table__lead a:hover { text-decoration: underline; }
+
+.pdb-alternates__bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+/* The day the line on screen was found, under its replay. */
+.pdb-answer__found { margin: 8px 0 0; }
 
 /* ── Tiers ────────────────────────────────────────────────────────────────── */
 

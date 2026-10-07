@@ -5,8 +5,9 @@
  * The lines join the maker's answer behind the one "Show the answers" press,
  * as chips over one replay. One replay, rebound — never one per line, because
  * two replays would both own the arrow keys and step two boards for every
- * press. A line carries no finder and no day, so a chip can name only its
- * position, what it sent and how long it was.
+ * press. A line carries no finder, so a chip can name only its position,
+ * what it sent and how long it was; the day it was found is said beside the
+ * replay, and `#line-N` opens the panel on line N's chip.
  *
  * Nothing here may say a puzzle has lines still to come. Since every finished
  * day's lines are published, the only unpublished ones are today's, and a
@@ -27,7 +28,7 @@ import {
 import { indexSiteData, type SiteIndex } from "../puzzledb/client/data";
 import { answerChoices, lineLabel } from "../puzzledb/client/lines";
 import { renderPuzzleStats } from "../puzzledb/client/puzzle-stats";
-import { createPuzzleView, LINES_ID, type PuzzleView } from "../puzzledb/client/puzzle-view";
+import { createPuzzleView, lineFromHash, LINES_ID, type PuzzleView } from "../puzzledb/client/puzzle-view";
 
 let window: Window;
 const saved = { document: globalThis.document, window: globalThis.window };
@@ -66,8 +67,8 @@ const ANSWERED = sitePuzzle({
 /** No maker's answer on file. */
 const BARE = sitePuzzle({ id: 10, title: "Bare" });
 
-const LINE_ONE: SiteLine = { position: 1, attack: 10, clears: ["tsd"], steps: [I_UP, O_FIRST] };
-const LINE_TWO: SiteLine = { position: 2, attack: 3, clears: [], steps: [O_FIRST] };
+const LINE_ONE: SiteLine = { position: 1, day: 272, attack: 10, clears: ["tsd"], steps: [I_UP, O_FIRST] };
+const LINE_TWO: SiteLine = { position: 2, day: 274, attack: 3, clears: [], steps: [O_FIRST] };
 
 const DATA: SiteData = {
   about: { schema: SCHEMA_VERSION, builtAt: "2026-10-02T19:00:00.000Z", firstDay: 247, throughDay: 274 },
@@ -89,7 +90,7 @@ const BODY: SitePuzzleBody = {
 
 const opened: PuzzleView[] = [];
 
-function drive(puzzle: SitePuzzle, options: { revealed?: boolean } = {}) {
+function drive(puzzle: SitePuzzle, options: { revealed?: boolean; line?: number | null } = {}) {
   const views: BoardView[] = [];
   const view = createPuzzleView(puzzle, INDEX, { onView: (board) => void views.push(board) }, options);
   opened.push(view);
@@ -232,11 +233,76 @@ describe("the answers", () => {
     view.detach();
   });
 
+  test("says beside the replay which day the line on screen was found, and nothing for the maker's", () => {
+    const { view, element } = drive(ANSWERED);
+    view.addBody(BODY, INDEX);
+    buttonSaying(element, "Show the answers").click();
+    expect(element.querySelector(".pdb-answer__found")).toBeNull();
+
+    buttonSaying(element, "Line 2 · 3 atk · 1p").click();
+    expect(element.querySelector(".pdb-answer__found")?.textContent).toBe("Found on day 274 · Thu, Oct 1, 2026");
+    view.detach();
+  });
+
   test("gives the answers the anchor the game's link lands on, and puts the stats in the rail", () => {
     const { view, element } = drive(ANSWERED);
     expect(element.querySelector(`#${LINES_ID}`)?.closest(".pdb-answer")).not.toBeNull();
     view.addBody(BODY, INDEX);
     expect(element.querySelector(".pdb-rail .pdb-stats")).not.toBeNull();
+    view.detach();
+  });
+});
+
+describe("a link to one line", () => {
+  test("reads #line-N, and nothing else, as a line's number", () => {
+    expect(lineFromHash("#line-2")).toBe(2);
+    expect(lineFromHash("#line-140")).toBe(140);
+    for (const hash of ["", "#lines", "#answer", "#line-0", "#line-02", "#line-", "#line-x", "#line-2a", "#Line-2", "#line-1234567"]) {
+      expect({ hash, line: lineFromHash(hash) }).toEqual({ hash, line: null });
+    }
+  });
+
+  test("opens the answers on that line's chip once the lines arrive", () => {
+    const { view, views, element } = drive(ANSWERED, { line: 2 });
+    expect(element.querySelector(".replay")).toBeNull();
+    expect(view.openedLine).toBeNull();
+
+    view.addBody(BODY, INDEX);
+
+    expect(element.querySelectorAll(".replay")).toHaveLength(1);
+    expect(element.querySelector('.pdb-answer__chips [aria-pressed="true"]')?.textContent).toBe("Line 2 · 3 atk · 1p");
+    expect(views.at(-1)!.active).toEqual(O_FIRST.cells);
+    expect(view.openedLine).toBe(2);
+    view.detach();
+  });
+
+  test("opens a lone line with no maker's answer, where there are no chips to press", () => {
+    const { view, element } = drive(BARE, { line: 2 });
+    view.addBody({ ...BODY, lines: [LINE_TWO] }, INDEX);
+
+    expect(element.querySelector(".replay")).not.toBeNull();
+    expect(view.openedLine).toBe(2);
+    view.detach();
+  });
+
+  test("leaves the answers shut, as #lines does, for a line the puzzle does not have", () => {
+    const { view, element } = drive(ANSWERED, { line: 7 });
+    view.addBody(BODY, INDEX);
+
+    expect(element.querySelector(".replay")).toBeNull();
+    expect(buttonSaying(element, "Show the answers")).toBeDefined();
+    expect(view.openedLine).toBeNull();
+    view.detach();
+  });
+
+  test("opens the line only once: lines that arrive again leave the reader's choice alone", () => {
+    const { view, element } = drive(ANSWERED, { line: 2 });
+    view.addBody(BODY, INDEX);
+    buttonSaying(element, "Maker's answer").click();
+
+    view.addBody(BODY, INDEX);
+
+    expect(element.querySelector('.pdb-answer__chips [aria-pressed="true"]')?.textContent).toBe("Maker's answer");
     view.detach();
   });
 });
