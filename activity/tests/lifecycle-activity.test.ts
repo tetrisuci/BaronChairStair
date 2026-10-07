@@ -12,6 +12,7 @@ import { Activity } from "../server/activity";
 import { RECENT_RUSH_MS, RECENT_SESSION_MS } from "../shared/runtime-status";
 
 const START = 1_791_300_000_000;
+const MINUTE = 60_000;
 
 function clockAt(start = START) {
   let now = start;
@@ -80,6 +81,18 @@ describe("recent sessions", () => {
     for (const id of ["a", "b", "c", "d", "e"]) activity.sawSession(id);
     expect(activity.counts().sessionsRecent).toBe(3);
   });
+
+  test("lets go of a player whose window has passed even when nothing reads the counts", () => {
+    // A box with no STATUS_FILE never asks for the counts, so a player who
+    // has moved on must be forgotten on the way in, not only on the way out.
+    const clock = clockAt();
+    const activity = new Activity(clock.now);
+    for (let minute = 0; minute < 3 * (RECENT_SESSION_MS / MINUTE); minute++) {
+      activity.sawSession(`player-${minute}`);
+      clock.advance(MINUTE);
+    }
+    expect(activity.held().sessions).toBeLessThanOrEqual(RECENT_SESSION_MS / MINUTE);
+  });
 });
 
 describe("recent rush tickets", () => {
@@ -94,5 +107,16 @@ describe("recent rush tickets", () => {
     expect(activity.counts().rushTicketsRecent).toBe(1);
     clock.advance(60_000);
     expect(activity.counts().rushTicketsRecent).toBe(0);
+  });
+
+  test("keeps no more tickets than the window holds even when nothing reads the counts", () => {
+    const clock = clockAt();
+    const activity = new Activity(clock.now);
+    const windowMinutes = Math.ceil(RECENT_RUSH_MS / MINUTE);
+    for (let minute = 0; minute < 3 * windowMinutes; minute++) {
+      activity.mintedRushTicket();
+      clock.advance(MINUTE);
+    }
+    expect(activity.held().rushTickets).toBeLessThanOrEqual(windowMinutes);
   });
 });
