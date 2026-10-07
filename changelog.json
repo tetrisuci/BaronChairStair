@@ -2,6 +2,13 @@
   "$comment": "The project's version and its player-facing release notes. Newest first; order in this list IS the version order. Read by client/changelog.py for /puzzle changelog, requested privately. Adding a release means putting it at the top. Keep `changes` to things a player can see.",
   "releases": [
     {
+      "version": "beta 0.20",
+      "changes": [
+        "**Explore has a new tab, Alternate solutions**: every other way players have solved the club's puzzles, in one list. Sort by date found, difficulty, puzzle name or number, attack or pieces, either way round, and open any line on the board. A line on a puzzle you have not solved yet is listed but stays locked — no board, no attack, no clears — until you solve it yourself.",
+        "**db.tetrisatuci.org has an Alternates page** with the same list and sorts, and a link from each line straight to it on its puzzle's page. Each line now shows the day it was found, never the time and never who found it. On a day only one player solved a puzzle, that day can point at them."
+      ]
+    },
+    {
       "version": "beta 0.19",
       "changes": [
         "**Every line you find now lands in the puzzle's Solutions**: a puzzle from Explore, and a replay of a daily you have already solved (**Play again**), as well as the daily itself. Until now only the daily run reached the Solutions menu, so solving a puzzle another way afterwards left no trace. A new line found this way also counts on the Discoveries board."
