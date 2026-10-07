@@ -74,6 +74,16 @@ export interface PlayState {
   readonly duelOpen: boolean;
   /** A draft is being played in the builder. */
   readonly testing: boolean;
+  /**
+   * A hand-in — the daily filing, a rush, a practice clear — has been sent
+   * and not yet answered, retries included.
+   *
+   * Apart from the rest because it outlives what is on screen: the board
+   * already says "solved" while the filing is out, and the player may have
+   * gone Home, leaving nothing else running. A reload then throws away the
+   * very request the retries hold open through a restart to save.
+   */
+  readonly handingIn: boolean;
 }
 
 /**
@@ -83,9 +93,10 @@ export interface PlayState {
  * A run that is merely open counts: its clock started when the puzzle was put
  * in front of them, and a chip appearing over the board mid-thought is the
  * interruption this exists to avoid. A whole duel counts, lobby and result
- * included, because a reload drops the seat and the rematch with it.
+ * included, because a reload drops the seat and the rematch with it. So does
+ * a hand-in still on its way, wherever the player has gone since.
  */
 export function isMidPlay(state: PlayState): boolean {
   const running = state.runPhase === "ready" || state.runPhase === "playing";
-  return running || state.rushLive || state.duelOpen || state.testing;
+  return running || state.rushLive || state.duelOpen || state.testing || state.handingIn;
 }

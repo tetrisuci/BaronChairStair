@@ -8,13 +8,20 @@
  * into both — and this checks the resolving, the file, and that the config
  * actually wires both halves to it, without running a build (which takes
  * seconds and writes a directory; the deploy guide runs the real one).
+ *
+ * Only a build. The dev server compiles nothing in, so a page served by
+ * `vite` calls itself dev and never offers a reload: it rebuilds on every
+ * save, and a `dist/build.json` left from an older build would otherwise have
+ * it offering one that changes nothing. The config is resolved the way Vite
+ * resolves it for each command, so this is what `vite` and `vite build`
+ * actually run with rather than what the file appears to say.
  */
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Plugin } from "vite";
+import { type Plugin, resolveConfig } from "vite";
 import viteConfig, { BUILD_ID_DEFINE, buildIdPlugin, resolveBuildId, writeBuildIdFile } from "../vite.config";
 import { BUILD_ID_FILE } from "../shared/runtime-status";
 import { DEV_BUILD_ID } from "../client/src/build-id";
@@ -88,6 +95,12 @@ describe("build.json", () => {
     expect(buildIdPlugin("0fcedc3").apply).toBe("build");
   });
 
+  test("the plugin compiles in the id it writes", () => {
+    const hook = buildIdPlugin("0fcedc3").config as unknown as () => { define?: Record<string, string> };
+
+    expect(hook().define).toEqual({ [BUILD_ID_DEFINE]: JSON.stringify("0fcedc3") });
+  });
+
   test("an output with no directory is refused rather than written somewhere else", () => {
     const hook = buildIdPlugin("0fcedc3").writeBundle as unknown as (this: unknown, options: { dir?: string }) => void;
 
@@ -98,14 +111,27 @@ describe("build.json", () => {
 describe("the game's config", () => {
   const plugins = (viteConfig.plugins ?? []) as Plugin[];
   const plugin = plugins.find((candidate) => candidate?.name === buildIdPlugin("x").name);
-  const define = viteConfig.define ?? {};
 
-  test("compiles the id into the client under the name build-id.ts reads", () => {
+  /** What the page is compiled with under `vite build` or under `vite`. */
+  async function definedFor(command: "build" | "serve"): Promise<Record<string, unknown>> {
+    const resolved = await resolveConfig({ ...viteConfig, configFile: false, logLevel: "silent" }, command);
+    return resolved.define ?? {};
+  }
+
+  test("compiles the id into a build under the name build-id.ts reads", async () => {
     expect(BUILD_ID_DEFINE).toBe("__BUILD_ID__");
-    const compiled = define[BUILD_ID_DEFINE];
+    const compiled = (await definedFor("build"))[BUILD_ID_DEFINE];
     expect(typeof compiled).toBe("string");
     expect(JSON.parse(compiled as string)).toBe(resolveBuildId());
     expect(readFileSync("client/src/build-id.ts", "utf8")).toContain(BUILD_ID_DEFINE);
+  });
+
+  test("compiles nothing into the dev server, so the page there calls itself dev", async () => {
+    // `build-id.ts` reads a missing define as dev; it is the define being
+    // absent, not set to "dev", that is pinned — the page's own fallback is
+    // the one place that decides what an unnamed build is.
+    expect((await definedFor("serve"))[BUILD_ID_DEFINE]).toBeUndefined();
+    expect(viteConfig.define?.[BUILD_ID_DEFINE]).toBeUndefined();
   });
 
   test("writes build.json with the same id it compiled in", async () => {
@@ -116,7 +142,7 @@ describe("the game's config", () => {
     await hook.call(null, { dir });
 
     const written = JSON.parse(readFileSync(join(dir, BUILD_ID_FILE), "utf8")).buildId;
-    expect(written).toBe(JSON.parse(define[BUILD_ID_DEFINE] as string));
+    expect(written).toBe(JSON.parse((await definedFor("build"))[BUILD_ID_DEFINE] as string));
   });
 
   test("still builds the review page with the game", () => {

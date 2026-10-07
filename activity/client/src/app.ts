@@ -12,7 +12,7 @@ import { attachPointerPlay } from "./game/pointer";
 import type { Handling } from "@shared/tetris/handling";
 import type { InputEvent } from "@shared/tetris/verify";
 import type { Connection } from "./discord";
-import type { DailyEntry, DailyResponse, GalleryLine, RetryNotice, RushState, StoredRun } from "./api";
+import type { DailyEntry, DailyResponse, GalleryLine, RetryNotice, RushState, StoredRun, SubmitResponse } from "./api";
 import type { ArchiveListing } from "@shared/puzzle";
 import { filterArchive } from "@shared/archive-filter";
 import { ApiError, DAILY_STALE_STATUS } from "./api";
@@ -68,6 +68,13 @@ import { createSettingsDialog } from "./ui/settings-dialog";
 import { createSiteVisibilityRow } from "./ui/site-visibility-row";
 import type { ShareFields } from "./ui/share";
 import { createUpdateNotice, type UpdateNotice } from "./ui/update-chip";
+
+/** A puzzle on the table, and whether playing it counts; see `App.sheet`. */
+interface Sheet {
+  readonly puzzle: PuzzlePrompt;
+  readonly solution: readonly SolutionStep[] | null;
+  readonly scored: boolean;
+}
 
 const COUNTDOWN_TICK_MS = 1000;
 /** Fast enough for a tenth-of-a-second stopwatch to look like one. */
@@ -241,7 +248,23 @@ export class App {
    * begin, and the other two are a click away.
    */
   private dailyTier: DailyTier = "easy";
-  private submitting = false;
+  /**
+   * The daily runs whose filing is out, so a run is filed once however its
+   * finish is reached.
+   *
+   * Per run, not one flag for the app. It was a single `submitting` boolean,
+   * harmless while a filing was one round trip; with the retries a filing can
+   * be out for fifteen seconds, and a second tier solved in that time hit the
+   * flag and vanished — no verdict, nothing filed, and a solved scored board
+   * that `restartAttempt` will not deal again.
+   */
+  private filingRuns: ReadonlySet<PuzzleRun> = new Set();
+  /**
+   * Hand-ins sent and not yet answered, of every kind — the daily filing, a
+   * rush, a practice clear — retries included. Counted only so the update
+   * chip stays down meanwhile; see {@link App.handingIn}.
+   */
+  private handInsOut = 0;
   private toastTimer: ReturnType<typeof setTimeout> | null = null;
   private countdownTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -252,8 +275,7 @@ export class App {
    * The sheet on the table. Today's puzzle is scored; an archive sheet picked
    * up afterwards is not, so nothing a player does for fun touches the record.
    */
-  private sheet: { puzzle: PuzzlePrompt; solution: readonly SolutionStep[] | null; scored: boolean } | null =
-    null;
+  private sheet: Sheet | null = null;
   private runningPuzzleId: number | null = null;
   /**
    * How long each puzzle has been open and how many restarts it has taken,
@@ -1498,19 +1520,30 @@ export class App {
     this.stampBadge(summary.solved > 0, `${summary.solved} solved`);
     if (!ticket) return;
 
+    // Whether the hand-in needed a retry, for the one line that would
+    // otherwise misread one — see `isFirst` below.
+    let retried = false;
     try {
-      const response = await this.connection.api.submitRush(
-        {
-          ticket: ticket.token,
-          handling: this.settings.value.handling,
-          segments: summary.segments.map((segment) => ({ events: segment.events })),
-          timeToLastSolveMs: summary.timeToLastSolveMs,
-          skipsUsed: summary.skipsUsed,
-        },
-        // Retried through a restart until the server would refuse it anyway:
-        // its own start, five minutes, and its grace. At the buzzer that is
-        // the whole of the grace; handed in early, the schedule runs out first.
-        { deadline: ticket.handInBy, onRetrying: this.showReconnecting },
+      const response = await this.handingIn(() =>
+        this.connection.api.submitRush(
+          {
+            ticket: ticket.token,
+            handling: this.settings.value.handling,
+            segments: summary.segments.map((segment) => ({ events: segment.events })),
+            timeToLastSolveMs: summary.timeToLastSolveMs,
+            skipsUsed: summary.skipsUsed,
+          },
+          // Retried through a restart until the server would refuse it anyway:
+          // its own start, five minutes, and its grace. At the buzzer that is
+          // the whole of the grace; handed in early, the schedule runs out first.
+          {
+            deadline: ticket.handInBy,
+            onRetrying: (notice) => {
+              retried = true;
+              this.showReconnecting(notice);
+            },
+          },
+        ),
       );
       this.clearReconnecting();
       // A rush files a clear for every puzzle it solved, so the set the
@@ -1521,7 +1554,12 @@ export class App {
         run: response.run,
         played: response.played,
         ranked: response.ranked,
-        isFirst: response.isFirst,
+        // A ranked ticket is minted only while no rush is filed for the day,
+        // so a retry told "not first" is hearing about its own first attempt,
+        // filed in the restart with its answer lost — this player's run,
+        // filed once. Without a retry the server's word stands: two ranked
+        // rushes started side by side, and the other one was handed in first.
+        isFirst: response.isFirst || (retried && response.ranked),
         best: response.best,
       });
       this.rushBoard.update(response.leaderboard, this.connection.player.id);
@@ -1722,10 +1760,19 @@ export class App {
 
   private async finishRun(snapshot: RunSnapshot, events: readonly InputEvent[]): Promise<void> {
     const sheet = this.sheet;
-    if (!sheet || this.submitting) return;
+    // The run that finished, which is the one on screen as it does.
+    const finished = this.run;
+    if (!sheet || !finished || this.filingRuns.has(finished)) return;
     this.input.setGameInputEnabled(false);
     this.stopClock();
     this.showBadge(snapshot.phase === "solved", snapshot);
+    // Whether this run is still what the player is looking at. A hand-in
+    // rides out a restart, so its answer can land seconds later — after "Try
+    // again" has dealt a new run of the same sheet, or the player has gone
+    // Home and on to another — and mounting this run's verdict then would put
+    // a result card over a board that is not its own. Keyed on the run, which
+    // every way off this board replaces or clears, and on the sheet with it.
+    const stillShowing = (): boolean => this.run === finished && this.sheet === sheet;
 
     if (!sheet.scored) {
       this.presentVerdict(this.toShareFields(snapshot), null);
@@ -1739,12 +1786,6 @@ export class App {
       // ever solve of a puzzle used to miss the Solutions button it had just
       // earned by one round trip.
       if (snapshot.phase === "solved") {
-        // Keyed on the run, not only the puzzle: the clear rides out a
-        // restart, so it can land seconds later, after "Try again" has dealt
-        // a new run of the same puzzle — and re-mounting this verdict then
-        // would put a result card over a board still being played.
-        const finished = this.run;
-        const stillShowing = () => this.run === finished && this.sheet?.puzzle.id === sheet.puzzle.id;
         void this.fileClear(sheet.puzzle, events, stillShowing).then(() => {
           if (stillShowing()) this.presentVerdict(this.toShareFields(snapshot), null);
         });
@@ -1764,35 +1805,62 @@ export class App {
       return;
     }
 
-    this.submitting = true;
+    this.filingRuns = new Set([...this.filingRuns, finished]);
+    try {
+      await this.fileDailyRun(sheet, day, snapshot, events, stillShowing);
+    } finally {
+      this.filingRuns = new Set([...this.filingRuns].filter((run) => run !== finished));
+    }
+  }
+
+  /**
+   * Files a solved daily sheet, and shows what the server made of it — if the
+   * run is still on screen when the answer lands.
+   *
+   * The answer is *kept* either way: the day's filed run, its streak and the
+   * cleared gate are about the player, not about the screen, and a player who
+   * went Home while this retried comes back to a tier that says it is filed.
+   * What it *shows* — the result card, the leaderboard, the walkthrough and
+   * the sentences about this sheet — waits on `stillShowing`, or a filing
+   * held open by a restart would land its result over whatever they went to.
+   */
+  private async fileDailyRun(
+    sheet: Sheet,
+    day: number,
+    snapshot: RunSnapshot,
+    events: readonly InputEvent[],
+    stillShowing: () => boolean,
+  ): Promise<void> {
     this.toast("Filing sheet…");
     // Whether the filing needed a retry, for the one sentence that would
-    // otherwise misread one — see "already filed" below.
+    // otherwise misread one — see `presentFiling`.
     let retried = false;
     try {
-      const response = await this.connection.api.submitRun(
-        {
-          // Which tier this log was played on. The server replays it
-          // against that board, so naming the wrong one fails to solve rather
-          // than filing anything.
-          tier: this.dailyTier,
-          // The day the sheet was dealt on. `daily` is replaced only by a
-          // filing's own answer or by the refusal below, so it is still that
-          // day here — and the server refuses it once the day is over, rather
-          // than replaying the log against tomorrow's puzzle of this tier.
-          day,
-          // The handling the attempt was played under, not whatever is set now.
-          handling: this.run?.handling ?? this.settings.value.handling,
-          events,
-          resets: snapshot.resets,
-          totalMs: snapshot.elapsedMs,
-        },
-        {
-          onRetrying: (notice) => {
-            retried = true;
-            this.showReconnecting(notice);
+      const response = await this.handingIn(() =>
+        this.connection.api.submitRun(
+          {
+            // Which tier this log was played on. The server replays it
+            // against that board, so naming the wrong one fails to solve rather
+            // than filing anything.
+            tier: this.dailyTier,
+            // The day the sheet was dealt on. `daily` is replaced only by a
+            // filing's own answer or by the refusal below, so it is still that
+            // day here — and the server refuses it once the day is over, rather
+            // than replaying the log against tomorrow's puzzle of this tier.
+            day,
+            // The handling the attempt was played under, not whatever is set now.
+            handling: this.run?.handling ?? this.settings.value.handling,
+            events,
+            resets: snapshot.resets,
+            totalMs: snapshot.elapsedMs,
           },
-        },
+          {
+            onRetrying: (notice) => {
+              retried = true;
+              this.showReconnecting(notice);
+            },
+          },
+        ),
       );
       this.clearReconnecting();
       // Remember the filed sheet so returning from practice restores it.
@@ -1818,46 +1886,58 @@ export class App {
           ),
         };
       }
-      this.presentVerdict(this.toShareFields(snapshot, response.run), response.run);
-      this.leaderboard.update(response.leaderboard, this.connection.player.id);
-      this.attachWalkthrough(sheet.puzzle, response.solution);
-      if (response.discovery?.isNew) {
-        // Only for a line nobody had. Saying "one of 4 known" to everybody else
-        // would turn a discovery into a scoreboard nobody asked for, and would
-        // quietly tell a player how many answers a puzzle has — which is the
-        // reveal the whole archive is careful not to give away.
-        //
-        // Two sentences because a discovery is now two things. A line credited
-        // without solving is one that out-attacked the target by another route,
-        // and calling that "solved it this way" tells a player they met a goal
-        // the same screen has just told them they missed.
-        this.toast(
-          response.run.solved
-            ? "New line! Nobody had solved it this way."
-            : "New line! Nobody had sent that much attack this way.",
-        );
-        void this.loadDiscoveries();
-      }
-      // Not after a retry. The likeliest reason a retry finds the sheet
-      // already filed is that the first attempt landed and its answer was
-      // lost in the restart — which is the player's run, filed once, and
-      // telling them otherwise would be about the wire, not about them.
-      if (!response.isFirst && !retried) this.toast("Today's sheet was already filed");
+      if (stillShowing()) this.presentFiling(sheet.puzzle, snapshot, response, retried);
+      // The board of discoveries is on the front door, so it is refreshed
+      // whether or not the player is still here to be told about the line.
+      if (response.discovery?.isNew) void this.loadDiscoveries();
       // The server has just recorded a clear for this puzzle if the run solved
       // it. Without this the gate it opens stays shut on the client.
       if (response.run.solved) {
         this.cleared = new Set([...this.cleared, sheet.puzzle.id]);
       }
     } catch (error) {
-      this.presentVerdict(this.toShareFields(snapshot), null);
+      if (stillShowing()) this.presentVerdict(this.toShareFields(snapshot), null);
+      // Said even to a player who has moved on: it is the only word they get
+      // that the solve they walked away from never reached the board.
       this.toast(error instanceof ApiError ? error.message : "Could not file the sheet");
       // The day this sheet was dealt on is over. The server's sentence says
       // so; reading the day again puts today's sheets on the front door and
       // unlocks this one for practice, so "Play again" opens it unscored.
       if (error instanceof ApiError && error.status === DAILY_STALE_STATUS) void this.refreshDaily();
-    } finally {
-      this.submitting = false;
     }
+  }
+
+  /** The filed run's result, on the board it was played on. */
+  private presentFiling(
+    puzzle: PuzzlePrompt,
+    snapshot: RunSnapshot,
+    response: SubmitResponse,
+    retried: boolean,
+  ): void {
+    this.presentVerdict(this.toShareFields(snapshot, response.run), response.run);
+    this.leaderboard.update(response.leaderboard, this.connection.player.id);
+    this.attachWalkthrough(puzzle, response.solution);
+    if (response.discovery?.isNew) {
+      // Only for a line nobody had. Saying "one of 4 known" to everybody else
+      // would turn a discovery into a scoreboard nobody asked for, and would
+      // quietly tell a player how many answers a puzzle has — which is the
+      // reveal the whole archive is careful not to give away.
+      //
+      // Two sentences because a discovery is now two things. A line credited
+      // without solving is one that out-attacked the target by another route,
+      // and calling that "solved it this way" tells a player they met a goal
+      // the same screen has just told them they missed.
+      this.toast(
+        response.run.solved
+          ? "New line! Nobody had solved it this way."
+          : "New line! Nobody had sent that much attack this way.",
+      );
+    }
+    // Not after a retry. The likeliest reason a retry finds the sheet
+    // already filed is that the first attempt landed and its answer was
+    // lost in the restart — which is the player's run, filed once, and
+    // telling them otherwise would be about the wire, not about them.
+    if (!response.isFirst && !retried) this.toast("Today's sheet was already filed");
   }
 
   /**
@@ -2104,10 +2184,12 @@ export class App {
     stillShowing: () => boolean,
   ): Promise<void> {
     try {
-      const { solved, solution } = await this.connection.api.clearPuzzle(puzzle.id, {
-        handling: this.run?.handling ?? this.settings.value.handling,
-        events,
-      });
+      const { solved, solution } = await this.handingIn(() =>
+        this.connection.api.clearPuzzle(puzzle.id, {
+          handling: this.run?.handling ?? this.settings.value.handling,
+          events,
+        }),
+      );
       // Locally too, so the Solutions control opens without a round trip and
       // the Explore tick is there when they go back to the list.
       if (solved) this.cleared = new Set([...this.cleared, puzzle.id]);
@@ -2378,7 +2460,27 @@ export class App {
       rushLive: this.rush !== null,
       duelOpen: this.duel !== null,
       testing: this.builderRun !== null,
+      handingIn: this.handInsOut > 0,
     };
+  }
+
+  /**
+   * Sends a hand-in, counted in `handInsOut` for as long as it is out.
+   *
+   * Counted here rather than read off the modes, because a hand-in outlives
+   * them: the daily's board already says "solved" while it is filed, and a
+   * player who goes Home mid-retry leaves no run and no rush behind — only the
+   * request, which a reload would throw away. The chip is taken down at once
+   * and comes back on the once-a-second tick after the answer.
+   */
+  private async handingIn<T>(send: () => Promise<T>): Promise<T> {
+    this.handInsOut += 1;
+    this.updateNotice.refresh();
+    try {
+      return await send();
+    } finally {
+      this.handInsOut -= 1;
+    }
   }
 
   /**

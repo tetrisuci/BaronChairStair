@@ -32,9 +32,11 @@ import { DEV_BUILD_ID, isBuildId } from "./client/src/build-id";
  * The build names itself twice, with one id: compiled into the page as
  * `__BUILD_ID__`, and written beside it as `build.json`, which the server reads
  * at boot and sends back as `X-Build-Id`. A page that hears an id other than
- * its own offers a reload — see `client/src/build-id.ts`. The site's build
- * (`puzzledb/vite.config.ts`) does neither: it has no server of its own to
- * compare against, and `build-id.ts` reads the missing define as dev.
+ * its own offers a reload — see `client/src/build-id.ts`. Both come from one
+ * plugin that runs only for `vite build`, so the dev server compiles in no id
+ * and its page calls itself dev. The site's build (`puzzledb/vite.config.ts`)
+ * does neither: it has no server of its own to compare against, and
+ * `build-id.ts` reads the missing define as dev.
  */
 
 /** The global the page reads its build id from; replaced with a literal at build time. */
@@ -94,7 +96,16 @@ export function writeBuildIdFile(dir: string, buildId: string): void {
 }
 
 /**
- * Writes `build.json` once the bundle is on disk.
+ * Names a build: compiles the id into the page, and writes `build.json` once
+ * the bundle is on disk.
+ *
+ * A build only (`apply`), the define included. Under the dev server the page
+ * is rebuilt on every save and is never the checkout's commit, so it must not
+ * claim to be: with the commit compiled in, a `dist/build.json` left from a
+ * build at another commit had the dev page offering "Update ready", and
+ * Reload changed nothing. With no define it calls itself dev, which never
+ * offers one. The define lives here rather than in the config's own `define`
+ * because that one applies to `vite` and `vite build` alike.
  *
  * `writeBundle` rather than an emitted asset, because it runs after every
  * other file has been written: a `build.json` naming this build means the
@@ -104,6 +115,7 @@ export function buildIdPlugin(buildId: string): Plugin {
   return {
     name: "puzzle:build-id",
     apply: "build",
+    config: () => ({ define: { [BUILD_ID_DEFINE]: JSON.stringify(buildId) } }),
     writeBundle(output) {
       if (!output.dir) throw new Error(`Cannot write ${BUILD_ID_FILE}: the build has no output directory`);
       writeBuildIdFile(output.dir, buildId);
@@ -119,7 +131,6 @@ export default defineConfig({
   resolve: {
     alias: { "@shared": resolve(import.meta.dirname, "shared") },
   },
-  define: { [BUILD_ID_DEFINE]: JSON.stringify(buildId) },
   plugins: [buildIdPlugin(buildId)],
   build: {
     outDir: "../dist",

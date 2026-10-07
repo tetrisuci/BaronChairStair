@@ -63,7 +63,7 @@ describe("isBuildId", () => {
   });
 });
 
-const idle: PlayState = { runPhase: null, rushLive: false, duelOpen: false, testing: false };
+const idle: PlayState = { runPhase: null, rushLive: false, duelOpen: false, testing: false, handingIn: false };
 
 describe("isMidPlay", () => {
   test("a screen with nothing running is not", () => {
@@ -92,6 +92,14 @@ describe("isMidPlay", () => {
 
   test("a draft being played in the builder is", () => {
     expect(isMidPlay({ ...idle, testing: true })).toBe(true);
+  });
+
+  test("a hand-in still on its way is, whatever is on screen", () => {
+    // The retries hold a filing open through a restart so the run is not
+    // lost; a reload in that time would lose it anyway. The board can already
+    // say "solved", or the player can have gone Home and left nothing running.
+    expect(isMidPlay({ ...idle, handingIn: true })).toBe(true);
+    expect(isMidPlay({ ...idle, runPhase: "solved", handingIn: true })).toBe(true);
   });
 });
 
