@@ -12,9 +12,11 @@ changed tree, a missing hash, a failed sync and a forced one all still sync,
 and Discord's own Entry Point command is still carried over when they do.
 """
 
+import ast
 import asyncio
 import contextlib
 import io
+import pathlib
 import sqlite3
 import types
 import unittest
@@ -204,24 +206,45 @@ class WhatIsSent(unittest.TestCase):
 
 class TheBotSyncsOnlyThroughIt(unittest.TestCase):
     """`_sync_global_commands` is still what on_ready calls, and it no longer
-    reaches Discord's command endpoints itself."""
+    reaches Discord's command endpoints itself. Read, not imported: importing
+    `discord_bot.py` needs discord.py and loads the repository's .env."""
 
-    def test_the_bot_hands_the_http_calls_to_sync_if_changed(self):
-        import ast
-        import pathlib
+    @staticmethod
+    def _is_call(node, owner: str, attr: str) -> bool:
+        return (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == attr and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == owner)
 
+    def setUp(self):
         source = (pathlib.Path(__file__).resolve().parent / "discord_bot.py").read_text(
             encoding="utf-8")
-        tree = ast.parse(source)
-        (sync,) = [n for n in ast.walk(tree)
-                   if isinstance(n, ast.AsyncFunctionDef) and n.name == "_sync_global_commands"]
-        names = {n.attr for n in ast.walk(sync) if isinstance(n, ast.Attribute)}
+        (self.sync,) = [n for n in ast.walk(ast.parse(source))
+                        if isinstance(n, ast.AsyncFunctionDef)
+                        and n.name == "_sync_global_commands"]
+
+    def test_the_bot_hands_the_http_calls_to_sync_if_changed(self):
+        names = {n.attr for n in ast.walk(self.sync) if isinstance(n, ast.Attribute)}
         self.assertIn("sync_if_changed", names)
-        awaited = [n.value for n in ast.walk(sync) if isinstance(n, ast.Await)]
+        awaited = [n.value for n in ast.walk(self.sync) if isinstance(n, ast.Await)]
         direct = [c for c in awaited if isinstance(c, ast.Call)
                   and isinstance(c.func, ast.Attribute)
                   and c.func.attr in {"get_global_commands", "bulk_upsert_global_commands"}]
         self.assertEqual(direct, [], "the bot calls Discord directly, past the hash")
+
+    def test_force_command_sync_reaches_the_sync(self):
+        # Every test above proves `forced` reads the setting and that
+        # `force=True` syncs; this is the line between them. Hard-code
+        # `force=False` and FORCE_COMMAND_SYNC=1 is read by nothing, while a
+        # tree changed on Discord's side stays wrong until the code changes.
+        (call,) = [n for n in ast.walk(self.sync)
+                   if self._is_call(n, "command_sync", "sync_if_changed")]
+        forces = [k.value for k in call.keywords if k.arg == "force"]
+        self.assertEqual(len(forces), 1, "sync_if_changed is called without force=")
+        (force,) = forces
+        self.assertTrue(self._is_call(force, "command_sync", "forced"),
+                        "force= is not command_sync.forced(...)")
+        self.assertEqual([ast.unparse(a) for a in force.args], ["os.environ"],
+                         "forced() is not reading the process environment")
 
 
 if __name__ == "__main__":

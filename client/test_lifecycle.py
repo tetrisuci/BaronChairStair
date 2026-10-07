@@ -29,6 +29,7 @@ import tempfile
 import textwrap
 import time
 import unittest
+from unittest import mock
 
 import lifecycle
 
@@ -248,6 +249,128 @@ class StoppingPolitely(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(lifecycle.STOP_SIGNALS, (signal.SIGTERM, signal.SIGINT))
 
 
+class RecordingStatus:
+    """
+    A status writer that writes nothing and remembers what it was asked:
+    the bot's state at each write, and whether its periodic loop ran.
+    """
+
+    def __init__(self, life: lifecycle.Lifecycle):
+        self._life = life
+        self.written: list[str] = []
+        self.running = asyncio.Event()
+        self.cancelled = False
+
+    def write(self) -> bool:
+        self.written = [*self.written, self._life.state]
+        return True
+
+    async def run(self) -> None:
+        self.running.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.cancelled = True
+            raise
+
+
+class FakeBot:
+    """
+    As much of discord.py's Bot as `serve` touches. `start` is where on_ready
+    would mark the bot ready; `close` notes what the status file had been told
+    by then, because a write after the close is one the deploy saw too late.
+    """
+
+    def __init__(self, life: lifecycle.Lifecycle, status: RecordingStatus):
+        self._life = life
+        self._status = status
+        self.started = asyncio.Event()
+        self.closed = asyncio.Event()
+        self.written_by_close: list[str] | None = None
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        await self.close()
+
+    async def start(self, token):
+        self._life.mark_ready()
+        self.started.set()
+        await self.closed.wait()
+
+    async def close(self):
+        if self.written_by_close is None:
+            self.written_by_close = list(self._status.written)
+        self.closed.set()
+
+
+class ServeWritesTheStatus(unittest.IsolatedAsyncioTestCase):
+    """
+    `serve` is where the status file's two promises meet the running bot:
+    rewritten every few seconds, and at once on each change of state. Each is
+    proven on its own in `test_runtime_status.py`; here, that `serve` starts
+    the one and listens for the other. Drop either line and the bot still
+    writes a file — once at ready, or only at the end — which a deploy reads
+    as stale, or reads as `ready` while the bot is already turning commands
+    away.
+    """
+
+    async def asyncSetUp(self):
+        self.life = lifecycle.Lifecycle()
+        self.status = RecordingStatus(self.life)
+        self.bot = FakeBot(self.life, self.status)
+        self.stops: list[lifecycle.SignalStop] = []
+        stops = self.stops
+
+        class Captured(lifecycle.SignalStop):
+            """The stop `serve` builds, kept so the test can signal it by hand."""
+
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                stops.append(self)
+
+        patch = mock.patch.object(lifecycle, "SignalStop", Captured)
+        patch.start()
+        self.addCleanup(patch.stop)
+        quiet = contextlib.redirect_stderr(io.StringIO())
+        quiet.__enter__()
+        self.addCleanup(quiet.__exit__, None, None, None)
+
+    async def serve_until_ready(self) -> asyncio.Task:
+        # No real signals: the stop is driven through the captured handler,
+        # and ARealProcess below sends real ones.
+        serving = asyncio.create_task(lifecycle.serve(
+            self.bot, "token", lifecycle=self.life, status=self.status,
+            grace_s=5, signals=()))
+        await asyncio.wait_for(self.bot.started.wait(), 1)
+        return serving
+
+    async def test_the_periodic_writer_runs_from_the_start_and_ends_with_the_bot(self):
+        serving = await self.serve_until_ready()
+        try:
+            await asyncio.wait_for(self.status.running.wait(), 1)
+        except asyncio.TimeoutError:
+            self.fail("serve never started the status loop; the file would go "
+                      "stale between changes of state")
+        (stop,) = self.stops
+        stop.handle("SIGTERM")
+        await asyncio.wait_for(serving, 1)
+        self.assertTrue(self.status.cancelled, "the status loop outlived the bot")
+
+    async def test_each_change_of_state_is_written_as_it_happens(self):
+        serving = await self.serve_until_ready()
+        self.assertEqual(self.status.written, ["ready"])
+        (stop,) = self.stops
+        stop.handle("SIGTERM")
+        await asyncio.wait_for(serving, 1)
+        # "stopping" was on disk before the connection closed — while the bot
+        # was refusing commands and a deploy might be looking — not only
+        # written once everything had ended.
+        self.assertEqual(self.bot.written_by_close, ["ready", "stopping"])
+        self.assertEqual(self.status.written[-1], "stopping")
+
+
 #: A stand-in for discord.py's Bot, as much of it as `serve` touches: an async
 #: context manager whose `start` runs until `close`. The lifecycle is driven
 #: from inside `start`, where on_ready would drive it.
@@ -293,8 +416,20 @@ CHILD = textwrap.dedent("""
 """)
 
 
+#: How long the drain test polls the status file for `stopping`: well inside
+#: the child's grace, so a pass means the file said so while it still ran.
+DRAIN_WATCH_S = 2.0
+DRAIN_GRACE_S = 4.0
+
+
 class ARealProcess(unittest.TestCase):
-    def run_child(self, grace: float, hold, signals: list[int]):
+    def run_child(self, grace: float, hold, signals: list[int], watch=None):
+        """
+        Runs the stand-in bot, sends `signals`, and waits for it to exit.
+        `watch(child, status_path)`, if given, runs between the signals and
+        the wait — while the child may still be draining — and its result is
+        returned last.
+        """
         here = tempfile.TemporaryDirectory()
         self.addCleanup(here.cleanup)
         status_path = pathlib.Path(here.name) / "bot.status.json"
@@ -309,40 +444,70 @@ class ARealProcess(unittest.TestCase):
         for number in signals:
             child.send_signal(number)
             time.sleep(0.2)
+        watched = watch(child, status_path) if watch is not None else None
         out, err = child.communicate(timeout=15)
-        return child.returncode, time.monotonic() - started, out, err, status_path
+        return child.returncode, time.monotonic() - started, out, err, status_path, watched
+
+    @staticmethod
+    def status_while_alive(child: subprocess.Popen, status_path: pathlib.Path):
+        """The status file's contents once it says `stopping`, read only while
+        the child is still running; None if it never did."""
+        deadline = time.monotonic() + DRAIN_WATCH_S
+        while time.monotonic() < deadline and child.poll() is None:
+            try:
+                status = json.loads(status_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                status = None
+            if status is not None and status["state"] == "stopping":
+                return status if child.poll() is None else None
+            time.sleep(0.05)
+        return None
 
     def test_sigterm_with_nothing_running_exits_0_at_once(self):
-        code, took, out, err, status_path = self.run_child(30, False, [signal.SIGTERM])
+        code, took, out, err, status_path, _ = self.run_child(30, False, [signal.SIGTERM])
         self.assertEqual(code, 0, err)
         self.assertIn("exited cleanly", out)
         self.assertLess(took, 5)
         self.assertEqual(json.loads(status_path.read_text())["state"], "stopping")
 
     def test_sigint_is_the_same_stop_not_a_keyboard_interrupt(self):
-        code, took, out, err, _ = self.run_child(30, False, [signal.SIGINT])
+        code, took, out, err, *_ = self.run_child(30, False, [signal.SIGINT])
         self.assertEqual(code, 0, err)
         self.assertNotIn("KeyboardInterrupt", err)
         self.assertLess(took, 5)
 
     def test_an_interaction_that_never_ends_holds_the_stop_for_the_grace_only(self):
-        code, took, _, err, _ = self.run_child(1.0, True, [signal.SIGTERM])
+        code, took, _, err, *_ = self.run_child(1.0, True, [signal.SIGTERM])
         self.assertEqual(code, 0, err)
         self.assertGreaterEqual(took, 0.9)
         self.assertLess(took, 6)
         self.assertIn("1 still running", err)
 
+    def test_while_it_drains_the_file_on_disk_already_says_stopping(self):
+        # What the deploy reads between its signal and the exit: a bot that
+        # is stopping and still has a command running, not a stale "ready".
+        def look_then_hurry(child, status_path):
+            seen = self.status_while_alive(child, status_path)
+            child.send_signal(signal.SIGTERM)  # the second signal: no need to wait out the grace
+            return seen
+
+        code, _, _, err, _, seen = self.run_child(
+            DRAIN_GRACE_S, True, [signal.SIGTERM], watch=look_then_hurry)
+        self.assertEqual(code, 0, err)
+        self.assertIsNotNone(seen, "the file never said stopping while the bot drained")
+        self.assertEqual((seen["state"], seen["inflight"]), ("stopping", 1))
+
     def test_a_stop_that_cancels_discords_login_is_still_a_clean_exit(self):
         # Seen against real discord.py: SIGINT during the login closed the
         # HTTP session under a DNS lookup, CancelledError escaped bot.start,
         # and the stop that was asked for exited 1 with a traceback.
-        code, took, out, err, _ = self.run_child(30, "cancel-on-close", [signal.SIGINT])
+        code, took, out, err, *_ = self.run_child(30, "cancel-on-close", [signal.SIGINT])
         self.assertEqual(code, 0, err)
         self.assertIn("exited cleanly", out)
         self.assertNotIn("Traceback", err)
 
     def test_a_second_signal_does_not_wait_out_the_grace(self):
-        code, took, _, err, _ = self.run_child(60, True, [signal.SIGTERM, signal.SIGTERM])
+        code, took, _, err, *_ = self.run_child(60, True, [signal.SIGTERM, signal.SIGTERM])
         self.assertEqual(code, 0, err)
         self.assertLess(took, 10)
 
