@@ -6,8 +6,10 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { rmSync } from "node:fs";
+import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import type { BotStatus } from "../shared/runtime-status";
+import { assignedNames } from "../tools/deploy/bot-env";
 import { botStatusFile } from "../tools/deploy/layout";
 import { switchBot } from "../tools/deploy/switch-bot";
 import { BOT, FakeBox, NEW, OLD, START, botStatus, cleanUpBoxes } from "./deploy-harness";
@@ -131,6 +133,26 @@ describe("a bot whose files changed", () => {
     expect(box.pm2Mutations()).toEqual([["delete", BOT]]);
   });
 
+  test("a bot pm2 restarted during the wait is deleted by its new pid; the old one, reused by now, is not waited on", async () => {
+    const box = botBox({ idleForMs: 0 });
+    const bot = box.processes.get(BOT)!;
+    const oldPid = bot.pid;
+    const restartedPid = 6_060;
+    const file = botStatusFile(box.layout);
+    const written = box.statuses.get(file)!;
+    box.setStatus(file, (now) => {
+      // pm2 restarts the bot 20 s into the wait; another process takes its old pid.
+      if (now >= START + 20_000 && bot.pid === oldPid) {
+        bot.pid = restartedPid;
+        box.alive.add(restartedPid);
+      }
+      return { ...(written(now) as BotStatus), pid: bot.pid };
+    });
+    await switchBot(box.context(), NEW, OPTIONS);
+    expect(box.alive.has(oldPid)).toBe(true);
+    expect(box.pm2Mutations()).toEqual([["delete", BOT], ["start", box.layout.ecosystem, "--only", BOT], ["save"]]);
+  });
+
   test("pm2 refusing to start the new bot still records the way back", async () => {
     const box = botBox();
     box.respond = (command) =>
@@ -149,6 +171,25 @@ describe("a bot whose files changed", () => {
 });
 
 describe("what the bot's restart depends on", () => {
+  test("bot.env is read for names only: a comment, or a bare NAME python-dotenv does not set, assigns nothing", () => {
+    expect(assignedNames("# DATABASE_PATH=/x\nPATH\n  export STATS_DB = /y\nA=1\nA=2\n")).toEqual(["STATS_DB", "A"]);
+  });
+
+  test("a bot.env that sets a variable the ecosystem owns is refused, by name and never by value", async () => {
+    const box = botBox();
+    writeFileSync(
+      join(box.layout.shared, "bot.env"),
+      "DISCORD_TOKEN=token-value\nexport DATABASE_PATH=/srv/old/activity/data/daily.sqlite\n# STATS_DB=/x\nPUZZLE_ACTIVITY_DIR = /srv/old/activity\n",
+    );
+    const error = (await switchBot(box.context(), NEW, OPTIONS).catch((caught: unknown) => caught)) as Error;
+    expect(error.message).toContain("DATABASE_PATH, PUZZLE_ACTIVITY_DIR");
+    expect(error.message).not.toContain("STATS_DB");
+    expect(error.message).not.toContain("/srv/old");
+    expect(error.message).not.toContain("token-value");
+    expect(box.pm2Mutations()).toEqual([]);
+  });
+
+
   test("a missing shared/stats.db is refused: a fresh one would forget the recap claims", async () => {
     const box = botBox();
     rmSync(join(box.layout.shared, "stats.db"));

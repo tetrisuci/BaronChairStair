@@ -10,12 +10,15 @@
  *
  * Commands run with the clean environment `real-host.ts` gives every command:
  * in particular no `STATS_DB`, so the bot's tests open a scratch `stats.db`
- * inside the release, never the shared one.
+ * inside the release, never the shared one — which is also why a bot.env
+ * that sets it, or anything else the deploy owns, is refused first
+ * (`bot-env.ts`): the bot loads that file over its environment.
  */
 
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { BUILD_ID_FILE } from "../../shared/runtime-status";
+import { requireBotEnvLeavesDeployVariables } from "./bot-env";
 import { linkFile, writeFileAtomic } from "./effects";
 import { DeployError } from "./errors";
 import { describeCommand, execOk, reportDone } from "./exec";
@@ -105,6 +108,8 @@ export async function prepare(ctx: Context, ref: string): Promise<string> {
   if (ctx.dryRun) host.out("(dry run: the fetch is skipped, so refs resolve to what was fetched last)");
   await execOk(ctx, { argv: ["git", "-C", layout.repo, "fetch", "--prune", "origin"], mutates: true }, "git fetch");
   const sha = await resolveRef(ctx, ref);
+  // Before "already prepared", so a deploy of a prepared release still stops here, not at the bot switch.
+  requireBotEnvLeavesDeployVariables(ctx);
   if (isPrepared(layout, sha)) {
     host.out(`${shortSha(sha)} is already prepared`);
     return sha;

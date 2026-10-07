@@ -17,9 +17,17 @@
  * State is written once the old bot is gone and before the new one starts, so
  * a start that fails or a bot that never reports ready still leaves the way
  * back recorded for `rollback bot`.
+ *
+ * The process to delete is read from pm2 again after the quiet wait, which
+ * can last half an hour: if pm2 restarted the bot meanwhile, the pid read
+ * before the wait is dead, and may already be some other process's.
+ *
+ * shared/bot.env is checked first (`bot-env.ts`): the bot loads it over the
+ * environment the ecosystem gives it.
  */
 
 import { isFresh } from "../../shared/runtime-status";
+import { requireBotEnvLeavesDeployVariables } from "./bot-env";
 import { ensureDirectory, removeFile } from "./effects";
 import { assignmentsOf, writeEcosystem } from "./ecosystem";
 import { DeployError, withRollbackHint } from "./errors";
@@ -149,6 +157,7 @@ async function unchanged(ctx: Context, state: DeployState, sha: string, running:
 export async function switchBot(ctx: Context, sha: string, options: BotSwitchOptions): Promise<void> {
   requirePrepared(ctx, sha, options.assumePrepared);
   requireSharedFiles(ctx, ["stats", "daily"], "the bot");
+  requireBotEnvLeavesDeployVariables(ctx);
   const { config } = ctx;
   const name = config.pm2.bot;
   const state = loadState(ctx);
@@ -162,7 +171,7 @@ export async function switchBot(ctx: Context, sha: string, options: BotSwitchOpt
         "Try again later, or pass --now to restart it regardless.",
     );
   }
-  await removeOldBot(ctx, current);
+  await removeOldBot(ctx, findProcess(await pm2List(ctx), name));
 
   const next: DeployState = { ...state, bot: moved(state.bot, sha) };
   removeFile(ctx, botStatusFile(ctx.layout));

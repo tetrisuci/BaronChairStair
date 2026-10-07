@@ -147,6 +147,16 @@ describe("a release that fails", () => {
     expect(box.calls.some((call) => call.argv.includes("worktree"))).toBe(false);
   });
 
+  test("a bot.env that sets a variable the ecosystem owns stops it before anything runs: the bot's tests would load it", async () => {
+    const box = buildingBox();
+    writeFileSync(join(box.layout.shared, "bot.env"), "STATS_DB=/srv/old/stats.db\nDISCORD_TOKEN=token-value\n");
+    const error = (await prepare(box.context(), NEW).catch((caught: unknown) => caught)) as Error;
+    expect(error.message).toContain("STATS_DB");
+    expect(error.message).not.toContain("/srv/old");
+    expect(error.message).not.toContain("token-value");
+    expect(box.calls.some((call) => call.argv.includes("worktree"))).toBe(false);
+  });
+
   test("a ref that does not resolve says so", async () => {
     const box = buildingBox();
     await expect(prepare(box.context(), "no-such-branch")).rejects.toThrow(/no-such-branch/);
