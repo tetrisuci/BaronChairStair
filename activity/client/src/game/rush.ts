@@ -32,6 +32,42 @@ const ADVANCE_MS = 420;
  */
 const SKIP_GUARD_MS = 350;
 
+/**
+ * The server's slack on the five minutes: a hand-in arriving up to this long
+ * after the rush's own five minutes is still accepted, and after it is a 408.
+ *
+ * A mirror of `RUSH_GRACE_MS` in `server/index.ts`, not an import — the client
+ * bundle must not pull in the server — and `tests/hand-in-retry.test.ts` reads
+ * the server's declaration so the two cannot drift. The deploy's
+ * `RECENT_RUSH_MS` in `shared/runtime-status.ts` is the same sum.
+ */
+export const RUSH_GRACE_MS = 10_000;
+
+/**
+ * Kept back from the grace for the trip: the last retry is sent this long
+ * before the server's limit, so it arrives inside it. A round trip through
+ * Discord's proxy is well under a second; this is the whole of that and more.
+ */
+export const RUSH_HAND_IN_MARGIN_MS = 1_000;
+
+/**
+ * The last moment, on this page's clock, at which a rush hand-in is worth
+ * sending — the deadline its retries stop at.
+ *
+ * `startedAt` is when the start response arrived here, which is the ticket's
+ * own start as this clock sees it: the server stamped the ticket a moment
+ * before answering. Using the stamp itself would mean trusting that the
+ * player's clock agrees with the server's, and a laptop minutes out would then
+ * retry long past the limit or give up before the buzzer. The one-way trip
+ * this adds is what {@link RUSH_HAND_IN_MARGIN_MS} covers.
+ *
+ * A rush handed in early never meets this: the retry schedule runs out first.
+ * It binds at the buzzer, where the whole of the grace is all there is.
+ */
+export function rushHandInDeadline(startedAt: number, durationMs: number): number {
+  return startedAt + durationMs + RUSH_GRACE_MS - RUSH_HAND_IN_MARGIN_MS;
+}
+
 export type RushPhase = "playing" | "over";
 
 export interface RushSnapshot {
