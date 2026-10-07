@@ -27,6 +27,7 @@
 import type { PlayerProfile } from "../api";
 import { playerAvatar } from "./avatar";
 import { el, formatDuration, panel, replaceChildren, stat } from "./dom";
+import { ago } from "./ago";
 
 /** One line this player found, as their profile lists it. */
 export interface FoundLine {
@@ -82,17 +83,6 @@ export interface Profile {
     /** Opens a puzzle's solutions. Only ever called for an `openable` line. */
     onOpen?: (puzzleId: number) => void,
   ): void;
-}
-
-/** "3 days ago", roughly. A list of finds wants an age, not a timestamp. */
-function ago(at: number, now: number): string {
-  const days = Math.floor((now - at) / 86_400_000);
-  if (!Number.isFinite(days) || days < 0) return "";
-  if (days === 0) return "today";
-  if (days === 1) return "yesterday";
-  if (days < 30) return `${days} days ago`;
-  const months = Math.floor(days / 30);
-  return months === 1 ? "a month ago" : `${months} months ago`;
 }
 
 /**

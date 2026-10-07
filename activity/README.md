@@ -354,6 +354,41 @@ human made them, and a scripted client beats it. A fixed sequence per day also
 means whoever plays later knows what is coming — the daily's own trade, forty
 puzzles at a time.
 
+## Explore's alternate solutions
+
+Explore has two tabs. **Puzzles** is the explorer it always was. **Alternate
+solutions** lists every alternate on file, across every puzzle: a line a player
+found that the Discoveries board credits — it solved the puzzle, or sent more
+attack than it asked for — and that still describes the board (`CREDITED AND
+LIVE`, `server/discovery-sql.ts`). Never the maker's own answer, never the batch
+search's lines, never a line on a board an edit has since voided.
+
+It sorts by date found, difficulty, puzzle name, puzzle number, attack or pieces,
+with a button to reverse the direction. The order is `shared/alternate-sort.ts`,
+which db.tetrisatuci.org's Alternates page uses too. Each row says which puzzle,
+who found the line and how long ago; clicking it steps that exact line on the
+board, through the puzzle's own Solutions gallery (or opens the menu, if the line
+has left the gallery since). The list is fetched each time the tab is opened,
+and the tab choice lasts for the session.
+
+It reads `GET /api/alternates` (signed in; under the blanket game limit, like
+`/api/archive`). What a reader is told about each line is decided per row, by
+`alternateRows` in `server/alternates.ts`:
+
+- **Omitted** — a puzzle `maySeeSolution` refuses: one of today's tiers this
+  player has not solved, or a duel round they are in. A shut row would still
+  hint that somebody found another way through the board they are about to be
+  scored on, so it is not listed at all. Lines on a puzzle this box does not
+  have are dropped too.
+- **Locked** — a puzzle this player has not solved. The row carries the puzzle,
+  the finder and the date, and `attack`, `pieces` and `clears` arrive as null:
+  a line's content is the answer, and the profile withholds it under the same
+  rule. The row is shut and says "solve it first".
+- **Open** — a puzzle they have solved: attack, length and clears as well.
+
+Placements are never in the list; opening a line fetches the gallery, behind its
+own gate.
+
 ## The daily recap
 
 `GET /api/recap?guild=<id>&day=<n>` gives the bot everything it needs to look
