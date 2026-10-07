@@ -22,6 +22,18 @@ one you are touching, in the order it gives — the order is load-bearing in all
 Where this file and a guide differ, **do the stricter thing and say so in your report.**
 Do not treat either as licence to skip a step the other requires.
 
+**On a box migrated to releases** (pm2 runs the apps from `~/bcs/releases/<sha>/`), all
+three deploy through one tool, `bun run deploy`: each guide's first section says which
+commands, and [`activity/tools/deploy/README.md`](activity/tools/deploy/README.md) has
+the rest, the one-time migration included. What it relies on you for:
+
+- pm2 names come only from `shared/deploy.json`, and DIAYN's is never one of them.
+- `shared/ecosystem.config.cjs` is generated: never edit it by hand.
+- Never send the game SIGUSR1 or SIGUSR2 (*Never*, below). SIGHUP is the drain, and
+  the tool's to send.
+- A fix goes through a PR and a new release, never an edit inside `releases/`.
+- `state.json` is the way back for `rollback`: never delete it.
+
 ## The one thing the guides cannot tell you, because it is about you
 
 **When a check goes red, stop and report. Do not restart through it.** That is this

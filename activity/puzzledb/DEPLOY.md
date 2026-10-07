@@ -34,6 +34,37 @@ both for the hostname, and each says so where it comes.
 
 ---
 
+## On a box migrated to releases
+
+On a box moved to the release layout — pm2 runs the site from
+`~/bcs/releases/<sha>/activity` (`pm2 describe <its name> | grep 'exec cwd'`), and
+`~/bcs/state.json` exists — the site goes through the deploy tool,
+[`../tools/deploy/`](../tools/deploy/README.md). Its README has the detail; what it
+changes in the table above and the steps below:
+
+| This guide | On a migrated box |
+|---|---|
+| *Checks, then the build*, and *After every activity deploy* | `prepare <ref>` runs the checks and `bun run build:puzzledb` in the new release. `switch site <ref>` replaces the process — delete, a check that nothing else answers the port, start, `/health`, then pm2 must show it online on one pid 5 seconds later. The `pm2 restart` step goes away |
+| *Start it under pm2*, `puzzledb/ecosystem.config.cjs` | `shared/ecosystem.config.cjs`, written by the tool and never edited by hand, with `interpreter: "none"` and `--env-file` in the arguments, for the reasons given there |
+| `puzzledb/.env` | `shared/puzzledb.env`, with the absolute `DATABASE_PATH=<home>/shared/daily.sqlite`. The commands below that read `puzzledb/.env` read that file instead |
+| `data/solutions.json` beside the code | `shared/solutions.json`, linked into each release |
+| The name `puzzle-db`, port 3002 | `pm2.site` and `sitePort` in `shared/deploy.json` |
+| *Rolling back* a later deploy | `rollback site`: code only, with the same checks |
+
+`bun run deploy deploy <ref>` switches the site straight after the game, which is rule
+1's order, and the bot after both. *Check it on loopback*, *Verify it publicly* and the
+rest stay as they are, on `sitePort`, run from the release's `activity/`. The switch's
+gap is from the delete until the new process has built its first dataset and bound the
+port, during which db.tetrisatuci.org answers 502. Taking the site down is still
+`pm2 stop <its name>`.
+
+A box not yet migrated follows this guide as it stands; the site moves with the game
+and the bot in the tool's *First-time migration*. The manual steps stay the path for a
+box not yet migrated, and the fallback for one whose migration was rolled back; nothing
+here is run inside `releases/`, where a fix is a new release.
+
+---
+
 ## Two ordering rules
 
 **1. The activity's deploy comes first, because the pull is the game's.** The site
@@ -115,6 +146,9 @@ then cannot write.
 ---
 
 ## Checks, then the build
+
+*The path for a box not yet migrated to releases, and the fallback. On a migrated box,
+`prepare` and `switch site` (above).*
 
 First, what a pull would bring the activity besides the site (rule 1):
 
@@ -207,6 +241,9 @@ before going on.
 ---
 
 ## Start it under pm2, as the game's user
+
+*The path for a box not yet migrated to releases, and the fallback. On a migrated box
+the tool writes the ecosystem file and starts the site from it (above).*
 
 Two things about pm2 decide the shape of this step, and both fail quietly:
 
@@ -551,6 +588,9 @@ notes readable through `/puzzle changelog`, to whoever asks.
 ---
 
 ## After every activity deploy
+
+*On a box migrated to releases, `bun run deploy deploy <ref>` does this as its site
+switch (above). What follows is the path for a box not yet migrated, and the fallback.*
 
 The site is built from the activity's own code. The page compiles `client/src` and
 `shared/`, and the server runs `server/puzzles.ts` and the game's other readers, so

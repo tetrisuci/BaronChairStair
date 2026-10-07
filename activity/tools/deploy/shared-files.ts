@@ -20,7 +20,7 @@ export function requireSharedFiles(ctx: Context, files: readonly SharedFile[], p
   if (missing.length > 0) {
     throw new DeployError(
       `${purpose} needs ${missing.join(", ")}, which is not there. ` +
-        "Move it into shared/ first (tools/deploy/README.md, first-time setup); an app started without it would make an empty one.",
+        "Move it into shared/ first (tools/deploy/README.md, First-time migration); an app started without it would make an empty one.",
     );
   }
 }

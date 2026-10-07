@@ -14,6 +14,39 @@ separately: see [`../DEPLOY.md`](../DEPLOY.md), which indexes both halves.
 
 ---
 
+## On a box migrated to releases
+
+On a box moved to the release layout — pm2 runs the game from
+`~/bcs/releases/<sha>/activity` (`pm2 describe <its name> | grep 'exec cwd'`), and
+`~/bcs/state.json` exists — the game goes through the deploy tool,
+[`tools/deploy/`](tools/deploy/README.md): `bun run deploy`, run from a release's
+`activity/`. Its README has the detail; what it does with this guide:
+
+| This guide | On a migrated box |
+|---|---|
+| *Before you start*: note the commit, back up with `VACUUM INTO` | `state.json` keeps the release each app runs and the one before it. `bun run deploy backup` writes both databases to `shared/backups/`, and `deploy` takes one before any switch |
+| *The upgrade*: pull, install, `tsc`, `bun test`, build, restart | `prepare <ref>` does the checks and both builds in a new `releases/<sha>/` while the old release serves. `switch game <ref>` is the restart, done as *The handover* below: no duel is cut; the old slot finishes its matches, for up to `drainLimitMinutes` (20) |
+| *Restarts and handovers* | True of every slot. The tool sends only SIGHUP, to drain, and pm2's stop; each slot gets its own `STATUS_FILE` and `BUILD_ID`, and a 15-second `kill_timeout` |
+| *Verification* | Unchanged, run from the release's `activity/`: its `.env` is `shared/activity.env`, whose `DATABASE_PATH` names `<home>/shared/daily.sqlite`. `bun run deploy status` adds what each slot reports |
+| *Rolling back* | `rollback game`: code only, no rebuild, by the same handover. Data goes back only from `shared/backups/` |
+
+The ordering rule still holds: `switch game` is the start of the new code, so confirm
+the backfill (verification step 2) before `bun run puzzles` or any accepting. The whole
+deploy is `bun run deploy deploy <ref>` — prepare, backup, then the game, the site and
+the bot, in that order — with `--dry-run` first, inside `tmux`. Which of the game's two
+pm2 names in `shared/deploy.json` is live, `bun run deploy status` says. Each release has
+its own `dist/`, its own `.env` link and its own link to `shared/solutions.json`, so
+nothing is rebuilt under a running server.
+
+A box not yet migrated follows this guide as it stands, and moves by the tool's
+*First-time migration*, whose first game switch is cold: the old process predates the
+drain, so it needs a quiet hour, like *The first restart onto this code needs a quiet
+moment*, below. The manual steps stay the path for a box not yet migrated, and the
+fallback for one whose migration was rolled back; nothing here is run inside
+`releases/`, where a fix is a new release.
+
+---
+
 ## What is new
 
 The activity now takes puzzles written by players, and gives a club officer a
@@ -61,6 +94,9 @@ doing the steps in this order.
 ---
 
 ## Before you start
+
+*The path for a box not yet migrated to releases, and the fallback. On a migrated box,
+`state.json` is the rollback target and `bun run deploy backup` the backup (above).*
 
 ```sh
 cd /path/to/BaronChairStair/activity
@@ -110,6 +146,10 @@ assumes it worked.
 ---
 
 ## The upgrade
+
+*The path for a box not yet migrated to releases, and the fallback. On a migrated box,
+`bun run deploy prepare <ref>` and `switch game <ref>` (above): never a pull or a build
+inside `releases/`.*
 
 ```sh
 cd /path/to/BaronChairStair/activity
@@ -269,7 +309,9 @@ Two things the above relies on are not there yet the first time:
   duel leaves the Duel button doing nothing until the player switches mode.
 
 So make the first restart at a quiet hour, as every restart was before it, and set the
-`kill_timeout` and `STATUS_FILE` (below) in the same sitting.
+`kill_timeout` and `STATUS_FILE` (below) in the same sitting. On a box moving to
+releases, the migration's first game switch is this restart, and the tool sets both
+(`tools/deploy/README.md`, *First-time migration*).
 
 ### Signals
 
@@ -304,8 +346,10 @@ The server can be replaced on one port with no gap. Both copies bind the port wi
 5. send it SIGTERM.
 
 It needs a second process-manager entry for the game, with its own `STATUS_FILE`, and
-the new release built where the new process serves it from. Nothing on this box is set
-up that way yet; until it is, a deploy restarts the game as above.
+the new release built where the new process serves it from. The deploy tool does all of
+it — two pm2 slots, a release directory each, the wait, the drain and the stop — as
+`bun run deploy switch game <ref>` ([`tools/deploy/README.md`](tools/deploy/README.md)).
+On a box not yet migrated to it, a deploy restarts the game as above.
 
 **`reusePort` has a cost: a second copy no longer fails to start.** A stray second game
 used to die with `EADDRINUSE`. Now it binds beside the first and quietly takes about
@@ -595,6 +639,9 @@ then a restart.
 ---
 
 ## Rolling back
+
+*On a box migrated to releases, `bun run deploy rollback game` (above). What follows is
+the path for a box not yet migrated, and the fallback.*
 
 The new tables are additive and the old code ignores them, so a rollback is
 ordinary:
