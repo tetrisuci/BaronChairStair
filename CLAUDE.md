@@ -147,7 +147,9 @@ Report these and stop; do not act on them unasked.
   is `activity/data/archive/puzzles.sqlite`, built fresh by the sync and never having
   held a player table; `activity/tests/tracked-archive.test.ts` asserts that.
 - **`pkill -f` on a broad pattern.** `pkill -f "server/index.ts"` matches more than you
-  mean and has already taken down the wrong server. Kill by exact PID.
+  mean and has already taken down the wrong server. Kill by exact PID — and stop a
+  process pm2 or systemd manages through its manager instead, by name: ended by PID, it
+  can be started straight back, beside whatever replaced it.
 - **Send SIGUSR1 or SIGUSR2 to the game or the bot.** Neither handles them: on Bun
   1.3.13 one crashes the game and the other ends it before any handler runs, and either
   ends the bot with no grace. Nor is SIGHUP a stop: the game *drains* on it —

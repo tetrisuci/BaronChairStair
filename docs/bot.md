@@ -247,14 +247,24 @@ On SIGTERM or SIGINT — pm2's own stop sends SIGINT — the bot:
 
 A second signal stops the wait and closes at once. SIGHUP, SIGUSR1 and SIGUSR2
 are not stops: the bot handles none of them, and SIGHUP ends it outright, with no
-grace. Two things outside the bot have to agree with this:
+grace. Three things outside the bot have to agree with this:
 
 - **pm2's `kill_timeout`** must be longer than the grace, or pm2 kills the bot
   part-way through the wait — its default is 1.6 seconds.
+- **The stop must reach the bot's own process only**: pm2's `treekill: false`,
+  or systemd's `KillMode=mixed`. `/highlights` runs the replay bridge,
+  `bun server.ts`, as a child for the length of the command, and by default
+  both managers signal every child too — pm2 its whole process tree, systemd
+  (`KillMode=control-group`) its whole unit. The bridge dies at once, so the
+  command the grace was waiting for fails instead. With `treekill: false` pm2
+  signals the bot alone; with `KillMode=mixed` systemd sends SIGTERM to the bot
+  alone and keeps its SIGKILL for whatever is left once the bot has exited.
+  Until then, stop the bot only when the status file says `inflight: 0`.
 - **`/archive sync` can run five minutes**, far past the grace, and the bot
   does not wait for it. Stop the bot only when the status file says
   `syncRunning: false` — or, with no status file, when
-  `pgrep -af 'sync[-]archive'` finds nothing.
+  `pgrep -f 'sync[-]archive' >/dev/null && echo "a sync is running" || echo "no sync"`
+  says no sync. It prints no command line, which would name who ran the sync.
 
 ### When it writes its commands — `FORCE_COMMAND_SYNC`
 
