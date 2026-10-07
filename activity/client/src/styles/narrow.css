@@ -366,6 +366,15 @@
   .home .explore__by { display: none; }
   .today__sheet .build__strip { --glyph-cell: 8px; }
   .home__ways-grid { grid-template-columns: minmax(0, 1fr); }
+
+  /*
+   * A phone's width is about a title and a half. An alternate's title wraps
+   * rather than ellipsising, because on a shut row the reason — "solve it
+   * first" — rides at the end of the title, and an ellipsis cut exactly the
+   * part that says why the row will not open.
+   */
+  .alternates__item .explore__title { white-space: normal; }
+  .alternates__item .explore__locked { margin-left: 6px; }
 }
 
 /*
