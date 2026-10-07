@@ -5,13 +5,15 @@
  *     bun run deploy [--config <file>] [--dry-run] <command> [operands] [flags]
  *
  * Arguments are read strictly: an unknown flag is an error, never ignored —
- * `--dryrun` silently ignored would deploy for real. Exit codes: 0 done,
- * 1 the deploy stopped (the message says why and what to do), 2 the command
- * line was wrong.
+ * `--dryrun` silently ignored would deploy for real — and so is a known flag
+ * the command does not take: `switch bot main --timeout 5` would otherwise
+ * wait the full quiet limit while the operator believes it waits five
+ * minutes. Exit codes: 0 done, 1 the deploy stopped (the message says why
+ * and what to do), 2 the command line was wrong.
  */
 
 import { homedir } from "node:os";
-import { dirname, join, relative, sep } from "node:path";
+import { join, relative, sep } from "node:path";
 import { loadConfig, type DeployConfig } from "./config";
 import { backup } from "./backup";
 import { deployRef, rollback, switchApp, type RunOptions } from "./deploy";
@@ -22,7 +24,7 @@ import { layoutFor, type Layout } from "./layout";
 import { withLock } from "./lock";
 import { prepare } from "./prepare";
 import { prune } from "./prune";
-import { realHost } from "./real-host";
+import { realHost, searchPath } from "./real-host";
 import { resolveRef } from "./release";
 import { loadState, type AppName } from "./state";
 import { statusLines, waitQuiet } from "./status";
@@ -36,8 +38,10 @@ export const USAGE = `Usage: bun run deploy [--config <file>] [--dry-run] <comma
   switch bot <ref> [--now] [--force]
   deploy <ref> [--allow-cold] [--now] [--force]
                                      prepare, backup, then switch the game, the site and the bot
-  rollback game|site|bot [--allow-cold] [--now]
-  status [--wait-quiet] [--timeout <minutes>]
+  rollback game [--allow-cold]
+  rollback site
+  rollback bot [--now]
+  status [--wait-quiet [--timeout <minutes>]]
   ecosystem                          rewrite shared/ecosystem.config.cjs from state.json
   prune [--keep <n>]                 remove release worktrees nothing uses
 
@@ -78,6 +82,35 @@ const ARITY: Readonly<Record<string, readonly [number, number]>> = {
 };
 
 const APPS: readonly AppName[] = ["game", "site", "bot"];
+
+/** The flag each command-specific field of {@link Flags} is set by. */
+const FLAG_NAMES = {
+  allowCold: "--allow-cold",
+  force: "--force",
+  now: "--now",
+  waitQuiet: "--wait-quiet",
+  timeoutMinutes: "--timeout",
+  keep: "--keep",
+} as const;
+
+type CommandFlag = (typeof FLAG_NAMES)[keyof typeof FLAG_NAMES];
+
+/**
+ * The flags each command takes, beside `--config` and `--dry-run`, which go
+ * with any. Keyed by the command, and for `switch` and `rollback` by the app
+ * too: `--now` means nothing to the game, `--allow-cold` nothing to the bot.
+ */
+const COMMAND_FLAGS: Readonly<Record<string, readonly CommandFlag[]>> = {
+  "switch game": ["--allow-cold", "--force"],
+  "switch site": ["--force"],
+  "switch bot": ["--now", "--force"],
+  deploy: ["--allow-cold", "--now", "--force"],
+  "rollback game": ["--allow-cold"],
+  "rollback site": [],
+  "rollback bot": ["--now"],
+  status: ["--wait-quiet", "--timeout"],
+  prune: ["--keep"],
+};
 
 function number(flag: string, value: string | undefined, positive: boolean): number {
   const parsed = value === undefined ? Number.NaN : Number(value);
@@ -120,6 +153,33 @@ function checkOperands(command: string, operands: readonly string[]): void {
   }
 }
 
+/** The command-specific flags given, by name. */
+function givenFlags(flags: Flags): readonly CommandFlag[] {
+  return (Object.keys(FLAG_NAMES) as (keyof typeof FLAG_NAMES)[])
+    .filter((key) => flags[key] !== false && flags[key] !== null)
+    .map((key) => FLAG_NAMES[key]);
+}
+
+function checkFlags(command: string, operands: readonly string[], flags: Flags): void {
+  const key = command === "switch" || command === "rollback" ? `${command} ${operands[0]}` : command;
+  const allowed = COMMAND_FLAGS[key] ?? [];
+  const refused = givenFlags(flags).filter((flag) => !allowed.includes(flag));
+  if (refused.length > 0) {
+    const takes = allowed.length > 0 ? `it takes ${allowed.join(", ")}` : "it takes none";
+    throw new UsageError(`${refused.join(", ")} does not go with "${key}": ${takes} (and --config, --dry-run)`);
+  }
+  if (flags.timeoutMinutes !== null && !flags.waitQuiet) {
+    throw new UsageError("--timeout only goes with --wait-quiet: it is how long that waits");
+  }
+}
+
+/** Throws a usage error for a command line that names no command, a wrong operand, or a flag the command does not take. */
+export function checkCommand({ command, operands, flags }: ParsedArgs): void {
+  if (command === null) throw new UsageError("no command given");
+  checkOperands(command, operands);
+  checkFlags(command, operands, flags);
+}
+
 /** The release directory this tool runs from, if it runs from one. */
 function releaseContaining(layout: Layout, dir: string): string | null {
   const inside = relative(layout.releases, dir);
@@ -127,12 +187,20 @@ function releaseContaining(layout: Layout, dir: string): string | null {
   return join(layout.releases, inside.split(sep)[0]!);
 }
 
-function contextFor(config: DeployConfig, host: Host, dryRun: boolean): Context {
+/**
+ * One run's context. `hostFor` is handed the PATH every command will run
+ * with; `inheritedPath` is the tool's own, which {@link searchPath} cleans.
+ */
+export function contextFor(
+  config: DeployConfig,
+  hostFor: (path: string) => Host,
+  dryRun: boolean,
+  inheritedPath = process.env.PATH ?? "",
+): Context {
   const bun = config.bun ?? process.execPath;
-  const dirs = [dirname(bun), ...(process.env.PATH ?? "").split(":")];
-  const path = dirs.filter((dir, index) => dir !== "" && dirs.indexOf(dir) === index).join(":");
+  const path = searchPath(bun, inheritedPath);
   const layout = layoutFor(config.home);
-  return { config, layout, host, dryRun, bun, path, selfRelease: releaseContaining(layout, import.meta.dir) };
+  return { config, layout, host: hostFor(path), dryRun, bun, path, selfRelease: releaseContaining(layout, import.meta.dir) };
 }
 
 async function dispatch(ctx: Context, command: string, operands: readonly string[], flags: Flags): Promise<number> {
@@ -183,8 +251,7 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
   let parsed: ParsedArgs;
   try {
     parsed = parseArgs(argv);
-    if (parsed.command === null) throw new UsageError("no command given");
-    checkOperands(parsed.command, parsed.operands);
+    checkCommand(parsed);
   } catch (error) {
     if (!(error instanceof UsageError)) throw error;
     io.out(`deploy: ${error.message}\n\n${USAGE}`);
@@ -194,7 +261,7 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
   try {
     const configPath = flags.config ?? process.env.BCS_DEPLOY_CONFIG ?? join(homedir(), "bcs", "shared", "deploy.json");
     const config = loadConfig(configPath);
-    const ctx = contextFor(config, { ...(io.host ?? realHost()), out: io.out }, flags.dryRun);
+    const ctx = contextFor(config, (path) => ({ ...(io.host ?? realHost(path)), out: io.out }), flags.dryRun);
     if (ctx.dryRun) io.out("dry run: nothing below is done; reads still run");
     return await dispatch(ctx, command!, operands, flags);
   } catch (error) {

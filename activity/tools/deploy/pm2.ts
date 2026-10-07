@@ -5,7 +5,9 @@
  * Reading: `pm2 jlist` prints every app with its whole environment — the
  * bot's token, the game's secrets, DIAYN's. Only the name, pid, status and
  * working directory are kept, and only for the config's own apps, so nothing
- * else can reach a printed line.
+ * else can reach a printed line. Its raw output never goes into an error
+ * either, not even when it fails or does not parse: the start of it is the
+ * first app's environment.
  *
  * Acting: every action asserts the name is one of the config's, and the only
  * signal it can send is the contract's drain, so neither a typo nor a future
@@ -52,6 +54,8 @@ function parseList(text: string): unknown[] | null {
   }
 }
 
+const WITHHELD = "its output is withheld: it holds every app's environment";
+
 /**
  * The process table from `pm2 jlist`'s output. pm2 can print a warning line
  * before the JSON (an out-of-date daemon, an unsaved list), so the last line
@@ -66,12 +70,20 @@ export function parseJlist(text: string): readonly Pm2Process[] {
     const list = parseList(line);
     if (list) return list.flatMap(toProcess);
   }
-  throw new DeployError(`pm2 jlist printed no process list:\n${text.slice(0, 500)}`);
+  throw new DeployError(`pm2 jlist printed no process list (${WITHHELD}); run \`pm2 ls\` to see what pm2 says`);
+}
+
+/** The first line pm2 wrote to stderr: its error, never the process list, which goes to stdout. */
+function firstLine(text: string): string {
+  return text.split("\n").map((line) => line.trim()).find((line) => line !== "") ?? "nothing on stderr";
 }
 
 /** The config's own apps as pm2 sees them. Apps it does not name are dropped unread. */
 export async function pm2List(ctx: Context): Promise<readonly Pm2Process[]> {
-  const result = await execOk(ctx, { argv: ["pm2", "jlist"], mutates: false }, "pm2 jlist");
+  const result = await exec(ctx, { argv: ["pm2", "jlist"], mutates: false });
+  if (result.code !== 0) {
+    throw new DeployError(`pm2 jlist failed (exit ${result.code}): ${firstLine(result.stderr)} (${WITHHELD})`);
+  }
   const names = managedNames(ctx.config);
   return parseJlist(result.stdout).filter((process) => names.has(process.name));
 }

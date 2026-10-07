@@ -10,6 +10,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { contextFor } from "../tools/deploy/cli";
 import { assignmentsOf, ecosystemApps, renderEcosystem, writeEcosystem } from "../tools/deploy/ecosystem";
 import { BLUE, BOT, FakeBox, GREEN, NEW, OLD, SITE, cleanUpBoxes } from "./deploy-harness";
 
@@ -78,6 +79,21 @@ describe("the apps", () => {
         },
       },
     ]);
+  });
+
+  test("PATH carries no node_modules/.bin from the release the tool ran in, which a prune may delete", () => {
+    const box = new FakeBox();
+    const releases = box.layout.releases;
+    const inherited = [
+      join(releases, OLD, "activity", "node_modules", ".bin"),
+      join(releases, OLD, "node_modules", ".bin"),
+      join(releases, "node_modules", ".bin"),
+      "/usr/bin",
+      "/bin",
+    ].join(":");
+    const ctx = contextFor(box.config, () => box.host(), false, inherited);
+    const apps = ecosystemApps(ctx, { bot: NEW, games: [{ slot: BLUE, release: NEW }], site: NEW });
+    expect(apps.map((app) => app.env.PATH)).toEqual(Array(3).fill("/opt/bun/bin:/usr/bin:/bin"));
   });
 
   test("an app with no release recorded is left out", () => {

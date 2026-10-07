@@ -8,10 +8,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { run } from "../tools/deploy/cli";
 import { assertSafeCommand, exec } from "../tools/deploy/exec";
 import { withLock } from "../tools/deploy/lock";
 import { parseJlist, pm2Delete, pm2Drain, pm2List, pm2Start, pm2Stop } from "../tools/deploy/pm2";
-import { cleanEnvironment, readStatusFile } from "../tools/deploy/real-host";
+import { cleanEnvironment, commandEnvironment, readStatusFile, searchPath } from "../tools/deploy/real-host";
 import { BOT, FakeBox, botStatus, cleanUpBoxes } from "./deploy-harness";
 
 afterEach(cleanUpBoxes);
@@ -76,6 +77,51 @@ describe("reading pm2 jlist", () => {
   });
 });
 
+describe("pm2 jlist output, which holds every app's environment, never reaches a printed line", () => {
+  const SECRET = "marker-secret-7f3a";
+  const LIST = `[{"name":"${BOT}","pid":1,"pm2_env":{"status":"online","DISCORD_TOKEN":"${SECRET}"}}]`;
+
+  function messageOf(action: () => unknown): string {
+    try {
+      action();
+    } catch (error) {
+      return (error as Error).message;
+    }
+    throw new Error("expected a throw");
+  }
+
+  test("output that does not parse is withheld from the error", () => {
+    const torn = `[PM2] Spawning PM2 daemon\n${LIST.slice(0, -2)}`;
+    const message = messageOf(() => parseJlist(torn));
+    expect(message).toContain("pm2 jlist");
+    expect(message).not.toContain(SECRET);
+  });
+
+  test("a jlist that fails reports its exit code and the first line of stderr, never its output", async () => {
+    const box = new FakeBox();
+    box.respond = (command) =>
+      command.argv[1] === "jlist"
+        ? { code: 1, stdout: LIST, stderr: `[PM2][ERROR] Daemon not responding\nat ${SECRET}` }
+        : undefined;
+    const error = (await pm2List(box.context()).catch((caught: unknown) => caught)) as Error;
+    expect(error.message).toContain("exit 1");
+    expect(error.message).toContain("Daemon not responding");
+    expect(error.message).not.toContain(SECRET);
+    expect(box.output()).not.toContain(SECRET);
+  });
+
+  test("nor does a failing jlist's output reach what the command line prints", async () => {
+    const box = new FakeBox();
+    const configPath = join(box.layout.shared, "deploy.json");
+    writeFileSync(configPath, JSON.stringify({ ...box.config }));
+    box.respond = (command) => (command.argv[1] === "jlist" ? { code: 0, stdout: LIST.slice(0, -2), stderr: "" } : undefined);
+    const lines: string[] = [];
+    expect(await run(["--config", configPath, "status"], { out: (line) => lines.push(line), host: box.host() })).toBe(1);
+    expect(lines.join("\n")).toContain("pm2 jlist");
+    expect(lines.join("\n")).not.toContain(SECRET);
+  });
+});
+
 describe("a dry run", () => {
   test("prints a command that changes state and does not send it", async () => {
     const box = new FakeBox();
@@ -93,6 +139,29 @@ describe("a dry run", () => {
 });
 
 describe("the environment a command runs with", () => {
+  test("PATH is the deploy's own, never the one `bun run deploy` prefixed with a release's node_modules/.bin", () => {
+    const env = commandEnvironment(
+      { PATH: "/home/bcs/bcs/releases/abc/activity/node_modules/.bin:/usr/bin", HOME: "/home/bcs", DISCORD_TOKEN: "secret" },
+      "/opt/bun/bin:/usr/bin",
+      { BUILD_ID: "abc" },
+    );
+    expect(env).toEqual({ PATH: "/opt/bun/bin:/usr/bin", HOME: "/home/bcs", BUILD_ID: "abc" });
+  });
+
+  test("the search path drops every node_modules/.bin and puts bun's directory first", () => {
+    const inherited = [
+      "/home/bcs/bcs/releases/abc/activity/node_modules/.bin",
+      "/home/bcs/bcs/releases/abc/node_modules/.bin",
+      "/home/bcs/bcs/releases/node_modules/.bin",
+      "/home/bcs/node_modules/.bin/",
+      "/usr/bin",
+      "/opt/bun/bin",
+      "",
+      "/bin",
+    ].join(":");
+    expect(searchPath("/opt/bun/bin/bun", inherited)).toBe("/opt/bun/bin:/usr/bin:/bin");
+  });
+
   test("carries what a shell needs and none of the secrets Bun loaded from a .env", () => {
     const env = cleanEnvironment({
       PATH: "/usr/bin",
