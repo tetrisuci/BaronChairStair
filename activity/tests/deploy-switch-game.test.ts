@@ -12,7 +12,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import type { GameStatus } from "../shared/runtime-status";
 import { slotStatusFile } from "../tools/deploy/layout";
+import { isOnline } from "../tools/deploy/pm2";
 import { switchGame } from "../tools/deploy/switch-game";
 import { BLUE, FakeBox, GREEN, NEW, NEWER, OLD, cleanUpBoxes, gameStatus } from "./deploy-harness";
 
@@ -210,7 +212,7 @@ describe("pm2 refusing to start the new slot", () => {
   });
 });
 
-describe("a drain that runs out of time", () => {
+describe("while the old slot drains", () => {
   test("stops the old slot at the limit anyway, and says how many duels it cut", async () => {
     const box = liveBox(null);
     const started = box.now;
@@ -221,23 +223,88 @@ describe("a drain that runs out of time", () => {
     expect(box.output()).toMatch(/drain limit .*1 duel/);
   });
 
-  test("an old slot whose status disappears mid-drain is stopped without waiting out the limit", async () => {
+  test("a status that goes stale mid-drain is waited out, not taken for a process that is gone", async () => {
+    // A long synchronous write stalls blue's event loop for 90 s: its status
+    // stops being rewritten, but the process, and its duel, are still there.
+    const box = liveBox(3 * 60_000);
+    const file = slotStatusFile(box.layout, BLUE);
+    const written = box.statuses.get(file)!;
+    let signalledAt: number | null = null;
+    const onSignal = box.onSignal;
+    box.onSignal = (name, signal) => {
+      signalledAt = box.now;
+      onSignal(name, signal);
+    };
+    box.setStatus(file, (now) => {
+      const status = written(now) as GameStatus;
+      const stalled = signalledAt !== null && now - signalledAt >= 10_000 && now - signalledAt < 100_000;
+      return stalled ? { ...status, updatedAt: signalledAt! + 10_000 } : status;
+    });
+    await switchGame(box.context(), NEW, OPTIONS);
+    expect(box.output()).toMatch(/draining bcs-game-blue: status stale/);
+    expect(box.output()).toContain("bcs-game-blue has drained");
+    expect(box.now - signalledAt!).toBeGreaterThanOrEqual(3 * 60_000);
+  });
+
+  test("a status file that disappears while the process lives is waited on to the limit", async () => {
     const box = liveBox(null);
     box.onSignal = () => {
       box.statuses.delete(slotStatusFile(box.layout, BLUE));
     };
     const started = box.now;
     await switchGame(box.context(), NEW, OPTIONS);
+    expect(box.now - started).toBeGreaterThanOrEqual(20 * 60_000);
+    expect(box.output()).toMatch(/draining bcs-game-blue: no status file/);
+    expect(box.output()).toMatch(/drain limit/);
+  });
+
+  test("an old slot whose process exits mid-drain is stopped without waiting out the limit", async () => {
+    const box = liveBox(null);
+    const blue = box.processes.get(BLUE)!;
+    box.onSignal = (name) => {
+      if (name !== BLUE) return;
+      box.alive.delete(blue.pid);
+      box.statuses.delete(slotStatusFile(box.layout, BLUE));
+    };
+    const started = box.now;
+    await switchGame(box.context(), NEW, OPTIONS);
     expect(box.now - started).toBeLessThan(2 * 60_000);
-    expect(box.pm2Mutations()).toContainEqual(["stop", BLUE]);
+    expect(box.output()).toMatch(/bcs-game-blue's process .* is gone/);
+    expect(box.pm2Mutations().slice(-3)).toEqual([["stop", BLUE], ["delete", BLUE], ["save"]]);
+  });
+
+  test("an old slot pm2 restarted mid-drain (a new pid, on the old code) is stopped at once", async () => {
+    const box = liveBox(null);
+    box.onSignal = (name) => {
+      if (name !== BLUE) return;
+      const restarted = 7_777;
+      box.alive.add(restarted);
+      box.setStatus(slotStatusFile(box.layout, BLUE), (now) => gameStatus({ pid: restarted, buildId: OLD, updatedAt: now }));
+    };
+    const started = box.now;
+    await switchGame(box.context(), NEW, OPTIONS);
+    expect(box.now - started).toBeLessThan(2 * 60_000);
+    expect(box.output()).toMatch(/restarted/);
+    expect(box.pm2Mutations().slice(-3)).toEqual([["stop", BLUE], ["delete", BLUE], ["save"]]);
   });
 });
 
 describe("the first switch from code that writes no status file", () => {
+  /**
+   * Blue runs code from before the contract: it writes no status file, and it
+   * bound the port without reusePort, so nothing else can bind it while blue
+   * is up (Bun 1.3.13 and Linux both refuse). The fake pm2 brings green up
+   * only if blue was not running when green started.
+   */
   function coldBox(): FakeBox {
     const box = liveBox();
     box.statuses.delete(slotStatusFile(box.layout, BLUE));
     box.writeState({});
+    const onStart = box.onStart;
+    box.onStart = (name, app, pid) => {
+      if (name === GREEN && isOnline(box.processes.get(BLUE))) return;
+      onStart(name, app, pid);
+    };
     return box;
   }
 
@@ -247,17 +314,28 @@ describe("the first switch from code that writes no status file", () => {
     expect(box.pm2Mutations()).toEqual([]);
   });
 
-  test("with --allow-cold, stops the old process outright instead of signalling it", async () => {
+  test("with --allow-cold, stops the old process first: the new one cannot bind the port beside it", async () => {
     const box = coldBox();
     await switchGame(box.context(), NEW, { allowCold: true, force: false });
     expect(box.pm2Mutations()).toEqual([
-      ["start", box.layout.ecosystem, "--only", GREEN],
       ["stop", BLUE],
+      ["start", box.layout.ecosystem, "--only", GREEN],
       ["delete", BLUE],
       ["save"],
     ]);
     expect(box.output()).toContain("like a restart");
     expect(box.readState().game).toEqual({ activeSlot: GREEN, release: NEW, previous: null });
+  });
+
+  test("with --allow-cold, a new slot that never serves says the game is down and how to bring the old one back", async () => {
+    const box = coldBox();
+    box.onStart = () => {};
+    await expect(switchGame(box.context(), NEW, { allowCold: true, force: false })).rejects.toThrow(
+      /game is down[\s\S]*pm2 start bcs-game-blue/,
+    );
+    expect(box.processes.get(BLUE)!.status).toBe("stopped");
+    expect(box.processes.has(GREEN)).toBe(false);
+    expect(box.readState().game).toEqual({ activeSlot: null, release: null, previous: null });
   });
 });
 
