@@ -31,12 +31,13 @@
  *
  * **On holding the write lock.** Decoding and replaying the whole sheet takes
  * the better part of a second, and doing it inside the transaction held the WAL
- * write lock for all of it. Nothing in this repository sets `busy_timeout`, so
- * the server's next `recordRun` would not wait — it would fail instantly and a
- * player's finished solve would be lost. So the work is split: every puzzle is
- * built first, with no transaction open, and the transaction wraps only the
- * writes. This connection also sets its own `busy_timeout`, so if the server is
- * mid-write the sync waits for it rather than dying.
+ * write lock for all of it. The server waits for another writer's lock, but only
+ * for `STORE_BUSY_TIMEOUT_MS` (five seconds, `server/db.ts`) — and it used
+ * to wait not at all — so a lock held through a slow replay can still cost a
+ * player's finished solve. So the work is split: every puzzle is built first,
+ * with no transaction open, and the transaction wraps only the writes. This
+ * connection also sets its own `busy_timeout`, so if the server is mid-write the
+ * sync waits for it rather than dying.
  *
  * It creates its one table from {@link ARCHIVE_SCHEMA} rather than constructing
  * a `Store`, for the reason `review-link.ts` gives: a Store construction runs
@@ -277,8 +278,9 @@ async function main(): Promise<void> {
   const db = new Database(options.db, { create: true });
   const now = Date.now();
   try {
-    // Wait for the server rather than failing instantly. Nothing else in this
-    // repository sets this, which is why a second writer normally dies on sight.
+    // Wait for the server rather than failing instantly. The server waits for
+    // us in turn, but only for STORE_BUSY_TIMEOUT_MS, which is why the
+    // transaction below holds nothing but the writes.
     db.run(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
     migrateArchive(db);
 

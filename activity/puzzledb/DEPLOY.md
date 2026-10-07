@@ -70,71 +70,16 @@ it starts. Until then the line above names whichever it missed first. A site alr
 running keeps serving its last good dataset meanwhile; a site started afresh serves
 503 until the game is up.
 
-**2. The site first, verified — then the bot.** The commit that ships the site puts
-the release note announcing it, `beta 0.12`, at the top of `changelog.json`. The bot
-reads that file once, when it starts, so its **next restart, for any reason, by
-anyone** announces the note in every server at the next `/puzzle` — and an
-announcement can never be withdrawn. It announces every release a server has not
-been told about, not only the newest, so this holds for as long as the file carries
-`beta 0.12`, whatever lands on top of it. The bot reads it from the checkout its code is
-in — `pgrep -af discord_bot.py` shows its command, and `ls -l /proc/<its PID>/cwd`
-where that command starts — and when that is this checkout, the activity's pull is
-all it takes. So:
-
-- start the activity's deploy only when you can bring the site up in the same
-  sitting;
-- verify the site publicly (*Verify it publicly*, below) before the bot restarts for
-  any reason;
-- if you cannot finish, take the site down and have the activity's own rollback put
-  the checkout back before you leave the box (*Rolling back*): the note goes with
-  it, and nothing is announced.
-
-Whether the bot's next restart would announce the site, from `activity/`:
-
-```sh
-bun -e 'const r = (await Bun.file("../changelog.json").json()).releases; console.log(r.some((x) => x.version === "beta 0.12") ? "carries beta 0.12" : "no beta 0.12")'   # "carries beta 0.12" once the site's commit is here
-```
-
-**Beta 0.13 has a gate of its own.** The commit that ships the site's player data puts
-`beta 0.13` on top, announcing the boards, the players' pages, players' lines going
-public and the new *Hide me on db.tetrisatuci.org* setting. The `beta 0.12` gate
-cannot stand in for it: the site that was up before the pull passes that gate while
-having none of the pages `beta 0.13` describes. So while the file carries
-`beta 0.13`, the bot does not restart until all of these hold — the `beta 0.12` gate
-first, then:
-
-- `curl -s -o /dev/null -w '%{http_code}\n' https://db.tetrisatuci.org/data/leaderboards.json`
-  prints `200` (the site from before the pull answers `404` there), and
-  <https://db.tetrisatuci.org/leaderboards> shows boards in a browser;
-- the setting works in Discord, on the deployed game: Settings → *On the web* loads
-  its switch; turning **Hide me on db.tetrisatuci.org** on makes your own
-  `/player/<key>` page a 404 within about a minute, and turning it off brings it back
-  (*Verify it publicly* has the commands).
-
-If `beta 0.12` has not been announced yet either, one restart announces both, once
-both gates pass. Both describe a site that is then up, so the combined message is
-true. The two notes together come to 1,869 characters of the bot's 1,900
-(`MAX_MESSAGE_CHARS`, `client/changelog.py`); lengthen `beta 0.13` and the bot drops
-`beta 0.12`'s text, the one with the site's address, for "…and 1 earlier update".
-
-```sh
-bun -e 'const r = (await Bun.file("../changelog.json").json()).releases; console.log(r.some((x) => x.version === "beta 0.13") ? "carries beta 0.13" : "no beta 0.13")'   # "carries beta 0.13": the player data and the setting must be verified first
-```
-
-**Beta 0.15 has a gate of its own.** The profile browser (the Players table,
-richer profiles and the recent-solves feed) is a separate player-visible release,
-so the older gates do not cover it. While the file carries `beta 0.15`, do not
-restart the bot until the `beta 0.13` gate above has passed and these checks from
-*Verify it publicly* pass too:
-
-- `/data/players.json` and `/data/solves.json` both answer `200`;
-- **Players** lets a reader sort and filter, and a profile shows its tier panels,
-  calendar and cleared puzzles;
-- **Solves** lets a reader filter and load older days.
-
-```sh
-bun -e 'const r = (await Bun.file("../changelog.json").json()).releases; console.log(r.some((x) => x.version === "beta 0.15") ? "carries beta 0.15" : "no beta 0.15")'   # "carries beta 0.15": the profile browser must be verified first
-```
+**2. The bot last, and only if its own code changed.** The bot reads `changelog.json`
+once, when it starts, and shows release notes only when somebody asks for them,
+privately, with `/puzzle changelog`; since `beta 0.17` it posts none by itself (the
+root guide has the one exception, a rollback to older code). So neither a pull nor a
+restart announces anything, and the bot keeps running through the activity's deploy and
+this one. Its restart comes after *Verify it publicly* has passed, because that restart
+is what makes the notes that describe this site readable — `beta 0.12`'s address,
+`beta 0.13`'s boards and setting, `beta 0.15`'s Players and Solves — and a note should
+not describe a site that is not up yet. Whether the bot needs a restart at all, and how,
+is the root [`DEPLOY.md`](../../DEPLOY.md); *Last, the bot*, below, is where it comes.
 
 ---
 
@@ -148,7 +93,7 @@ git log --oneline -1          # note this before any pull — the rollback targe
 bun --version
 bun -e 'import {Database} from "bun:sqlite"; console.log(typeof new Database(":memory:").serialize, typeof Map.groupBy)'   # function function
 pm2 list                      # every app by name. Never `pm2 restart all` or `pm2 stop all`: DIAYN shares this box
-ps -o user=,pid=,args= -C bun # the game is the one running server/index.ts: note its user and PID
+ps -o user=,pid=,args= -C bun # the game is the one running server/index.ts (one, unless a handover is under way): note its user and PID
 grep -E '^(DATABASE_PATH|DAILY_RESET_TIMEZONE)=' .env   # the game's own settings, if it sets them
 ss -ltnp | grep -E ':(3001|3002)\b'                     # the game on 3001; 3002 must be free
 ```
@@ -574,11 +519,10 @@ Paste `https://db.tetrisatuci.org/puzzle/1?v=1` into a private Discord channel. 
 should unfurl with the puzzle's title and description; the `?v=1` gets past anything
 Discord cached while you were setting up, so change the number to try again.
 
-**The setting, end to end** — the `beta 0.13` gate's second half, and the only check
-here that needs the game. In Discord, open the activity, then Settings: the
-*On the web* section must show its switch rather than "Couldn't load this setting."
-Find your key without printing anything but keys and names — from `activity/`, with your own
-Discord username:
+**The setting, end to end** — the only check here that needs the game. In Discord,
+open the activity, then Settings: the *On the web* section must show its switch rather
+than "Couldn't load this setting." Find your key without printing anything but keys and
+names — from `activity/`, with your own Discord username:
 
 ```sh
 bun -e 'import {Database} from "bun:sqlite"; const db = new Database(process.argv[1], {readonly: true}); console.log(db.query("SELECT public_key AS key, site_hidden AS hidden FROM players WHERE username = ?1").all(process.argv[2]))' "$(grep -E '^DATABASE_PATH=' puzzledb/.env | cut -d= -f2-)" '<your username>'
@@ -596,13 +540,13 @@ Last, `git status` from the repository root must be clean: `puzzledb/dist/`,
 
 ---
 
-## Only now, restart the bot
+## Last, the bot — if its code changed
 
-Once all gates in rule 2 pass — `beta 0.12`'s, `beta 0.13`'s and `beta 0.15`'s
-while the file carries them. By its own name, as the root [`DEPLOY.md`](../../DEPLOY.md) describes —
-never with `pm2 restart all`, which would take DIAYN down with it. That restart is
-what announces the site: the next `/puzzle` in each server carries every release note
-that server has not had.
+Only once everything above has passed. The root [`DEPLOY.md`](../../DEPLOY.md) says
+whether this deploy needs a bot restart at all — only a change to `client/` or
+`changelog.json` does — and how: by the bot's own name, never with `pm2 restart all`,
+which would take DIAYN down with it. The restart posts nothing. It makes the new release
+notes readable through `/puzzle changelog`, to whoever asks.
 
 ---
 
@@ -621,8 +565,11 @@ pm2 restart puzzle-db                      # under systemd: sudo systemctl resta
 pm2 logs puzzle-db --lines 5 --nostream    # a fresh puzzledb — line; under systemd: journalctl -u puzzle-db -n 5 --no-pager
 ```
 
-Restarting it never touches the game. To tell whether a specific change reached the
-page, ask `puzzledb/dist/assets/` the way the activity's guide asks its own `dist/`:
+Restarting it never touches the game, and it takes no part in the game's handover: it
+binds 3002 alone (`reusePort: false`), so a second copy is refused rather than sharing
+the port, and it writes no status file and no `build.json`, so its pages never offer an
+update. To tell whether a specific change reached the page, ask `puzzledb/dist/assets/`
+the way the activity's guide asks its own `dist/`:
 
 ```sh
 ls -l puzzledb/dist/assets/                                  # newer than the pull
@@ -682,9 +629,9 @@ For good: `pm2 delete puzzle-db`, check `pm2 list`, then `pm2 save`
 (`pm2 save --force` if puzzle-db was this user's only app: a plain `pm2 save` will
 not write an empty list). Under systemd: `sudo systemctl disable --now puzzle-db`.
 
-**This first deploy failed verification**, and the bot has not restarted. The site's
-own rollback is taking it down: the process, and the hostname if you want it gone,
-as above.
+**This first deploy failed verification.** The bot has not restarted — it comes
+last — so `/puzzle changelog` still offers what it offered before. The site's own
+rollback is taking it down: the process, and the hostname if you want it gone, as above.
 
 ```sh
 pm2 delete puzzle-db
@@ -694,45 +641,32 @@ pm2 save    # or the next reboot brings puzzle-db back; --force if the list is n
 
 Under systemd, `sudo systemctl disable --now puzzle-db` instead.
 
-That leaves the checkout where the activity's deploy put it, release note and all,
-so the bot's next restart would announce a site that is down. Putting the checkout
-back is the **activity's** rollback, never a step of the site's: the game runs the
-pulled code and serves the page built from it, and a bare `git checkout` would move
-neither, leaving the game's next restart to boot the old server against the new page
-with no error anywhere. So roll the activity back by [`../DEPLOY.md`](../DEPLOY.md),
-*Rolling back* — checkout, install, build and restart, to the commit you noted in
-*Before you start* — and then check that the note went with it:
+That leaves the checkout where the activity's deploy put it, release notes about the
+site and all, so leave the bot running on what it loaded until the site is back.
+Putting the checkout back is the **activity's** rollback, never a step of the site's:
+the game runs the pulled code and serves the page built from it, and a bare
+`git checkout` would move neither, leaving the game's next restart to boot the old
+server against the new page with no error anywhere. So when the checkout must go back,
+roll the activity back by [`../DEPLOY.md`](../DEPLOY.md), *Rolling back* — checkout,
+install, build and restart, to the commit you noted in *Before you start*.
 
-```sh
-bun -e 'const r = (await Bun.file("../changelog.json").json()).releases; console.log(r.some((x) => x.version === "beta 0.12") ? "carries beta 0.12" : "no beta 0.12")'   # must print "no beta 0.12"
-```
+**The player-data deploy (`beta 0.13`) failed verification.** The checkout goes back,
+by the activity's rollback, as above: the game's new setting points players at pages
+this site cannot show, so it goes back with them. The game's migration only added
+columns and tables, so the older code runs on the migrated database unchanged
+(`../DEPLOY.md`, *Rolling back*). Then rebuild and restart the site on the older
+checkout (the commands just below).
 
-Still `carries beta 0.12` means the commit you noted already carried the note: the site's
-commit reached this box before you did. Report that, and that the bot must not
-restart until the site is up.
-
-**The player-data deploy (`beta 0.13`) failed verification**, and the bot has not
-restarted. The note must not reach a restart while the site cannot back it, so the
-checkout goes back, by the activity's rollback, as above — and with it the game's
-setting, which hides players on a site the old checkout does not have. The game's
-migration only added columns and tables, so the older code runs on the migrated
-database unchanged (`../DEPLOY.md`, *Rolling back*). Then rebuild and restart the
-site on the older checkout (the commands just below), and check:
-
-```sh
-bun -e 'const r = (await Bun.file("../changelog.json").json()).releases; console.log(r.some((x) => x.version === "beta 0.13") ? "carries beta 0.13" : "no beta 0.13")'   # must print "no beta 0.13"
-```
-
-**The profile-browser deploy (`beta 0.15`) failed verification**, and the bot has
-not restarted. Take the site back with the activity's rollback, then check:
-
-```sh
-bun -e 'const r = (await Bun.file("../changelog.json").json()).releases; console.log(r.some((x) => x.version === "beta 0.15") ? "carries beta 0.15" : "no beta 0.15")'   # must print "no beta 0.15"
-```
+**The profile-browser deploy (`beta 0.15`) failed verification.** Take the site down,
+or back with the activity's rollback, as above.
 
 Players whose results were published in the meantime stay in whatever copies were
-taken; a rollback cannot recall them, which is one more reason to start this deploy
-only when you can finish it.
+taken; a rollback cannot recall them, which is one reason to start this deploy only
+when you can finish it.
+
+If the bot had been restarted onto the commit you are leaving, the root
+[`DEPLOY.md`](../../DEPLOY.md), *Rolling the bot back*, has the one check to make before
+restarting it again.
 
 **A later deploy broke the site.** Rolling the checkout back moves the game's code
 too, so it is the activity's rollback (`activity/DEPLOY.md`, *Rolling back*), never

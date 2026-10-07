@@ -65,8 +65,10 @@ than releases. The reply is ephemeral, visible only to the person who requested
 it, and uses `AllowedMentions.none()` so release notes cannot ping anyone.
 Launching the activity never posts a changelog to the channel.
 
-The command can be used repeatedly. It does not track which releases a server
-has seen, and old `bot_versions` records do not hide notes or prevent another
+The bot reads `changelog.json` once, when it starts, so a new note is offered
+from the restart that ships it; nothing is posted anywhere at that restart, or at
+any other. The command can be used repeatedly. It does not track which releases a
+server has seen, and old `bot_versions` records do not hide notes or prevent another
 request. Each request produces one private reply with an inline preview capped
 at 1,900 UTF-16 units. If the requested changes do not fit, the reply attaches
 `puzzle-changelog.txt` containing every selected change in full. The preview
@@ -243,14 +245,16 @@ On SIGTERM or SIGINT — pm2's own stop sends SIGINT — the bot:
    seconds (20 by default);
 4. closes its Discord connection and exits 0.
 
-A second signal stops the wait and closes at once. Two things outside the bot
-have to agree with this:
+A second signal stops the wait and closes at once. SIGHUP, SIGUSR1 and SIGUSR2
+are not stops: the bot handles none of them, and SIGHUP ends it outright, with no
+grace. Two things outside the bot have to agree with this:
 
 - **pm2's `kill_timeout`** must be longer than the grace, or pm2 kills the bot
   part-way through the wait — its default is 1.6 seconds.
 - **`/archive sync` can run five minutes**, far past the grace, and the bot
   does not wait for it. Stop the bot only when the status file says
-  `syncRunning: false`.
+  `syncRunning: false` — or, with no status file, when
+  `pgrep -af 'sync[-]archive'` finds nothing.
 
 ### When it writes its commands — `FORCE_COMMAND_SYNC`
 
