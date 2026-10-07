@@ -118,7 +118,7 @@ git pull                 # or however this box gets code
 bun install
 bunx tsc --noEmit        # must be silent
 bun test                 # 0 fail. Skips are normal — see below
-bun run build            # writes dist/, including dist/review/index.html
+bun run build            # writes dist/, including dist/review/index.html and dist/build.json
 ```
 
 **Skips are expected here.** `data/solutions.json` holds the answer keys and is
@@ -127,7 +127,12 @@ failed — the ones that need a reference solution to build a solving log. `0
 fail` is the thing to check. A number of skips that is suddenly zero means the
 answers are on this box; a *failure* is what stops a deploy.
 
-Then restart the service the way this box already starts it.
+Then restart the service the way this box already starts it, **straight after the
+build**. The server reads `dist/build.json` once, when it starts, and names that build on
+every response; until the restart, pages loaded from the new bundle are told the old
+build is serving, offer *Update ready* for nothing, and a reload does not clear it.
+*Restarts and handovers*, below, says what a restart costs players now, and what to set
+before the first restart onto this code.
 
 *If this box also runs the puzzle database site (the pm2 app or systemd unit `puzzle-db`), rebuild and restart
 it once the activity is verified —
@@ -157,9 +162,8 @@ half in three ways:
   deploy, as always, and the bundle check below has a string to look for.
 
 **The site goes up in the same sitting**, straight after this guide's verification:
-the setting's link points at the new site, the setting hides players there, and the bot must not
-restart while `beta 0.13` or `beta 0.15` is unverified — the root [`../DEPLOY.md`](../DEPLOY.md)
-and [`puzzledb/DEPLOY.md`](puzzledb/DEPLOY.md), rule 2, have the gate.
+the setting's link points at the new site, and the setting hides players there. The bot
+comes last, and only if its own code changed — the root [`../DEPLOY.md`](../DEPLOY.md).
 
 ### Rate limiting behind the proxy
 
@@ -217,6 +221,156 @@ record that a rush is open. Rotating `REVIEW_SECRET` kills every review link and
 nobody else notices.
 
 Restart again after editing `.env`.
+
+---
+
+## Restarts and handovers
+
+### What a restart costs players
+
+The server stops politely. On SIGINT — pm2's own stop and restart — or SIGTERM —
+systemd's, and `kill`'s — it stops listening, gives the requests in flight up to 8
+seconds, closes every duel socket with "The server restarted, so the duel ended.",
+writes its last status and exits 0. A second signal exits at once. Around that:
+
+- **Hand-ins ride out the gap.** A page built from this code retries a daily filing, a
+  rush hand-in or a practice clear on a lost connection, a 502, 503 or 504, for about
+  15 seconds in all (after 0.5, 1, 2, 3, 4 and 4 seconds), saying "Reconnecting…"
+  meanwhile. A restart that is listening again inside that loses nobody's solve. A
+  rush ended by the buzzer has less — about 9 seconds, the server's 10-second grace
+  less one — so a slow restart can still cost a ranked rush.
+- **Duels end.** Every lobby and every match in progress closes, and a match gets no
+  result. The page says why, and Duel works again at once.
+- **A sheet finished before the reset and handed in after it** is refused — "That day
+  is over — today's puzzles are new. Open the daily again." — rather than judged
+  against the new day's puzzle. A page from before this code sends no day, and is
+  judged as before.
+- **Open pages are offered the new build.** Every response names the build that
+  answered it (`X-Build-Id`), and a page that hears a build other than its own shows
+  *Update ready — reload when you're done*: never during a run, a rush, a duel, a
+  builder test or a hand-in still retrying, and it never reloads by itself.
+
+**Under pm2, the game's `kill_timeout` must be at least 10000.** pm2's default is
+1600 ms, after which it kills the server part-way through those 8 seconds, the hand-in
+it was answering included. The root [`../DEPLOY.md`](../DEPLOY.md), *Restarting*, shows
+how to see each app's value without printing its environment, and how to set it; it is
+the same for the game. Under systemd nothing is needed: `TimeoutStopSec` defaults to 90
+seconds.
+
+### The first restart onto this code needs a quiet moment
+
+Two things the above relies on are not there yet the first time:
+
+- **The process being stopped is the old code**, which has no handler: SIGINT ends it
+  at once, whatever it was answering. That restart is the last one that cuts a request
+  off.
+- **Open pages keep the bundle they loaded**, and until each is reloaded it has none
+  of this: no retries, no *Update ready*, and the old duel behaviour, in which a dropped
+  duel leaves the Duel button doing nothing until the player switches mode.
+
+So make the first restart at a quiet hour, as every restart was before it, and set the
+`kill_timeout` and `STATUS_FILE` (below) in the same sitting.
+
+### Signals
+
+| Signal | What the game does |
+|---|---|
+| `SIGINT`, `SIGTERM` | Stops, as above: up to 8 seconds for the requests in flight, then exit 0 |
+| `SIGHUP` | **Drains**, for a handover: stops listening, keeps every match to its end, and never exits by itself |
+| `SIGUSR1`, `SIGUSR2` | **Never send these.** On Bun 1.3.13 one crashes the process and the other ends it before any handler runs |
+
+Send any of them by exact PID — `pm2 pid <its name>`, or the `ps` line in
+[`puzzledb/DEPLOY.md`](puzzledb/DEPLOY.md), *Before you start* — never with `pkill -f`.
+
+**A terminal that goes away sends SIGHUP.** A game run in the foreground, in `tmux`, or
+under `nohup` — which no longer protects it, because the game handles the signal —
+drains when its terminal closes: the process stays up and nothing listens. Run it under
+pm2 or systemd.
+
+### The handover
+
+The server can be replaced on one port with no gap. Both copies bind the port with
+`SO_REUSEPORT` (`reusePort: true` in `server/index.ts`), so:
+
+1. start the new release on the same `PORT` while the old one serves, with a status
+   file of its own;
+2. wait for that file to say `"state":"serving"`;
+3. send the old process SIGHUP, by exact PID. It stops listening, after which every new
+   connection reaches the new one; sends each lobby away with "The server is updating —
+   open the lobby again"; keeps each match to its end, with no rematch; answers what
+   still arrives on an old connection with `Connection: close`; and reports `draining`;
+4. wait for its file to say `"state":"draining"` with `"duelsInMatch":0` and
+   `"inflight":0`, or for 20 minutes at most, since it never exits by itself;
+5. send it SIGTERM.
+
+It needs a second process-manager entry for the game, with its own `STATUS_FILE`, and
+the new release built where the new process serves it from. Nothing on this box is set
+up that way yet; until it is, a deploy restarts the game as above.
+
+**`reusePort` has a cost: a second copy no longer fails to start.** A stray second game
+used to die with `EADDRINUSE`. Now it binds beside the first and quietly takes about
+half the connections. Outside a handover, exactly one process listens:
+
+```sh
+ss -ltnp | grep ':3001\b'      # one pid. Two is a stray copy: stop it by its name or its exact PID
+```
+
+The puzzle database site does the opposite on purpose (`reusePort: false`): it never
+hands over, so a second copy of it is always a mistake, and a refused bind is how that
+gets noticed.
+
+**The store waits for another writer.** Two game processes share `daily.sqlite` during
+a handover, and `sync-archive` and `publish-archive` write to it too, so the store sets
+`busy_timeout` to 5 seconds: a write that meets another's lock waits for it rather than
+failing at once (`STORE_BUSY_TIMEOUT_MS` in `server/db.ts`).
+
+### The status file — `STATUS_FILE`
+
+With `STATUS_FILE` set to an absolute path, the game writes a small JSON file there
+every 5 seconds, and at once on every change: its `pid`, `buildId` and `port`; its
+`state` — `starting` while it migrates and loads, then `serving`, `draining` or
+`stopping`; and counts — `duelsInMatch`, `lobbies`, `rushTicketsRecent` (rushes started
+in the last 5 minutes 10 seconds, which may still be handed in), `sessionsRecent`
+(players seen in the last 10 minutes) and `inflight`. Counts only: never an id or a
+name. Its last write, at exit, says `stopping`. A file whose `updatedAt` is more than
+20 seconds old belongs to a process that has stopped writing, and says nothing about
+who is playing.
+
+```sh
+cat <the game's STATUS_FILE>; echo     # is anybody playing? duelsInMatch, lobbies, rushTicketsRecent
+```
+
+Set it in the process manager's environment — `env: { STATUS_FILE: "<abs path>" }` in
+a pm2 ecosystem entry, `Environment=STATUS_FILE=<abs path>` in a systemd unit — and not
+in `activity/.env`: every process needs a file of its own, and a second game started
+from this directory would read the same `.env`. Put it outside the checkout, in a
+directory the game's user can write, since each write goes to a temporary file beside
+it and is renamed over the old one. Only the process that is the entrypoint writes it,
+so `bun test`, which loads `activity/.env` too, never touches the live one.
+
+### Which build it serves — `BUILD_ID`, `dist/build.json`, `X-Build-Id`
+
+`bun run build` names the build: the id is `BUILD_ID` if that is set, else the
+checkout's short commit (`git rev-parse --short HEAD`), else `dev`. It is compiled into
+the page and written to `dist/build.json`, which the server reads once, at start-up —
+falling back to `BUILD_ID`, then `dev`, when there is no file — and sends back as
+`X-Build-Id` on every response, and in `/api/health`. A `BUILD_ID` that is not 1–64
+letters, digits, dots, dashes or underscores fails the build, on purpose.
+
+- **On a git checkout, set nothing**: the commit is the right id.
+- **A `dev` build is never offered an update, and never offers one.** A box that builds
+  with neither git nor `BUILD_ID` leaves every open page on its old bundle, silently.
+- **Never put `BUILD_ID` in `activity/.env`.** It changes with every release, and a
+  value there would name every build alike.
+- **The site's build takes no part**: `build:puzzledb` writes no `build.json`, and the
+  site's pages never offer an update.
+- **`bun run dev:client` compiles in no id**, so a dev page never shows *Update ready*.
+  To see the chip locally, build, then restart the server on a build with another
+  `BUILD_ID`.
+
+`GET /api/health` answers `{"ok":true,"buildId":"…","state":"serving"}` without touching
+the database. It counts against the game's rate limit of 240 requests a minute, like
+`/api/config`, so do not poll it fast.
 
 ---
 
@@ -327,10 +481,8 @@ with no names — a name is recorded when a player signs in from that server —
 `named` grows as people open the activity. Counts only: never print `guild_id` or a
 player's `id`.
 
-The profile browser is the separate `beta 0.15` release. Its site checks and bot
-restart gate are in [`puzzledb/DEPLOY.md`](puzzledb/DEPLOY.md), rule 2; do not
-restart the bot while that note is carried and **Players** and **Solves** have not
-been verified publicly.
+The profile browser is the separate `beta 0.15` release. Its site checks are in
+[`puzzledb/DEPLOY.md`](puzzledb/DEPLOY.md), *Verify it publicly*.
 
 **5. The review routes are switched on** (only if you set `REVIEW_SECRET`):
 
@@ -339,6 +491,24 @@ curl -s -o /dev/null -w '%{http_code}\n' https://your-host/api/review/queue
 # 401 = on, and refusing you because you have no token. Correct.
 # 404 = REVIEW_SECRET is unset, or the service did not pick up the .env change.
 ```
+
+**6. The server serves the build you just made.**
+
+```sh
+cat dist/build.json; echo                                                    # {"buildId":"<short commit>"}
+curl -s -D - -o /dev/null https://your-host/api/health | grep -i x-build-id  # the same id
+curl -s https://your-host/api/health; echo                                    # {"ok":true,"buildId":"<the same>","state":"serving"}
+```
+
+The ids must match. Another one means the server started before the build finished,
+or the process answering is not the one you restarted: restart it, and check that one
+process listens (`ss -ltnp | grep ':3001\b'`). `dev` means the build found neither
+`BUILD_ID` nor git, and no page will ever be offered the update. With `STATUS_FILE`
+set, `cat` it too: `"state":"serving"`, the same `buildId`, and a fresh `updatedAt`.
+
+Once, from inside the Discord activity if you can open its developer tools, check that
+a response from `/api/…` carries `X-Build-Id`. If Discord's proxy or the tunnel strips
+it, *Update ready* never appears and nothing else breaks; say so in your report.
 
 ---
 
@@ -439,11 +609,18 @@ bun install && bun run build
 that command and the restart the box is serving the old server against the rolled-back
 client. Do not stop after the build.
 
+Rolling back to a commit whose `../changelog.json` has no `beta 0.21` takes this code's
+restart behaviour with it: the stop is instant again, the status file stops being
+written and goes stale, and pages loaded from the newer bundle hear no build and offer
+nothing. Hand-ins from those pages still retry. If the bot had been restarted onto the
+commit you are leaving, the root [`../DEPLOY.md`](../DEPLOY.md), *Rolling the bot back*,
+has the one check to make before restarting it again.
+
 Rolling back past the `beta 0.13` commit leaves its columns and tables in place, which
 the older code ignores. A player that code signs in for the first time gets no key,
 and the site treats a player with no key as hidden until this code is deployed again
-and keys them. Roll back the site with it, and check the note went too:
-[`puzzledb/DEPLOY.md`](puzzledb/DEPLOY.md), *Rolling back*.
+and keys them. Roll the site back with it, by rebuilding and restarting it on the
+older checkout: [`puzzledb/DEPLOY.md`](puzzledb/DEPLOY.md), *Rolling back*.
 
 One thing to know: if you have already accepted a submission, the old code will
 not load it — it reads puzzles only from `data/puzzles.json` — so the archive
@@ -467,9 +644,29 @@ Accept nothing until you are confident in the upgrade, and rollback stays free.
   the review tool, when you accept, mentions only the restart.
 - **`day_puzzles` growing by four rows a day forever.** That is the design. It
   is a few hundred kilobytes a decade.
+- **`[lifecycle] draining: no longer listening, 1 match(es) still being played`,
+  and a process that stays up afterwards.** That is a drain, after SIGHUP. It never
+  exits by itself; SIGTERM ends it. If nobody meant to start a handover, see the first
+  item under *Things that are wrong*.
+- **`[lifecycle] stopping with 2 request(s) unanswered`.** A stop's 8 seconds ran out
+  with requests still open; they were cut. Rare, and logged so that it is not silent.
+- ***Update ready* on open pages after a deploy.** That is the point of it. It goes once
+  the player reloads.
+- **A status file that says `stopping`** after the game has exited. That is its last
+  write.
 
 ## Things that are wrong
 
+- **The game's process is running but nothing listens on 3001**, and its log's last
+  `[lifecycle]` line says `draining`. It was sent SIGHUP: its terminal closed (`tmux`,
+  `nohup`), or somebody sent it. Stop it with SIGTERM by its exact PID, and start it
+  under its service.
+- **Two processes listen on 3001, and no handover is under way.** A stray second copy:
+  `reusePort` let it bind without an error, and it takes about half the connections.
+  Stop the one that is not the service, by its name or its exact PID.
+- **Every page shows *Update ready* right after a build, and reloading does not clear
+  it.** The server was not restarted after the build, and still names the old one.
+  Restart it.
 - **The service will not boot, and the error names an accepted puzzle** (an id
   of 100000 or more). It failed validation at load. The message gives its id. Undo that
   acceptance and restart:

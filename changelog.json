@@ -2,6 +2,16 @@
   "$comment": "The project's version and its player-facing release notes. Newest first; order in this list IS the version order. Read by client/changelog.py for /puzzle changelog, requested privately. Adding a release means putting it at the top. Keep `changes` to things a player can see.",
   "releases": [
     {
+      "version": "beta 0.21",
+      "changes": [
+        "**Finishing a puzzle while the server restarts no longer loses it.** A daily sheet, a rush or a practice clear handed in at that moment says **Reconnecting…** and tries again for up to about fifteen seconds, instead of failing at once.",
+        "**1v1 says when the server is updating** and asks you to open the lobby again, instead of only saying the connection closed. After any dropped duel connection, **Duel** works again straight away.",
+        "**An \"Update ready\" chip appears in the header when a new version of the activity is out.** Reload when you're done: it never shows in the middle of a run, a rush or a duel, and it never reloads by itself.",
+        "**A sheet you finish after the daily reset is no longer judged against the new day's puzzle.** The activity says that day is over and loads today's puzzles.",
+        "**A bot command sent while the bot restarts** now gets a private \"Restarting — try again in a few seconds.\" instead of no answer at all."
+      ]
+    },
+    {
       "version": "beta 0.19",
       "changes": [
         "**Every line you find now lands in the puzzle's Solutions**: a puzzle from Explore, and a replay of a daily you have already solved (**Play again**), as well as the daily itself. Until now only the daily run reached the Solutions menu, so solving a puzzle another way afterwards left no trace. A new line found this way also counts on the Discoveries board."

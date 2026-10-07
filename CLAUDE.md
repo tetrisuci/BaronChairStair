@@ -63,13 +63,14 @@ code until it too is rebuilt and restarted —
 `releases` is a newest-first list, the version is just the first entry's, and shipping
 a version means putting a new entry at the top of that file.
 
-`/puzzle` announces to a server every version it has not been told about, so the note
-is how players find out anything changed.
+Players read the notes when they ask, with `/puzzle changelog`, from the copy the bot
+loaded when it last started; nothing posts them. So the note is how players find out
+anything changed, and the bot's restart is what makes a new one readable.
 
 It is a JSON file rather than a Python literal because the activity briefly showed the
 same notes on its own front screen. That card is gone — eight release notes pushed the
 day itself off the bottom of the screen — but the file stays where it is: one list, in
-one place, read by the half that announces it.
+one place, read by the half that shows it.
 
 **Add one whenever a change is visible to a player.** The rule for what counts, from
 `client/changelog.py`: "Refactored the planner" is not a change to announce; "the drag
@@ -77,10 +78,10 @@ lands where the preview showed" is. A new tier, a fixed error message, a button 
 now asks before doing something irreversible — all of those.
 
 This is the easiest rule in the repository to skip, because skipping it breaks
-nothing. No test fails, no deploy stops, the bot simply goes quiet and players are
-never told. It has already happened: **seven merged PRs — #58 through #64 — shipped
-four daily tiers, a restored answer walkthrough, a confirmation on "Hand it in" and
-three fixed player-facing bugs, and not one of them wrote a note.** The whole lot had
+nothing. No test fails, no deploy stops, `/puzzle changelog` simply has nothing new,
+and players are never told. It has already happened: **seven merged PRs — #58 through
+#64 — shipped four daily tiers, a restored answer walkthrough, a confirmation on "Hand
+it in" and three fixed player-facing bugs, and not one of them wrote a note.** The whole lot had
 to be written up afterwards as `beta 0.2`, from the git log, by somebody guessing what
 a player would have noticed.
 
@@ -90,12 +91,12 @@ would see.
 There is only one version, and it is the top of that file. `activity/package.json`
 carries a `"version": "1.0.0"` that nothing reads — do not bump it and do not go
 looking for a second place. (`preferences.version` and `SETTINGS_VERSION` are schema
-versions for stored data, unrelated to what the bot announces.)
+versions for stored data, unrelated to the release version.)
 
 Nothing will stop you shipping without a note: a missing or malformed
-`changelog.json` costs the announcement and the bot starts anyway. That is deliberate
-— a changelog must never be what keeps the bot from booting — and it is also why
-nothing will remind you.
+`changelog.json` costs `/puzzle changelog` its notes, and the bot starts anyway. That is
+deliberate — a changelog must never be what keeps the bot from booting — and it is also
+why nothing will remind you.
 
 ## Decisions that are not yours to make
 
@@ -147,6 +148,14 @@ Report these and stop; do not act on them unasked.
   held a player table; `activity/tests/tracked-archive.test.ts` asserts that.
 - **`pkill -f` on a broad pattern.** `pkill -f "server/index.ts"` matches more than you
   mean and has already taken down the wrong server. Kill by exact PID.
+- **Send SIGUSR1 or SIGUSR2 to the game or the bot.** Neither handles them: on Bun
+  1.3.13 one crashes the game and the other ends it before any handler runs, and either
+  ends the bot with no grace. Nor is SIGHUP a stop: the game *drains* on it —
+  stops listening and stays up until SIGTERM — and the bot dies outright. A stop is
+  SIGINT or SIGTERM; `activity/DEPLOY.md`, *Restarts and handovers*, has the rest.
+- **Leave a second copy of the game listening.** It binds the game's port beside the
+  first without an error — `reusePort`, which the handover needs — and quietly takes
+  about half the connections. Outside a handover, one process listens.
 - **Leave two copies of this bot running.** Two instances on one token double-handle
   every command, which presents as the bot answering everything twice. Stop the old one
   before starting the new one — `DEPLOY.md` has the commands for finding how it runs.
@@ -162,6 +171,9 @@ Report these and stop; do not act on them unasked.
   **different names on either side.** A mismatch is a 401, an unset key a 404, and the
   daily recap simply never posts — though check `PUZZLE_RECAP=on` first: the recap
   is off unless it is set.
+- The bot loads the root `.env` with `override=True`, so a key there beats whatever pm2
+  or systemd sets — `STATUS_FILE` and `STATS_DB` included. Set each in one place, and
+  `BUILD_ID` never in `.env` (`DEPLOY.md`, *Settings a deploy may set*).
 - A new slash command needs a restart to appear, and a global sync can take an hour.
   `sync_guilds.py <SERVER_ID>` pushes it to one guild at once — then
   `sync_guilds.py --clear <SERVER_ID>` once the global ones land, or the picker shows
