@@ -70,10 +70,31 @@ import type { ShareFields } from "./ui/share";
 import { createUpdateNotice, type UpdateNotice } from "./ui/update-chip";
 
 /** A puzzle on the table, and whether playing it counts; see `App.sheet`. */
-interface Sheet {
+type Sheet = ScoredSheet | PracticeSheet;
+
+interface SheetBase {
   readonly puzzle: PuzzlePrompt;
   readonly solution: readonly SolutionStep[] | null;
-  readonly scored: boolean;
+}
+
+/** One of the day's tiers: a solve is filed. */
+interface ScoredSheet extends SheetBase {
+  readonly scored: true;
+  /**
+   * The day it was dealt on, which is the day it is filed under.
+   *
+   * Kept with the sheet rather than read from `daily` when the run ends. A
+   * refused filing reads the day again, and another tier dealt from the old
+   * day can still be on the board when it does: read from `daily`, that sheet
+   * was filed under the new day and replayed against a puzzle the player never
+   * saw, which records a miss on it.
+   */
+  readonly day: number;
+}
+
+/** Practice, a replay, a solution being stepped through: nothing is filed. */
+interface PracticeSheet extends SheetBase {
+  readonly scored: false;
 }
 
 const COUNTDOWN_TICK_MS = 1000;
@@ -560,7 +581,7 @@ export class App {
     this.dailyTier = tier;
     const entry = this.dailyEntry;
     if (!entry) return;
-    this.sheet = { puzzle: entry.puzzle, solution: entry.solution, scored: true };
+    this.sheet = { puzzle: entry.puzzle, solution: entry.solution, scored: true, day: this.daily.day };
     this.credits.update(entry.puzzle);
     this.hud.setPuzzle(entry.puzzle);
     // Rebuilt rather than left alone: a filed tier puts the walkthrough in this
@@ -1835,17 +1856,9 @@ export class App {
       return;
     }
 
-    // A scored sheet is only ever dealt from `daily`, so this is always there;
-    // the guard is for the type, and still leaves the card on screen.
-    const day = this.daily?.day;
-    if (day === undefined) {
-      this.presentVerdict(this.toShareFields(snapshot), null);
-      return;
-    }
-
     this.filingRuns = new Set([...this.filingRuns, finished]);
     try {
-      await this.fileDailyRun(sheet, day, snapshot, events, stillShowing);
+      await this.fileDailyRun(sheet, snapshot, events, stillShowing);
     } finally {
       this.filingRuns = new Set([...this.filingRuns].filter((run) => run !== finished));
     }
@@ -1863,8 +1876,7 @@ export class App {
    * held open by a restart would land its result over whatever they went to.
    */
   private async fileDailyRun(
-    sheet: Sheet,
-    day: number,
+    sheet: ScoredSheet,
     snapshot: RunSnapshot,
     events: readonly InputEvent[],
     stillShowing: () => boolean,
@@ -1881,11 +1893,12 @@ export class App {
             // against that board, so naming the wrong one fails to solve rather
             // than filing anything.
             tier: this.dailyTier,
-            // The day the sheet was dealt on. `daily` is replaced only by a
-            // filing's own answer or by the refusal below, so it is still that
-            // day here — and the server refuses it once the day is over, rather
-            // than replaying the log against tomorrow's puzzle of this tier.
-            day,
+            // The day the sheet was dealt on, from the sheet: `daily` may
+            // already be the next day, read again after another tier's filing
+            // was refused. The server refuses this one too once its day is
+            // over, rather than replaying the log against tomorrow's puzzle of
+            // this tier.
+            day: sheet.day,
             // The handling the attempt was played under, not whatever is set now.
             handling: this.run?.handling ?? this.settings.value.handling,
             events,
@@ -1939,8 +1952,10 @@ export class App {
       // that the solve they walked away from never reached the board.
       this.toast(error instanceof ApiError ? error.message : "Could not file the sheet");
       // The day this sheet was dealt on is over. The server's sentence says
-      // so; reading the day again puts today's sheets on the front door and
-      // unlocks this one for practice, so "Play again" opens it unscored.
+      // so, and that is final for this sheet: nothing files it again, and
+      // since it carries its own day, nothing can file it under the next one.
+      // Reading the day again deals today's sheets from here on and unlocks
+      // this one for practice, so "Play again" opens it unscored.
       if (error instanceof ApiError && error.status === DAILY_STALE_STATUS) void this.refreshDaily();
     }
   }
@@ -2007,8 +2022,10 @@ export class App {
   }
 
   private toShareFields(snapshot: RunSnapshot, run?: StoredRun): ShareFields {
+    const sheet = this.sheet;
     return {
-      day: this.daily?.day ?? 0,
+      // The sheet's own day, for the reason `ScoredSheet.day` gives.
+      day: sheet?.scored ? sheet.day : (this.daily?.day ?? 0),
       puzzleId: this.sheet?.puzzle.id ?? 0,
       solved: snapshot.phase === "solved",
       attack: run?.attack ?? snapshot.attack,

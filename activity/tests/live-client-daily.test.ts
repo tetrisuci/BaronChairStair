@@ -4,7 +4,9 @@
  * - A daily hand-in sent into the restart is asked again, says
  *   "Reconnecting…" while it waits, and names the day it was dealt on — so a
  *   sheet solved across midnight is refused (409) rather than replayed against
- *   the next day's puzzle, and the client then reads the new day.
+ *   the next day's puzzle, and the client then reads the new day. The day is
+ *   the sheet's own, so a sheet dealt before that read is refused too, never
+ *   filed under the day the read brought in.
  * - The retries hold a filing open for up to fifteen seconds, which is long
  *   enough to go and play something else. A late answer must not put its
  *   result over whatever the player went to, and a second tier solved in that
@@ -221,6 +223,65 @@ describe("a daily hand-in the player walks away from", () => {
     expect(filedRun(inner, "medium")).not.toBeNull();
     // Medium is the sheet on screen, so its result is what is showing.
     expect(panelCaptions(booted.root)).toContain("Result");
+  });
+
+  test("a sheet dealt before a refusal read the new day is filed under its own day, refused, and never filed again", async () => {
+    // Midnight falls inside the restart. The easy retry is refused (409) and
+    // the client reads the new day — while the medium sheet it dealt from the
+    // old one is still on the board. Solving that must not file it under the
+    // new day, where the server would replay it against a puzzle the player
+    // never saw and record a miss.
+    const refusal = "That was yesterday's sheet — today's is ready.";
+    const restart = gate();
+    let today = DAY;
+    let dailies = 0;
+    let easyAttempts = 0;
+    const booted = await boot(async (request) => {
+      if (request.path === "/api/daily") {
+        dailies += 1;
+        return reply(200, dailyBody(today));
+      }
+      if (request.path !== "/api/daily/run") return reply(404, {});
+      const tier = request.body?.tier as DailyTier;
+      if (tier === "easy") {
+        easyAttempts += 1;
+        if (easyAttempts === 1) {
+          await restart.opened;
+          return proxyDown();
+        }
+      }
+      // The server's own rule (`requireHandInDay`): a day that is not today
+      // is refused, and any day that is today is replayed against today.
+      return request.body?.day === today ? reply(200, filedBody(true, tier)) : reply(409, { error: refusal });
+    });
+    const inner = internals(booted.app);
+
+    const easy = finishEasy(booted);
+    await settle();
+    inner.showHome();
+    inner.showDailyTier("medium");
+    today = DAY + 1;
+    restart.open();
+    await easy;
+    await settle();
+    expect(inner.daily?.day).toBe(DAY + 1);
+
+    await inner.finishRun({ ...inner.run!.snapshot(), phase: "solved" }, []);
+    await settle();
+
+    const filings = posts(booted.sent, "/api/daily/run").map((request) => [request.body?.tier, request.body?.day]);
+    expect(filings).toEqual([
+      ["easy", DAY],
+      ["easy", DAY],
+      ["medium", DAY],
+    ]);
+    expect(booted.toasts.filter((message) => message === refusal)).toHaveLength(2);
+    // Nothing was recorded against the new day's medium, so it is still open.
+    expect(filedRun(inner, "medium")).toBeNull();
+    // And the card under the refused sheet names the day it was dealt on.
+    expect(booted.root.querySelector(".share")?.textContent).toStartWith(`Puzzle #${DAY} `);
+    expect(inner.daily?.day).toBe(DAY + 1);
+    expect(dailies).toBeGreaterThanOrEqual(2);
   });
 });
 
