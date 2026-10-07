@@ -39,14 +39,27 @@ new release notes readable: the bot reads `changelog.json` once, when it starts,
 `/puzzle changelog` shows what it read, privately, to whoever asks. A note that
 describes the site or the game should not be readable before what it describes is
 verified, which is why the bot comes last; but it is not an announcement, and a
-rollback and another restart take it back. Whether this deploy needs the restart at all,
-from the repository root:
+rollback and another restart take it back.
+
+**Whether this deploy needs the restart is a question about the commit the running bot
+started on, not the one before this pull.** A deploy that stopped short of its bot step
+— a site that failed verification, a sync that would not finish — leaves the checkout
+ahead of the bot, and the next pull's own diff does not show what that one brought. So,
+from the repository root, find what the bot loaded:
 
 ```sh
-git diff --stat <the commit you noted before the pull> HEAD -- client changelog.json   # nothing listed: leave the bot running
+cat <the bot's STATUS_FILE>; echo     # "buildId": the commit it started on, when the deploy sets BUILD_ID
 ```
 
-*Restarting* below has the steps.
+Without a status file, or with `"buildId":"dev"`, use the commit written down when the
+bot was last started — **write it down at every restart**, as *Restarting* says. Then:
+
+```sh
+git diff --stat <the commit the running bot started on> HEAD -- client changelog.json   # nothing listed: leave the bot running
+```
+
+If you have neither, or are unsure, restart it: since `beta 0.17` a restart announces
+nothing and costs players only the moment it is down. *Restarting* below has the steps.
 
 **One exception: a bot that would start on code from before `beta 0.17`.** That code
 posts, at each server's next `/puzzle`, every release note the server has not been told
@@ -224,6 +237,14 @@ systemctl list-units '*bot*'; pm2 list; tmux ls; pgrep -af discord_bot.py
 Stop the old process before starting the new one. **Two instances on one token
 double-handle every command**, which presents as the bot answering everything twice.
 
+**Write down the commit it starts on**, wherever this box keeps its deploy notes — the
+next deploy's restart check, at the top of this file, compares against it when the bot
+has no status file or its `buildId` reads `dev`:
+
+```sh
+git log --oneline -1     # from the repository root, just before starting the bot
+```
+
 **This box runs a second bot, DIAYN, the club's internship finder.** It has its
 own service (the pm2 app or systemd unit named `diayn`), its own checkout, its own
 `.env` and its own token, and its repository's DEPLOY.md is its guide. Act on this
@@ -254,24 +275,67 @@ import, which costs nothing, and cannot fall out of step as modules are added.
 wait for everything:
 
 ```sh
-pgrep -af 'sync[-]archive'            # nothing: no /archive sync is running
+pgrep -f 'sync[-]archive' >/dev/null && echo "a sync is running" || echo "no sync"
 cat <the bot's STATUS_FILE>; echo     # if it sets one: "syncRunning":false and "inflight":0
 ```
 
 On SIGINT — pm2's own stop — or SIGTERM — systemd's, and `kill`'s — the bot reports
-`stopping`, answers every new command privately with "Restarting — try again in a few
-seconds." instead of running it, waits up to `BOT_SHUTDOWN_GRACE_S` (20 seconds by
+`stopping`, answers every new slash command privately (a `!` command gets the same
+words as a reply) with "Restarting — try again in a few seconds." instead of running
+it, waits up to `BOT_SHUTDOWN_GRACE_S` (20 seconds by
 default) for the commands already running, closes its Discord connection and exits 0.
 A second signal stops the wait. **`/archive sync` can run five minutes, and the stop
 does not wait for it**: stopped part-way, the sync loses its reply and its reload, and
 can leave rows synced but not published. So stop the bot only while no sync runs. The
 `pgrep` line sees the sync's own process whether or not the bot writes a status file;
-the brackets keep it from matching a shell that runs it.
+the brackets keep it from matching a shell that runs it. It prints no command line on
+purpose: the sync's own names who ran it (`--by discord:<name>`).
 
 **Never send the bot SIGHUP, SIGUSR1 or SIGUSR2.** It handles none of them, and SIGHUP
 kills it outright, with no grace. SIGHUP means "hand over" to the game; the bot cannot
 hand over, because one token delivers each command to one connection, so it only stops
 and starts.
+
+**Under pm2 or systemd, the stop must reach the bot's own process only.** Two commands
+run a child process: `/highlights` (and `!highlights`) runs the replay bridge,
+`bun server.ts`, for the length of the command, and `/archive sync` runs
+`bun run sync-archive`. pm2's stop signals every process in the app's tree unless the
+app has `treekill: false`, and systemd's default `KillMode=control-group` sends SIGTERM
+to every process in the unit. Either way the child is signalled at the same moment as
+the bot. The bridge has no handler and dies at once, so a `/highlights` the grace was
+waiting for fails with "Unexpected error" instead of finishing.
+
+**First check that the process the manager tracks is the bot itself**, because both
+settings below send the stop to that one process and no further:
+
+```sh
+ps -o args= -p "$(pm2 pid <the bot's name>)"                             # under pm2
+ps -o args= -p "$(systemctl show -p MainPID --value <the bot's unit>)"   # under systemd
+```
+
+It must show the venv's python running `client/discord_bot.py`. A shell, a script, or
+`bash -c 'source .venv/bin/activate && python client/discord_bot.py'` is a wrapper, and
+a wrapper does not pass the stop on. Under pm2 with `treekill: false` the bot then never
+hears it; once `kill_timeout` runs out pm2 SIGKILLs the wrapper's PID alone, the bot
+stays connected, and the restart starts a second bot on the same token. Under systemd
+with `KillMode=mixed` the wrapper dies on the SIGTERM and the SIGKILL that follows takes
+the bot with no grace at all. So point the entry at the interpreter first — in pm2, the
+venv python's absolute path as `script` with `args: ["client/discord_bot.py"]` and
+`interpreter: "none"`; in systemd, `ExecStart=<venv python's absolute path>
+client/discord_bot.py` — or make the wrapper `exec` the interpreter as its last line.
+Then:
+
+- **under pm2, `treekill: false`** — pm2 then signals the bot alone, and only the bot
+  decides when its children end: a running `/highlights` finishes inside the grace;
+- **under systemd, `KillMode=mixed`** in the unit's `[Service]` — SIGTERM then goes to
+  the bot's main process alone, and only the final SIGKILL, once the bot has exited or
+  `TimeoutStopSec` has run out, reaches whatever is left in the unit.
+
+Neither saves an `/archive sync`, which the stop does not wait for: it still loses its
+reply and its reload, as above. Until the bot's entry has one of these, stop it only
+when no child runs: the status file's `"syncRunning":false` and `"inflight":0` (which
+counts a `/highlights` while it runs), or, with no status file, the `pgrep` line above
+and nobody's `/highlights` in flight.
 
 **Under pm2, the app's `kill_timeout` must be longer than the grace** — 25000 for the
 default 20 seconds. pm2's own default is 1600 ms, after which it kills the bot part-way
@@ -280,16 +344,32 @@ without printing anything else (`pm2 jlist` on its own prints every app's enviro
 tokens included, so never print it):
 
 ```sh
-pm2 jlist | bun -e 'let a; try { a = JSON.parse(await Bun.stdin.text()); } catch { console.log("pm2 jlist printed no list (output withheld)"); process.exit(1); } for (const p of a) console.log(p.name, p.pm2_env?.kill_timeout ?? "unset (pm2 uses 1600)")'
+pm2 jlist | bun -e 'let a; try { a = JSON.parse(await Bun.stdin.text()); } catch { console.log("pm2 jlist printed no list (output withheld)"); process.exit(1); } for (const p of a) console.log(p.name, "kill_timeout:", p.pm2_env?.kill_timeout ?? "unset (pm2 uses 1600)", "treekill:", p.pm2_env?.treekill ?? "unset (pm2 uses true)")'
 ```
 
-Set it where the app is defined: `kill_timeout: 25000` in its ecosystem entry, or
-`--kill-timeout 25000` on the `pm2 start` that created it. pm2 takes either when it
-starts the app from that definition, which for an app already running means
-`pm2 delete <its name>` and starting it afresh. A fresh start also hands the app this
-shell's environment and PATH, so check `command -v bun` first (`/archive sync` needs it),
-then check the line above shows the new value, then `pm2 save`. Under systemd there is
-nothing to do: `TimeoutStopSec` defaults to 90 seconds.
+Set both where the app is defined: `kill_timeout: 25000` and `treekill: false` in its
+ecosystem entry, or `--kill-timeout 25000 --no-treekill` on the `pm2 start` that
+created it. pm2 takes them when it starts the app from that definition, which for an
+app already running means `pm2 delete <its name>` and starting it afresh. A fresh start
+also hands the app this shell's environment and PATH, so check `command -v bun` first
+(`/archive sync` needs it), then check the line above shows the new values, then
+`pm2 save`.
+
+Under systemd, `TimeoutStopSec` defaults to 90 seconds, longer than the grace, and
+`KillMode` is the one line to add. To see both without printing the unit's environment:
+
+```sh
+systemctl show <the bot's unit> -p KillMode -p TimeoutStopUSec    # KillMode=mixed
+```
+
+Add `KillMode=mixed` under `[Service]` (`sudo systemctl edit <the bot's unit>` keeps it
+in a drop-in), then `sudo systemctl daemon-reload`.
+
+**After every restart, `pgrep -af discord_bot.py` must list exactly one process**, and
+its PID must be the one the `ps` check above asks the manager for. A second line is
+either a wrapper still in front of the bot (go back to that check) or an old bot that
+outlived its stop and is still answering beside the new one. Stop the old one by its
+exact PID — `kill -TERM <pid>`, which gives it the grace — and never with `pkill -f`.
 
 **A new slash command needs a restart to appear.** The command tree is synced by
 `_sync_global_commands()`, called from the `on_ready` handler and nowhere else — there
@@ -371,11 +451,16 @@ and four of them fail silently:
   project the main `.sqlite` file has been measured at 4 KB against a 997 KB `-wal`
   beside it. A `cp` of the main file alone produced a database in which the tables did
   not exist.
-- **A restart waits for hand-ins now, and pm2 must let it.** On SIGINT or SIGTERM the
-  game stops listening, gives the requests in flight up to 8 seconds and exits 0; pm2's
-  default `kill_timeout` of 1600 ms kills it part-way. Give the game's pm2 app at least
-  10000. *Restarts and handovers* in that guide has this, the signals, and the status
-  file.
+- **A restart waits for hand-ins now, and the process manager must let it.** On SIGINT
+  or SIGTERM the game stops listening, gives the requests in flight up to 8 seconds and
+  exits 0; pm2's default `kill_timeout` of 1600 ms kills it part-way, so give the game's
+  pm2 app at least 10000. And the manager must run Bun on `server/index.ts`, with
+  `NODE_ENV=production` in its environment, not `bun run start`: the script runner
+  passes the stop on as well, so the game hears one stop twice. It now takes a repeat
+  inside 2 seconds as the same stop, but a stop handler from before that exits at
+  once on it, and run on the file the manager's PID is the game's own.
+  *Restarts and handovers* in that guide has this, the signals, the handover and the
+  status file.
 
 The `DATABASE_PATH` trap has a companion worth stating here: **Bun reads `.env` from the
 process working directory only.** It does not look beside the entrypoint and does not
