@@ -8,6 +8,9 @@
  *   else's filing.
  * - A duel closed by the server says why, once, and leaves duel mode — so
  *   pressing Duel again opens a new lobby instead of doing nothing.
+ * - A match that is already over keeps its result through the close that
+ *   follows it — a handover sends `matchOver`, its notice and the close in one
+ *   breath — with the rematch withdrawn and one quiet line on the card.
  * - A newer build on the server shows a quiet chip, never while the player is
  *   in the middle of a run, a rush or a duel, nor while a hand-in is still on
  *   its way — a reload then would throw away the very thing the retries are
@@ -22,6 +25,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { HandInOptions } from "../client/src/api";
+import { DEFAULT_DUEL_SETTINGS, type DuelEvent, type DuelView } from "../shared/duel";
 import { RUSH_DURATION_MS } from "../shared/rush";
 import { RUSH_GRACE_MS, RUSH_HAND_IN_MARGIN_MS } from "../client/src/game/rush";
 import {
@@ -35,6 +39,7 @@ import {
   type Internals,
   internals,
   panelCaptions,
+  PLAYER,
   posts,
   proxyDown,
   reply,
@@ -224,6 +229,178 @@ describe("a duel the server closes", () => {
 
     expect(booted.toasts).toEqual([]);
     expect(inner.mode).toBe("daily");
+  });
+});
+
+/**
+ * What the server sends a seat it is letting go of, as `server/going-away.ts`
+ * words it: a notice frame, then the 1012 close. Both, always — a test that
+ * drops the socket without the notice is testing a server that does not exist.
+ */
+const NOTICE = {
+  handover: "The server is updating. Open Duel again to carry on.",
+  restart: "The server is restarting, so this duel ended without a result.",
+} as const;
+
+const RIVAL = { id: "player-2", username: "Rival", avatarUrl: null };
+
+/** A two-seat duel as the server describes it; the match is over unless told otherwise. */
+function duelView(overrides: Partial<DuelView> = {}): DuelView {
+  return {
+    id: "duel-1",
+    phase: "over",
+    settings: DEFAULT_DUEL_SETTINGS,
+    hostId: PLAYER.id,
+    players: [
+      { ...PLAYER, connected: true, score: 2, wantsRematch: false },
+      { ...RIVAL, connected: true, score: 1, wantsRematch: false },
+    ],
+    round: 3,
+    rematchEndsAt: null,
+    poolSize: 40,
+    poolNeeded: 3,
+    ...overrides,
+  };
+}
+
+function frame(socket: FakeSocket, event: DuelEvent): void {
+  socket.onmessage?.({ data: JSON.stringify(event) });
+}
+
+/** Into a duel, signed in as {@link PLAYER}, with the match just won. */
+function wonMatch(booted: Booted, view: DuelView = duelView()): { inner: Internals; socket: FakeSocket } {
+  const inner = internals(booted.app);
+  inner.enterDuel();
+  const socket = FakeSocket.opened.at(-1)!;
+  frame(socket, { type: "welcome", playerId: PLAYER.id, open: [] });
+  frame(socket, { type: "matchOver", winnerId: PLAYER.id, reason: "solved", duel: view });
+  return { inner, socket };
+}
+
+/** The duel's result card, if it is on the page. */
+function resultCard(root: HTMLElement): HTMLElement | null {
+  return (
+    [...root.querySelectorAll<HTMLElement>(".panel")].find(
+      (panel) => panel.querySelector(".panel__caption")?.textContent === "Match over",
+    ) ?? null
+  );
+}
+
+function cardButton(card: HTMLElement, label: RegExp): HTMLButtonElement {
+  const found = [...card.querySelectorAll<HTMLButtonElement>("button")].find((button) =>
+    label.test(button.textContent ?? ""),
+  );
+  if (!found) throw new Error(`No ${label} button on the result card`);
+  return found;
+}
+
+describe("a duel the server closes after its match is over", () => {
+  test("for a handover: the result stays, one quiet line, no toast, and the rematch is gone", async () => {
+    const booted = await boot();
+    const { inner, socket } = wonMatch(booted);
+    expect(resultCard(booted.root)?.textContent).toContain("You win");
+
+    frame(socket, { type: "error", message: NOTICE.handover });
+    socket.drop(1012, "handover");
+
+    const card = resultCard(booted.root);
+    expect(card?.isConnected).toBe(true);
+    expect(card?.textContent).toContain("You win");
+    expect(card?.textContent).toContain("The server updated — open Duel again for a rematch.");
+    expect(card?.textContent).not.toContain(NOTICE.handover);
+    expect(cardButton(card!, /rematch/i).hidden).toBe(true);
+    expect(booted.toasts).toEqual([]);
+    // Left the way Back leaves it, bar the screen: Duel opens a new connection.
+    expect(inner.mode).toBe("daily");
+    expect(inner.duel).toBeNull();
+    const before = FakeSocket.opened.length;
+    inner.enterDuel();
+    expect(FakeSocket.opened.length).toBe(before + 1);
+    expect(inner.mode).toBe("duel");
+  });
+
+  test("a rematch already on offer is withdrawn when the server lets the result screen go", async () => {
+    // A finished duel waiting on a rematch is not a match in play, so the
+    // drain sends it away at once (`drainDuels`), notice and close.
+    const booted = await boot();
+    const { socket } = wonMatch(booted, duelView({ rematchEndsAt: Date.now() + 60_000 }));
+    const rematch = cardButton(resultCard(booted.root)!, /rematch/i);
+    expect(rematch.hidden).toBe(false);
+
+    frame(socket, { type: "error", message: NOTICE.handover });
+    socket.drop(1012, "handover");
+
+    expect(resultCard(booted.root)?.isConnected).toBe(true);
+    expect(rematch.hidden).toBe(true);
+    expect(booted.toasts).toEqual([]);
+  });
+
+  test("any other close keeps the result too, and says which it was", async () => {
+    const cases: { code: number; reason: string; notice: string | null; note: string }[] = [
+      { code: 1012, reason: "restart", notice: NOTICE.restart, note: "The server restarted — open Duel again for a rematch." },
+      { code: 1006, reason: "", notice: null, note: "Lost the connection — open Duel again for a rematch." },
+      { code: 1000, reason: "Opened elsewhere", notice: null, note: "The duel connection closed — open Duel again for a rematch." },
+    ];
+    for (const { code, reason, notice, note } of cases) {
+      const booted = await boot();
+      const { inner, socket } = wonMatch(booted);
+
+      if (notice) frame(socket, { type: "error", message: notice });
+      socket.drop(code, reason);
+
+      const card = resultCard(booted.root);
+      expect(card?.textContent).toContain("You win");
+      expect(card?.textContent).toContain(note);
+      // The restart notice says the duel "ended without a result" — about a
+      // match that has one on screen. It must not be left standing.
+      if (notice) expect(card?.textContent).not.toContain(notice);
+      expect(booted.toasts).toEqual([]);
+      expect(inner.mode).toBe("daily");
+    }
+  });
+
+  test("Back to 1v1 after the close opens a fresh connection rather than a dead lobby list", async () => {
+    const booted = await boot();
+    const { inner, socket } = wonMatch(booted);
+    frame(socket, { type: "error", message: NOTICE.handover });
+    socket.drop(1012, "handover");
+    const before = FakeSocket.opened.length;
+
+    cardButton(resultCard(booted.root)!, /^Back to 1v1$/).click();
+
+    expect(FakeSocket.opened.length).toBe(before + 1);
+    expect(inner.mode).toBe("duel");
+    expect(inner.duel).not.toBeNull();
+    expect(panelCaptions(booted.root)).toContain("1v1");
+  });
+
+  test("a refusal while the result is up is said on the card, and the rematch stays", async () => {
+    const booted = await boot();
+    const { socket } = wonMatch(booted, duelView({ rematchEndsAt: Date.now() + 60_000 }));
+
+    frame(socket, { type: "error", message: "There is no match to play again" });
+
+    const card = resultCard(booted.root)!;
+    expect(card.textContent).toContain("There is no match to play again");
+    expect(cardButton(card, /rematch/i).hidden).toBe(false);
+    expect(booted.toasts).toEqual([]);
+  });
+
+  test("a close before the match is over still leaves duel mode, as before", async () => {
+    const booted = await boot();
+    const inner = internals(booted.app);
+    inner.enterDuel();
+    const socket = FakeSocket.opened.at(-1)!;
+    frame(socket, { type: "welcome", playerId: PLAYER.id, open: [] });
+    frame(socket, { type: "duel", duel: duelView({ phase: "playing" }) });
+
+    frame(socket, { type: "error", message: NOTICE.restart });
+    socket.drop(1012, "restart");
+
+    expect(booted.toasts.at(-1)).toBe("The server restarted, so the duel ended.");
+    expect(inner.mode).toBe("daily");
+    expect(inner.duel).toBeNull();
+    expect(resultCard(booted.root)).toBeNull();
   });
 });
 

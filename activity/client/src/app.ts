@@ -50,7 +50,7 @@ import type { SubmissionBody } from "./ui/builder-state";
 import { createSittings, type Sittings } from "./sittings";
 import { createStartedPuzzles, type StartedPuzzles } from "./started";
 import { lockedPuzzleIds } from "./daily-lock";
-import { DuelClient } from "./game/duel";
+import { afterMatchNote, DuelClient, type DuelClosure } from "./game/duel";
 import {
   createDuelIntro,
   createDuelLobby,
@@ -410,7 +410,13 @@ export class App {
     this.duelResult = createDuelResult({
       onRematch: () => this.duel?.rematch(),
       onNewRoom: () => {
-        this.duel?.leave();
+        // A result kept through a close has no socket left to find a room on
+        // (see `keepDuelResult`), so this is pressing Duel: a new connection.
+        if (!this.duel) {
+          this.enterDuel();
+          return;
+        }
+        this.duel.leave();
         this.duelState = null;
         this.showDuelIntro();
       },
@@ -1262,6 +1268,15 @@ export class App {
         },
         onMatchOver: (winnerId, duel) => this.endDuel(winnerId, duel),
         onError: (message) => {
+          // Once the match is over the result card is the screen, and anything
+          // the server says then is about it: a rematch it will not deal, or —
+          // in the breath before it hangs up for a deploy — that it is going.
+          // Said on the card, where the close that follows replaces it, rather
+          // than toasted on top of the line that close is about to add.
+          if (this.duelState?.phase === "over") {
+            this.duelResult.say(message);
+            return;
+          }
           this.toast(message);
           // A refused rule change gets an error and no duel frame, so the form
           // is left showing rules the referee never accepted — and would keep
@@ -1273,8 +1288,15 @@ export class App {
         // all send on it), so the duel is left the way Back leaves it, and
         // pressing Duel opens a fresh connection. After a handover that is
         // the whole remedy: the new server is already listening.
+        //
+        // Except a match that has already ended, whose result is still being
+        // read: see `keepDuelResult`.
         onClosed: (closure) => {
           if (this.mode !== "duel") return;
+          if (this.duelState?.phase === "over") {
+            this.keepDuelResult(closure);
+            return;
+          }
           this.toast(closure.message);
           this.leaveDuel();
         },
@@ -1381,6 +1403,22 @@ export class App {
     this.duelResult.update(duel, self, winnerId);
     this.showRematchState(duel);
     this.showScreen({ wide: true, fill: true }, this.duelResult.element);
+  }
+
+  /**
+   * The socket closed under a match that had already ended.
+   *
+   * The result stays on screen. A server handing over keeps a match running to
+   * its end and then sends `matchOver` and closes in the same breath, so going
+   * Home here showed the result for one frame and nobody learned who won.
+   * Everything that needed the socket goes — the client, the rematch offer —
+   * and the mode with it, exactly as leaving would, so pressing Duel opens a
+   * fresh connection. One line on the card says so; no toast.
+   */
+  private keepDuelResult(closure: DuelClosure): void {
+    this.disposeActiveMode();
+    this.mode = "daily";
+    this.duelResult.withdrawRematch(afterMatchNote(closure));
   }
 
   private leaveDuel(): void {

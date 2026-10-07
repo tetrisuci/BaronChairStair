@@ -16,7 +16,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { describeDuelClose, DuelClient, type DuelClosure } from "../client/src/game/duel";
+import { afterMatchNote, describeDuelClose, DuelClient, type DuelClosure } from "../client/src/game/duel";
 import { SERVER_GOING_AWAY } from "../shared/runtime-status";
 import { DEFAULT_HANDLING } from "../shared/tetris/handling";
 
@@ -116,6 +116,20 @@ describe("describeDuelClose", () => {
       kind: "closed",
       message: "The duel connection closed",
     });
+  });
+});
+
+describe("afterMatchNote", () => {
+  // A finished match has its result on screen; the close only takes the
+  // rematch with it, so every line says how to get one, and none says the
+  // duel "ended" — it had.
+  test.each([
+    [SERVER_GOING_AWAY.code, SERVER_GOING_AWAY.handover, false, "The server updated — open Duel again for a rematch."],
+    [SERVER_GOING_AWAY.code, SERVER_GOING_AWAY.restart, false, "The server restarted — open Duel again for a rematch."],
+    [1006, "", true, "Lost the connection — open Duel again for a rematch."],
+    [1000, "Opened elsewhere", false, "The duel connection closed — open Duel again for a rematch."],
+  ])("close %i %p reads as a line under the result", (code, reason, failed, note) => {
+    expect(afterMatchNote(describeDuelClose(code, reason, failed))).toBe(note);
   });
 });
 

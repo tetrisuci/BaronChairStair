@@ -67,6 +67,26 @@ export function describeDuelClose(code: number, reason: string, failed: boolean)
   return { kind: "closed", message: "The duel connection closed" };
 }
 
+/**
+ * What the result card says once its socket has closed.
+ *
+ * Not {@link DuelClosure.message}, which is about a duel still in progress and
+ * tells a player it "ended" or to reopen "the lobby". A finished match has
+ * its result on screen, and a handover closes it straight after sending that
+ * result: the close takes nothing from it but the rematch, which needed the
+ * socket. So each line says why the socket went and how to play again.
+ */
+const AFTER_MATCH: Record<DuelClosure["kind"], string> = {
+  handover: "The server updated — open Duel again for a rematch.",
+  restart: "The server restarted — open Duel again for a rematch.",
+  lost: "Lost the connection — open Duel again for a rematch.",
+  closed: "The duel connection closed — open Duel again for a rematch.",
+};
+
+export function afterMatchNote(closure: DuelClosure): string {
+  return AFTER_MATCH[closure.kind];
+}
+
 export interface DuelCallbacks {
   readonly onFrame: (view: BoardView, run: RunSnapshot) => void;
   readonly onState: (duel: DuelView) => void;
