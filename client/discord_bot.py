@@ -752,7 +752,10 @@ if __name__ == "__main__":
     # pm2's SIGINT became a KeyboardInterrupt that cut every command short,
     # and SIGTERM ended the process outright. serve adds the polite stop and
     # the status file the deploy reads; docs/bot.md has the settings.
-    discord.utils.setup_logging()
+    # root=False is bot.run's own default (root_logger=False): discord.py's
+    # logger only. setup_logging's default, root=True, would also print every
+    # other library's INFO lines.
+    discord.utils.setup_logging(root=False)
     status = runtime_status.StatusWriter.from_environ(
         os.environ, read=LIFECYCLE.snapshot, sync_running=archive_commands.is_running)
     try:

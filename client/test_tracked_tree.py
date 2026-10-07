@@ -307,14 +307,30 @@ class TheBotIsWiredToItsLifecycle(unittest.TestCase):
                 lines["process"] = node.lineno
         self.assertLess(lines["refuse"], lines["process"])
 
-    def test_the_entry_point_serves_through_the_lifecycle_not_bot_run(self):
+    def _entry_point(self) -> ast.If:
         (main,) = [n for n in self.TREE.body if isinstance(n, ast.If)
                    and isinstance(n.test, ast.Compare)
                    and isinstance(n.test.left, ast.Name) and n.test.left.id == "__name__"]
-        calls = list(ast.walk(main))
+        return main
+
+    def test_the_entry_point_serves_through_the_lifecycle_not_bot_run(self):
+        calls = list(ast.walk(self._entry_point()))
         self.assertTrue(any(self._is_call(n, "lifecycle", "serve") for n in calls))
         self.assertFalse(any(self._is_call(n, "bot", "run") for n in calls),
                          "bot.run installs no signal handlers and writes no status")
+
+    def test_the_entry_point_sets_up_only_discords_logger_as_bot_run_did(self):
+        # bot.run calls setup_logging with root_logger=False, its default, so
+        # only discord.py's own logger printed. setup_logging's own default is
+        # root=True, which would put an INFO handler on the root logger and
+        # print every library's INFO lines as well.
+        setups = [n for n in ast.walk(self._entry_point())
+                  if isinstance(n, ast.Call) and ast.unparse(n.func) == "discord.utils.setup_logging"]
+        self.assertEqual(len(setups), 1, "the entry point does not set up discord.py's logging")
+        (setup,) = setups
+        roots = [k.value for k in setup.keywords if k.arg == "root"]
+        self.assertEqual([ast.unparse(r) for r in roots], ["False"],
+                         "setup_logging is not given root=False, as bot.run gave it")
 
 
 if __name__ == "__main__":
