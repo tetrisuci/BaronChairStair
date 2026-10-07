@@ -302,9 +302,13 @@ describe("the alternate solutions list", () => {
       (p: { id: number }) => p.id,
     );
     const first = await anArchivePuzzle();
+    // Never one this guest has already cleared: `server.test.ts` shares the
+    // guest, and its rush solves land clears on whichever puzzles it was dealt,
+    // so a fixed pick would read as unlocked whenever that file ran first.
+    const cleared: number[] = (await (await get("/api/archive")).json()).cleared;
     const far = archive
       .map((entry) => entry.id)
-      .filter((id) => !today.includes(id) && id !== first)
+      .filter((id) => !today.includes(id) && id !== first && !cleared.includes(id))
       .slice(-2);
     if (far.length < 2) throw new Error("the archive is too small to seed two puzzles");
     // The last tier: `server.test.ts` solves today's easy as this guest, and

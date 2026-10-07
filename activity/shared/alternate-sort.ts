@@ -118,9 +118,15 @@ function compare(a: SortableAlternate, b: SortableAlternate, order: AlternateOrd
   return b.found - a.found || b.tiebreak - a.tiebreak;
 }
 
-/** The rows in `order`. The input is left alone. */
+/**
+ * The rows in `order`. The input is left alone.
+ *
+ * A copy sorted, not `toSorted`: both client bundles target es2022, which
+ * lowers syntax but adds no library methods, and `toSorted` is ES2023 — absent
+ * from Safari before 16, so the list would throw on every draw there.
+ */
 export function sortAlternates<T extends SortableAlternate>(rows: readonly T[], order: AlternateOrder): T[] {
-  return rows.toSorted((a, b) => compare(a, b, order));
+  return [...rows].sort((a, b) => compare(a, b, order));
 }
 
 function isSort(value: unknown): value is AlternateSort {
