@@ -879,6 +879,24 @@ const RUN_COLUMNS = `
 // `bestStreak` in `../shared/streaks`, so that db.tetrisatuci.org — which may
 // not import this module — runs the same rules rather than a copy of them.
 
+/**
+ * How long a statement waits for another connection's write lock before it
+ * gives up with `SQLITE_BUSY`.
+ *
+ * SQLite's own default is not to wait at all, which was right while this
+ * process was the only writer. It is not any more. A deploy hands over on one
+ * port, so for a while two game processes have this file open at once — the
+ * new one migrating, pinning and seeding at boot while the old one is still
+ * filing hand-ins — and `tools/sync-archive.ts` writes here too. Without a wait,
+ * whichever of them arrives second fails outright: a boot that crashes, or a
+ * hand-in answered 500.
+ *
+ * Five seconds because every write here is short — a run, a clear, a pin — so
+ * any honest wait is milliseconds, and a lock still held after five seconds is
+ * something wrong that a client's error says better than a hung request.
+ */
+export const STORE_BUSY_TIMEOUT_MS = 5_000;
+
 export class Store {
   private readonly db: Database;
   private readonly identity: SiteIdentity;
@@ -914,6 +932,9 @@ export class Store {
   constructor(path: string, pastDays?: PastDays, options: StoreOptions = {}) {
     mkdirSync(dirname(path), { recursive: true });
     this.db = new Database(path, { create: true });
+    // First, before anything that can take a lock — switching to WAL is itself
+    // a write on a new file. See STORE_BUSY_TIMEOUT_MS for why there is a wait.
+    this.db.exec(`PRAGMA busy_timeout = ${STORE_BUSY_TIMEOUT_MS}`);
     this.db.exec("PRAGMA journal_mode = WAL");
     this.db.exec("PRAGMA foreign_keys = ON");
     this.db.run(SCHEMA);
