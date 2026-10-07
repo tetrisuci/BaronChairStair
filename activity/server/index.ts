@@ -84,6 +84,7 @@ import {
 } from "./duel";
 import { countSessions } from "./activity";
 import { readBuildId } from "./build-id";
+import { requireHandInDay } from "./hand-in-day";
 import { Lifecycle, serveWithLifecycle } from "./lifecycle";
 
 const LEADERBOARD_SIZE = 25;
@@ -389,6 +390,8 @@ app.post("/api/daily/run", requireSession, async (c) => {
   const { day, puzzles } = schedule.today();
 
   const body = await readJsonBody(c);
+  // Before the replay: a log played on yesterday's board proves nothing here.
+  requireHandInDay(body.day, day);
   const tier = readTier(body.tier);
   const puzzle = puzzles[tier];
   const handling = sanitizeHandling(body.handling);
