@@ -73,12 +73,19 @@ import {
 } from "./site-visibility-routes";
 import {
   type SocketData,
+  closeEveryDuel,
+  drainDuels,
+  duelCounts,
   duelSocket,
   puzzlesInPlayFor,
   openDuelSocket,
   sweepDuels,
   useArchive,
 } from "./duel";
+import { countSessions } from "./activity";
+import { readBuildId } from "./build-id";
+import { requireHandInDay } from "./hand-in-day";
+import { Lifecycle, serveWithLifecycle } from "./lifecycle";
 
 const LEADERBOARD_SIZE = 25;
 
@@ -108,6 +115,18 @@ const RECAP_SIZE = 100;
 const MINUTE = 60_000;
 /** A day of it: anything longer is a broken clock, not a long think. */
 const MAX_TOTAL_MS = 24 * 60 * MINUTE;
+
+/*
+ * Before the store, so the status file says "starting" while the database
+ * migrates and the archive loads — the part of a boot that takes time — rather
+ * than nothing at all. Only the entrypoint writes one: see `config.statusFile`.
+ */
+const lifecycle = new Lifecycle({
+  buildId: readBuildId(config.paths.clientBuild, config.buildId),
+  port: config.port,
+  statusFile: import.meta.main ? config.statusFile : null,
+  duels: { counts: duelCounts, drain: drainDuels, closeAll: closeEveryDuel },
+});
 
 /*
  * Store, then archive, then the backfill — and that order is load-bearing.
@@ -199,6 +218,9 @@ app.use("*", async (c, next) => {
 });
 
 app.use("/api/*", limitBodySize);
+// Who has been playing lately, for the status file: counted once a route has
+// verified the session, never off a token nobody checked.
+app.use("/api/*", countSessions(lifecycle.activity));
 
 // Signing in talks to Discord on our behalf, and verifying a run blocks the
 // event loop for tens of milliseconds, so those two get tighter limits than
@@ -262,8 +284,13 @@ app.get("/api/config", (c) =>
   c.json({
     clientId: config.discord.clientId,
     allowGuestPlay: config.allowGuestPlay,
+    // The build this server hands out, for an open page to compare with its own.
+    buildId: lifecycle.buildId,
   }),
 );
+
+// For the deploy and a person with curl: which build, which state. No database.
+app.get("/api/health", (c) => c.json(lifecycle.health()));
 
 /**
  * Trades the embedded SDK's authorization code for a session.
@@ -363,6 +390,8 @@ app.post("/api/daily/run", requireSession, async (c) => {
   const { day, puzzles } = schedule.today();
 
   const body = await readJsonBody(c);
+  // Before the replay: a log played on yesterday's board proves nothing here.
+  requireHandInDay(body.day, day);
   const tier = readTier(body.tier);
   const puzzle = puzzles[tier];
   const handling = sanitizeHandling(body.handling);
@@ -1215,6 +1244,9 @@ app.post("/api/rush/start", requireSession, async (c) => {
     ranked,
     startedAt: Date.now(),
   };
+  // A rush that may come back to be handed in for the next five minutes, which
+  // a deploy has to wait for: the ticket is the only record that it exists.
+  lifecycle.activity.mintedRushTicket();
 
   return c.json({
     ticket: await mintRushTicket(ticket),
@@ -1528,16 +1560,47 @@ function isDuelPath(pathname: string): boolean {
   return bare === DUEL_PATH;
 }
 
-export default {
+type GameServer = import("bun").Server<SocketData>;
+
+function route(request: Request, server: GameServer | undefined): Response | Promise<Response> {
+  const url = new URL(request.url);
+  if (isDuelPath(url.pathname)) return openDuelSocket(request, server, url);
+  return app.fetch(request, server);
+}
+
+/**
+ * The server's options, for `Bun.serve` here and for the tests.
+ *
+ * **Not the default export, deliberately.** Bun serves a default export with a
+ * `fetch` by itself, and this module also calls `Bun.serve` — it has to, to
+ * hold the server it stops listening on a drain. Both at once would be two
+ * listeners in one process, and with `reusePort` the second binds without a
+ * word of complaint and takes half the connections.
+ */
+export const entrypoint = {
   port: config.port,
+  /*
+   * The handover. A deploy starts the new release on this same port while this
+   * one is still serving — `SO_REUSEPORT` is what lets the second bind — then
+   * sends this one SIGHUP, and once it has stopped listening every new
+   * connection reaches the new one (`server/lifecycle.ts`). Nothing in front of
+   * the game is reconfigured, which is the point.
+   *
+   * db.tetrisatuci.org does the opposite, `reusePort: false`, on purpose
+   * (`puzzledb/server/main.ts`): it never hands over, so a second copy of it is
+   * always a mistake, and a refused bind is how that mistake gets noticed.
+   */
+  reusePort: true,
+  // Explicit, because in Bun 1.3 `development` also decides SO_REUSEPORT when
+  // `reusePort` is left out — see the same note in `puzzledb/server/main.ts` —
+  // and because a stack-trace error page is not something to serve players.
+  development: false,
   /**
    * `server` is optional so the test suite, which drives `fetch` with one
    * argument, still exercises every HTTP route.
    */
-  fetch(request: Request, server?: import("bun").Server<SocketData>) {
-    const url = new URL(request.url);
-    if (isDuelPath(url.pathname)) return openDuelSocket(request, server, url);
-    return app.fetch(request, server);
+  fetch(request: Request, server?: GameServer) {
+    return lifecycle.handle(request, server, route);
   },
   websocket: duelSocket,
   idleTimeout: 60,
@@ -1546,3 +1609,7 @@ export default {
   // actually holds, applied by the runtime before a handler ever sees the body.
   maxRequestBodySize: MAX_BODY_BYTES,
 };
+
+// Only as the entrypoint: a test imports this module for `entrypoint` and
+// serves it itself, on a port of its own, with no signals taken over.
+if (import.meta.main) serveWithLifecycle<SocketData>(lifecycle, entrypoint);

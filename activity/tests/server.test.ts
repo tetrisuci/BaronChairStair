@@ -40,7 +40,7 @@ beforeAll(async () => {
   process.env.ALLOW_GUEST_PLAY = "true";
   process.env.NODE_ENV = "test";
   delete process.env.DISCORD_CLIENT_SECRET;
-  const server = (await import("../server/index")).default;
+  const server = (await import("../server/index")).entrypoint;
   fetchApp = server.fetch;
 });
 

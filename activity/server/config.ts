@@ -7,6 +7,7 @@
 
 import { resolve } from "node:path";
 import { DEFAULT_TIME_ZONE } from "../shared/daily";
+import { ENV } from "../shared/runtime-status";
 
 function required(name: string): string {
   const value = process.env[name];
@@ -150,6 +151,21 @@ export const config = {
   trustProxy: process.env.TRUST_PROXY?.trim()
     ? process.env.TRUST_PROXY.trim() === "true"
     : !isProduction,
+  /**
+   * Where this process reports its state to the deploy (`STATUS_FILE`), or null
+   * for nowhere. See `shared/runtime-status.ts`.
+   *
+   * Read here, but only *written* by the process that is the entrypoint —
+   * `server/index.ts` checks — because `bun test` loads `activity/.env` too,
+   * and a test importing the server must never overwrite the status file of
+   * the game actually running on the box.
+   */
+  statusFile: process.env[ENV.statusFile]?.trim() ? resolve(process.env[ENV.statusFile]!.trim()) : null,
+  /**
+   * `BUILD_ID`, the fallback for the build id when the client build carries
+   * none of its own. See `server/build-id.ts`.
+   */
+  buildId: process.env[ENV.buildId]?.trim() || null,
   paths: {
     puzzles: resolve(import.meta.dir, "../data/puzzles.json"),
     database: process.env.DATABASE_PATH
