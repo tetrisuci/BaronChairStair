@@ -191,6 +191,28 @@ class AnybodyMaySync(Callback):
         self.assertEqual(self.reloads, 0)
         self.assertNotIn("Live now", interaction.followup.sent[0]["content"])
 
+    async def test_the_status_file_sees_a_sync_while_it_runs_and_not_after(self):
+        # `syncRunning` in the bot's status file is this, and a deploy reads
+        # it before deciding a restart would cut nobody short. It has to be
+        # true for the whole sync, the reload included, and false after.
+        seen = []
+
+        async def watched(dry_run, by, cwd=None, on_start=None):
+            on_start()
+            seen.append(("sync", archive_commands.is_running()))
+            return 0, "added 1"
+
+        async def reload_watched():
+            seen.append(("reload", archive_commands.is_running()))
+            return "**Live now:** #167"
+
+        self.assertFalse(archive_commands.is_running())
+        archive_commands.run_sync = watched
+        archive_commands.reload_activity = reload_watched
+        await CALLBACK(Interaction(User(1001)))
+        self.assertEqual(seen, [("sync", True), ("reload", True)])
+        self.assertFalse(archive_commands.is_running())
+
     async def test_a_sync_that_never_started_does_not_reload(self):
         async def missing_bun(dry_run, by, cwd=None, on_start=None):
             return -1, "`bun` is not on this bot's PATH"

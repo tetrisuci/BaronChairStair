@@ -92,6 +92,16 @@ EXIT_EDITED = 2
 #: than surviving.
 _running = asyncio.Lock()
 
+
+def is_running() -> bool:
+    """
+    Whether a sync holds the lock right now: the bot's status file reports
+    this as `syncRunning`. The lock is held from the moment the command is
+    deferred until the reload has answered, so it covers the sync and the
+    reload both — the whole span a restart would cut short.
+    """
+    return _running.locked()
+
 #: The bot's own database, assigned by `discord_bot.py` once
 #: `sync_window.init_db` has made the table — the arrangement
 #: `puzzle_commands.recap_db` uses. None when the table could not be made.
