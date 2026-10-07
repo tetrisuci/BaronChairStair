@@ -39,8 +39,9 @@ import {
   type SitePuzzleBody,
   STANDING_BOARDS,
 } from "../puzzledb/wire";
+import type { SiteAlternatesBody } from "../puzzledb/wire-alternates";
 import type { SitePlayersBody } from "../puzzledb/wire-profiles";
-import { fixtureSources, gameFixture, type GameFixture, NOW, PLAYERS, SERVERS, TODAY } from "./puzzledb-fixture";
+import { fixtureSources, gameFixture, type GameFixture, LINES, NOW, PLAYERS, SERVERS, TODAY } from "./puzzledb-fixture";
 
 const PRIVATE = { ...POLICY, hiddenServerKeys: new Set([SERVERS.quiet.key]) };
 const HIDDEN = PLAYERS.hidden;
@@ -186,6 +187,15 @@ describe("a player who hid", () => {
   test("moves no byte of the solves feed's steering: their solves are counted either way, and named in neither", () => {
     const path = bodyPathFor({ kind: "solves" })!;
 
+    expect(decoded(hidden.dataset.bodies.get(path)!)).toBe(decoded(shown.dataset.bodies.get(path)!));
+  });
+
+  test("moves no byte of the alternates list: a line carries no finder, so the line they found is listed either way", () => {
+    const path = bodyPathFor({ kind: "alternates" })!;
+    const listed = body<SiteAlternatesBody>(hidden.dataset, path).lines.map((line) => line.puzzleId);
+
+    // The hidden player's own line is in it, so a list that dropped it would be caught here.
+    expect(listed).toContain(LINES.hidden.puzzleId);
     expect(decoded(hidden.dataset.bodies.get(path)!)).toBe(decoded(shown.dataset.bodies.get(path)!));
   });
 

@@ -39,6 +39,7 @@ import {
   pageText,
   parsePage,
   type SiteLookup,
+  type SitePuzzleBody,
   UNAVAILABLE_TEXT,
 } from "../puzzledb/wire";
 import {
@@ -50,6 +51,7 @@ import {
   fixtureSources,
   gameFixture,
   type GameFixture,
+  LINES,
   MAY_PUBLISH,
   NOW,
   PLANTED,
@@ -737,6 +739,12 @@ describe("privacy over HTTP", () => {
     // The positive control: the walk reached the player data it was meant to scan.
     const everything = (await Promise.all(paths.map(async (path) => (await bytesOf(await app.request(path))).toString("latin1")))).join("\n");
     expect(MAY_PUBLISH.filter((value) => !everything.includes(value))).toEqual([]);
+    // And the lines it scanned for an exact `found_at` were there, each on its
+    // puzzle's page with its day: a day number alone would also match a day's body.
+    for (const line of [LINES.visible, LINES.hidden]) {
+      const page = (await (await app.request(`/data/puzzle/${line.puzzleId}.json`)).json()) as SitePuzzleBody;
+      expect(page.lines.map(({ day }) => day)).toEqual([line.day]);
+    }
   });
 });
 

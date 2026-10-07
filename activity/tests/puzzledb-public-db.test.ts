@@ -57,6 +57,7 @@ import {
   fixtureSources,
   gameFixture,
   type GameFixture,
+  LINES,
   MAY_PUBLISH,
   NOW,
   PLANTED,
@@ -366,6 +367,23 @@ describe("no personal data (full fixture)", () => {
 
     expect(MAY_PUBLISH.filter((value) => !served.includes(value))).toEqual([]);
     expect(dataset.data.players.map((player) => player.name)).toEqual([PLAYERS.unchosen.name, PLAYERS.visible.name]);
+  });
+
+  test("does print the day each published line was found, the one thing about when that leaves the game", () => {
+    // The positive control for the planted `found_at`: the scans above find no
+    // exact time, and here the day worked out of it is in the download.
+    const db = Database.deserialize(dataset.sqlite, { readonly: true });
+    try {
+      const days = db
+        .query<{ puzzleId: number; day: number }, []>("SELECT puzzle_id AS puzzleId, day FROM lines ORDER BY puzzle_id, position")
+        .all();
+      expect(days).toEqual([
+        { puzzleId: LINES.hidden.puzzleId, day: LINES.hidden.day },
+        { puzzleId: LINES.visible.puzzleId, day: LINES.visible.day },
+      ]);
+    } finally {
+      db.close();
+    }
   });
 
   test("has no cell holding any of them when read as text, which catches an id stored as INTEGER", () => {

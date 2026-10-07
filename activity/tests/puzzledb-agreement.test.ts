@@ -26,7 +26,7 @@ import { copyFileSync } from "node:fs";
 import { join } from "node:path";
 import { type PlayerProfile, Store } from "../server/db";
 import { CREDITED } from "../server/discovery-sql";
-import { DAILY_TIERS, startOfDay } from "../shared/daily";
+import { DAILY_TIERS, dayNumber, startOfDay } from "../shared/daily";
 import { buildDataset } from "../puzzledb/server/dataset";
 import { FIRST_TIERED_DAY, POLICY } from "../puzzledb/server/policy";
 import { openGameDatabase, readSnapshot } from "../puzzledb/server/snapshot";
@@ -257,18 +257,22 @@ describe("the all-time boards", () => {
 });
 
 describe("the lines", () => {
-  test("are the game's gallery, credited and live, less today's, in the gallery's order", () => {
+  test("are the game's gallery, credited and live, less today's, in the gallery's order, each on the game's own day", () => {
     const credited = creditedIds(trimmed);
     for (const puzzle of dataset.data.puzzles) {
       const game = store
         .solutionGallery(puzzle.id)
         .filter((line) => line.source === "player" && credited.has(line.solutionId))
         .map((line) => ({
+          // The day is the one thing about when a line was found that the site
+          // publishes; it must be the game's own calendar day for that moment.
+          day: dayNumber(line.foundAt, { timeZone: LA }),
           attack: line.attack,
           clears: line.clears,
           steps: line.placements.map(({ piece, cells, clear, attack }) => ({ piece, cells, clear, attack })),
         }));
-      const site = body<SitePuzzleBody>(`/data/puzzle/${puzzle.id}.json`).lines.map(({ attack, clears, steps }) => ({
+      const site = body<SitePuzzleBody>(`/data/puzzle/${puzzle.id}.json`).lines.map(({ day, attack, clears, steps }) => ({
+        day,
         attack,
         clears,
         steps,

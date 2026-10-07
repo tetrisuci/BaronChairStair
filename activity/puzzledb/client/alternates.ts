@@ -2,13 +2,15 @@
  * `/alternates`: every line players found through any puzzle — every way
  * through besides the maker's — as one table a reader can sort.
  *
- * **The order is the activity's own** (`shared/alternate-sort.ts`): the same
- * six sorts, the same natural direction for each, unrated puzzles last
- * whichever way the list runs, and the same fall-back for a tie, so the
- * activity's list and this one never put two lines in different orders. A row
- * maps onto `SortableAlternate` with the day it was found as `found` and its
- * puzzle and position as the tiebreak, which is unique per line and the same in
- * every build.
+ * **The rules of the order are the activity's own** (`shared/alternate-sort.ts`):
+ * the same six sorts, the same natural direction for each, unrated puzzles last
+ * whichever way the list runs, and the same rule for a tie. What each list
+ * feeds those rules is its own. A row here maps onto `SortableAlternate` with
+ * the day it was found as `found` and its puzzle and position as the tiebreak,
+ * which is unique per line and the same in every build. The site publishes a
+ * day and never a time, so lines found on one day are ordered here by puzzle
+ * and position, and within that day may come out in a different order from the
+ * activity's list, which knows more exactly when each was found.
  *
  * **A header sorts; pressed again, it turns the sort around**, and the button
  * beside the count turns it around too, saying which way it runs now. The
