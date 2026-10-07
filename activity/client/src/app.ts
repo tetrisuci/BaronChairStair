@@ -1255,6 +1255,11 @@ export class App {
         },
         onLobbies: (open) => this.duelIntro.setLobbies(open),
         onState: (duel) => {
+          // A finished match's frame only ever follows its `matchOver`, so
+          // one arriving with no result on screen is about a match the
+          // player has already walked away from — a rival's rematch request
+          // or exit crossing their own leave. It is not this screen's state.
+          if (duel.phase === "over" && !this.duelResult.element.isConnected) return;
           this.duelState = duel;
           // A room of its own, rather than the create form with its middle
           // hidden: setting a match up and waiting in one are different moments.
@@ -1294,7 +1299,7 @@ export class App {
           // in the breath before it hangs up for a deploy — that it is going.
           // Said on the card, where the close that follows replaces it, rather
           // than toasted on top of the line that close is about to add.
-          if (this.duelState?.phase === "over") {
+          if (this.readingDuelResult) {
             this.duelResult.say(message);
             return;
           }
@@ -1314,7 +1319,7 @@ export class App {
         // read: see `keepDuelResult`.
         onClosed: (closure) => {
           if (this.mode !== "duel") return;
-          if (this.duelState?.phase === "over") {
+          if (this.readingDuelResult) {
             this.keepDuelResult(closure);
             return;
           }
@@ -1424,6 +1429,17 @@ export class App {
     this.duelResult.update(duel, self, winnerId);
     this.showRematchState(duel);
     this.showScreen({ wide: true, fill: true }, this.duelResult.element);
+  }
+
+  /**
+   * The result card is the screen, and the match it shows is over.
+   *
+   * Both, because the phase alone outlives the card: Back to 1v1 takes the
+   * card down while the server can still be describing the finished match.
+   * Something said to a card that is not on the page is said to nobody.
+   */
+  private get readingDuelResult(): boolean {
+    return this.duelState?.phase === "over" && this.duelResult.element.isConnected;
   }
 
   /**

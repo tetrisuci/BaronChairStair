@@ -386,6 +386,37 @@ describe("a duel the server closes after its match is over", () => {
     expect(booted.toasts).toEqual([]);
   });
 
+  test("after Back to 1v1, a late frame for the finished match does not hide refusals or strand the intro", async () => {
+    // The server sends a finished duel's frame whenever the rival asks for a
+    // rematch or leaves (`dropRematch`), and one can cross the player's own
+    // leave in flight. It describes a match the player has walked away from:
+    // the card it is about is no longer on the page.
+    const booted = await boot();
+    const { inner, socket } = wonMatch(booted);
+    cardButton(resultCard(booted.root)!, /^Back to 1v1$/).click();
+    expect(panelCaptions(booted.root)).toContain("1v1");
+
+    const rivalAsks = duelView().players.map((seat) => ({
+      ...seat,
+      wantsRematch: seat.id === RIVAL.id,
+    }));
+    frame(socket, { type: "duel", duel: duelView({ players: rivalAsks }) });
+    frame(socket, { type: "error", message: "That lobby is full" });
+
+    expect(booted.toasts).toEqual(["That lobby is full"]);
+
+    frame(socket, { type: "error", message: NOTICE.handover });
+    socket.drop(1012, "handover");
+
+    // Left exactly as a close before the match is over leaves it: not a
+    // 1v1 intro with no socket under Open and Join.
+    expect(booted.toasts.at(-1)).toBe("The server is updating — open the lobby again");
+    expect(inner.mode).toBe("daily");
+    expect(inner.duel).toBeNull();
+    expect(panelCaptions(booted.root)).not.toContain("1v1");
+    expect(resultCard(booted.root)).toBeNull();
+  });
+
   test("a close before the match is over still leaves duel mode, as before", async () => {
     const booted = await boot();
     const inner = internals(booted.app);
