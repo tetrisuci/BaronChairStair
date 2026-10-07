@@ -234,7 +234,10 @@ export class FakeBox {
   }
 
   private pm2Start(ecosystem: string, name: string): CommandResult {
-    delete requireFresh.cache[ecosystem];
+    // The cache is keyed by the real path: on macOS the temporary home sits
+    // under /var, a link to /private/var, so the path as given misses it and
+    // every start would read the first ecosystem file ever loaded.
+    delete requireFresh.cache[requireFresh.resolve(ecosystem)];
     const { apps } = requireFresh(ecosystem) as { apps: EcosystemApp[] };
     const app = apps.find((candidate) => candidate.name === name);
     if (!app) return failed(`[PM2][ERROR] app ${name} is not in ${ecosystem}`);

@@ -27,7 +27,11 @@ thing.
   contract: see `--allow-cold`.)
 - **The site is replaced** (delete, start, wait for `/health`): it is
   stateless, and refuses to share its port, so a second or two of 502 is the
-  whole cost.
+  whole cost. Its `/health` names no build, so an ok proves only that
+  *something* answers the port — a site started by hand answers it while the
+  new one dies with EADDRINUSE. So the port must be silent before the new
+  site starts, and pm2 must show the new site online on one pid, and the same
+  pid 5 s after `/health` first said ok.
 - **The bot is restarted only if its files changed, and only when quiet.**
   One token cannot run two copies — they would answer every command twice —
   so the old process is deleted, confirmed gone, and only then is the new one
@@ -99,7 +103,7 @@ cd ~/bcs/releases/<sha>/activity && bun run deploy <command>
 | `prepare <ref>` | `git fetch`; resolve `<ref>` (a branch means `origin/<branch>`); add the worktree; link shared files; `bun install --frozen-lockfile` at the root and in `activity/`; `py_compile` of `client/*.py` and the bot's `unittest`; `bun x tsc --noEmit`; `bun test` (must report `0 fail`); `BUILD_ID=<sha> bun run build` (must record the sha in `dist/build.json`); `bun run build:puzzledb`; the marker. Stops at the first failure and shows its output. Re-running rechecks a failed release in place. |
 | `backup [<ref>]` | `VACUUM INTO shared/backups/<daily\|stats>-<UTC time>-<sha>.sqlite` from a read-only connection. Refuses to overwrite a file, and refuses if either database is not in `shared/`. |
 | `switch game <ref> [--allow-cold] [--force]` | The handover above. Timeouts: 90 s for the new slot to serve, `drainLimitMinutes` for the drain (progress every 30 s, saying "status stale" when the old slot has stopped writing). At the limit the old slot is stopped anyway, which ends its remaining matches with a "restarted" notice. If its process exits, or pm2 restarts it, mid-drain, it is stopped at once. |
-| `switch site <ref> [--force]` | Delete, start, wait up to 60 s for `/health` to answer `ok: true`. |
+| `switch site <ref> [--force]` | Delete; refuse, with nothing started, if anything still answers the site's port after 10 s; start; wait up to 60 s for `/health` to answer `ok: true`; then confirm through pm2 that the new app is `online` on a live pid and on the same pid 5 s later. A failed check leaves the new app in pm2 for its logs, runs no `pm2 save`, keeps `rollback site` recorded, and says how to find what holds the port (`ss -ltnp`, `lsof`). |
 | `switch bot <ref> [--now] [--force]` | If no `botFiles` file differs from the bot's release, records the new release without restarting. Otherwise waits up to `botQuietLimitMinutes` for quiet, deletes the old bot, checks its pid is gone, starts the new one and waits up to 120 s for `ready` on the new build. |
 | `deploy <ref> [--allow-cold] [--now] [--force]` | `prepare`, `backup`, then switch the game, the site and the bot. Stops at the first failure, saying what already moved and the `rollback` commands that move it back. |
 | `rollback game [--allow-cold]`, `rollback site`, `rollback bot [--now]` | Switches the app to the release `state.json` recorded as its previous one, with the same checks. Code goes back; data does not — that is what the backups are for. |

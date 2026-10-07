@@ -67,7 +67,11 @@ function productionBox(): FakeBox {
       box.setStatus(slotStatusFile(box.layout, name), (now) => gameStatus({ pid, buildId, updatedAt: now }));
     }
   };
-  box.probe = (url) => (url.endsWith("/health") ? { status: 200, buildId: null, body: '{"ok":true}' } : null);
+  // The site's port answers only while pm2 runs the site; the game's /api/health is only logged.
+  box.probe = (url) => {
+    const siteDown = url.endsWith(`:${box.config.sitePort}/health`) && box.processes.get(SITE)?.status !== "online";
+    return url.endsWith("/health") && !siteDown ? { status: 200, buildId: null, body: '{"ok":true}' } : null;
+  };
   const build = box.respond;
   box.respond = (command) => {
     if (command.argv.join(" ").endsWith("run build")) box.writeBuildId(command.env?.BUILD_ID ?? "");
