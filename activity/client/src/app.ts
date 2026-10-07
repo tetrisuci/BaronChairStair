@@ -50,7 +50,7 @@ import type { SubmissionBody } from "./ui/builder-state";
 import { createSittings, type Sittings } from "./sittings";
 import { createStartedPuzzles, type StartedPuzzles } from "./started";
 import { lockedPuzzleIds } from "./daily-lock";
-import { DuelClient } from "./game/duel";
+import { afterMatchNote, DuelClient, type DuelClosure } from "./game/duel";
 import {
   createDuelIntro,
   createDuelLobby,
@@ -70,10 +70,31 @@ import type { ShareFields } from "./ui/share";
 import { createUpdateNotice, type UpdateNotice } from "./ui/update-chip";
 
 /** A puzzle on the table, and whether playing it counts; see `App.sheet`. */
-interface Sheet {
+type Sheet = ScoredSheet | PracticeSheet;
+
+interface SheetBase {
   readonly puzzle: PuzzlePrompt;
   readonly solution: readonly SolutionStep[] | null;
-  readonly scored: boolean;
+}
+
+/** One of the day's tiers: a solve is filed. */
+interface ScoredSheet extends SheetBase {
+  readonly scored: true;
+  /**
+   * The day it was dealt on, which is the day it is filed under.
+   *
+   * Kept with the sheet rather than read from `daily` when the run ends. A
+   * refused filing reads the day again, and another tier dealt from the old
+   * day can still be on the board when it does: read from `daily`, that sheet
+   * was filed under the new day and replayed against a puzzle the player never
+   * saw, which records a miss on it.
+   */
+  readonly day: number;
+}
+
+/** Practice, a replay, a solution being stepped through: nothing is filed. */
+interface PracticeSheet extends SheetBase {
+  readonly scored: false;
 }
 
 const COUNTDOWN_TICK_MS = 1000;
@@ -410,7 +431,13 @@ export class App {
     this.duelResult = createDuelResult({
       onRematch: () => this.duel?.rematch(),
       onNewRoom: () => {
-        this.duel?.leave();
+        // A result kept through a close has no socket left to find a room on
+        // (see `keepDuelResult`), so this is pressing Duel: a new connection.
+        if (!this.duel) {
+          this.enterDuel();
+          return;
+        }
+        this.duel.leave();
         this.duelState = null;
         this.showDuelIntro();
       },
@@ -554,7 +581,7 @@ export class App {
     this.dailyTier = tier;
     const entry = this.dailyEntry;
     if (!entry) return;
-    this.sheet = { puzzle: entry.puzzle, solution: entry.solution, scored: true };
+    this.sheet = { puzzle: entry.puzzle, solution: entry.solution, scored: true, day: this.daily.day };
     this.credits.update(entry.puzzle);
     this.hud.setPuzzle(entry.puzzle);
     // Rebuilt rather than left alone: a filed tier puts the walkthrough in this
@@ -1228,6 +1255,11 @@ export class App {
         },
         onLobbies: (open) => this.duelIntro.setLobbies(open),
         onState: (duel) => {
+          // A finished match's frame only ever follows its `matchOver`, so
+          // one arriving with no result on screen is about a match the
+          // player has already walked away from — a rival's rematch request
+          // or exit crossing their own leave. It is not this screen's state.
+          if (duel.phase === "over" && !this.duelResult.element.isConnected) return;
           this.duelState = duel;
           // A room of its own, rather than the create form with its middle
           // hidden: setting a match up and waiting in one are different moments.
@@ -1262,6 +1294,15 @@ export class App {
         },
         onMatchOver: (winnerId, duel) => this.endDuel(winnerId, duel),
         onError: (message) => {
+          // Once the match is over the result card is the screen, and anything
+          // the server says then is about it: a rematch it will not deal, or —
+          // in the breath before it hangs up for a deploy — that it is going.
+          // Said on the card, where the close that follows replaces it, rather
+          // than toasted on top of the line that close is about to add.
+          if (this.readingDuelResult) {
+            this.duelResult.say(message);
+            return;
+          }
           this.toast(message);
           // A refused rule change gets an error and no duel frame, so the form
           // is left showing rules the referee never accepted — and would keep
@@ -1273,8 +1314,15 @@ export class App {
         // all send on it), so the duel is left the way Back leaves it, and
         // pressing Duel opens a fresh connection. After a handover that is
         // the whole remedy: the new server is already listening.
+        //
+        // Except a match that has already ended, whose result is still being
+        // read: see `keepDuelResult`.
         onClosed: (closure) => {
           if (this.mode !== "duel") return;
+          if (this.readingDuelResult) {
+            this.keepDuelResult(closure);
+            return;
+          }
           this.toast(closure.message);
           this.leaveDuel();
         },
@@ -1381,6 +1429,33 @@ export class App {
     this.duelResult.update(duel, self, winnerId);
     this.showRematchState(duel);
     this.showScreen({ wide: true, fill: true }, this.duelResult.element);
+  }
+
+  /**
+   * The result card is the screen, and the match it shows is over.
+   *
+   * Both, because the phase alone outlives the card: Back to 1v1 takes the
+   * card down while the server can still be describing the finished match.
+   * Something said to a card that is not on the page is said to nobody.
+   */
+  private get readingDuelResult(): boolean {
+    return this.duelState?.phase === "over" && this.duelResult.element.isConnected;
+  }
+
+  /**
+   * The socket closed under a match that had already ended.
+   *
+   * The result stays on screen. A server handing over keeps a match running to
+   * its end and then sends `matchOver` and closes in the same breath, so going
+   * Home here showed the result for one frame and nobody learned who won.
+   * Everything that needed the socket goes — the client, the rematch offer —
+   * and the mode with it, exactly as leaving would, so pressing Duel opens a
+   * fresh connection. One line on the card says so; no toast.
+   */
+  private keepDuelResult(closure: DuelClosure): void {
+    this.disposeActiveMode();
+    this.mode = "daily";
+    this.duelResult.withdrawRematch(afterMatchNote(closure));
   }
 
   private leaveDuel(): void {
@@ -1797,17 +1872,9 @@ export class App {
       return;
     }
 
-    // A scored sheet is only ever dealt from `daily`, so this is always there;
-    // the guard is for the type, and still leaves the card on screen.
-    const day = this.daily?.day;
-    if (day === undefined) {
-      this.presentVerdict(this.toShareFields(snapshot), null);
-      return;
-    }
-
     this.filingRuns = new Set([...this.filingRuns, finished]);
     try {
-      await this.fileDailyRun(sheet, day, snapshot, events, stillShowing);
+      await this.fileDailyRun(sheet, snapshot, events, stillShowing);
     } finally {
       this.filingRuns = new Set([...this.filingRuns].filter((run) => run !== finished));
     }
@@ -1825,8 +1892,7 @@ export class App {
    * held open by a restart would land its result over whatever they went to.
    */
   private async fileDailyRun(
-    sheet: Sheet,
-    day: number,
+    sheet: ScoredSheet,
     snapshot: RunSnapshot,
     events: readonly InputEvent[],
     stillShowing: () => boolean,
@@ -1843,11 +1909,12 @@ export class App {
             // against that board, so naming the wrong one fails to solve rather
             // than filing anything.
             tier: this.dailyTier,
-            // The day the sheet was dealt on. `daily` is replaced only by a
-            // filing's own answer or by the refusal below, so it is still that
-            // day here — and the server refuses it once the day is over, rather
-            // than replaying the log against tomorrow's puzzle of this tier.
-            day,
+            // The day the sheet was dealt on, from the sheet: `daily` may
+            // already be the next day, read again after another tier's filing
+            // was refused. The server refuses this one too once its day is
+            // over, rather than replaying the log against tomorrow's puzzle of
+            // this tier.
+            day: sheet.day,
             // The handling the attempt was played under, not whatever is set now.
             handling: this.run?.handling ?? this.settings.value.handling,
             events,
@@ -1901,8 +1968,10 @@ export class App {
       // that the solve they walked away from never reached the board.
       this.toast(error instanceof ApiError ? error.message : "Could not file the sheet");
       // The day this sheet was dealt on is over. The server's sentence says
-      // so; reading the day again puts today's sheets on the front door and
-      // unlocks this one for practice, so "Play again" opens it unscored.
+      // so, and that is final for this sheet: nothing files it again, and
+      // since it carries its own day, nothing can file it under the next one.
+      // Reading the day again deals today's sheets from here on and unlocks
+      // this one for practice, so "Play again" opens it unscored.
       if (error instanceof ApiError && error.status === DAILY_STALE_STATUS) void this.refreshDaily();
     }
   }
@@ -1969,8 +2038,10 @@ export class App {
   }
 
   private toShareFields(snapshot: RunSnapshot, run?: StoredRun): ShareFields {
+    const sheet = this.sheet;
     return {
-      day: this.daily?.day ?? 0,
+      // The sheet's own day, for the reason `ScoredSheet.day` gives.
+      day: sheet?.scored ? sheet.day : (this.daily?.day ?? 0),
       puzzleId: this.sheet?.puzzle.id ?? 0,
       solved: snapshot.phase === "solved",
       attack: run?.attack ?? snapshot.attack,
