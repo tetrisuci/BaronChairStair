@@ -73,7 +73,7 @@ export interface VerdictHandlers {
 }
 
 export interface VerdictOptions {
-  /** Practice puzzles are not filed, so they get no share slip or leaderboard. */
+  /** Practice puzzles are unscored, so they get no share slip or leaderboard. */
   readonly scored: boolean;
   /**
    * Whether this player has ever solved this puzzle — including just now.

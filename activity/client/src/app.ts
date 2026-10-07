@@ -597,7 +597,9 @@ export class App {
    *
    * Routed through `openArchivePuzzle` rather than `startRun`, because that is
    * the path that already means "play this one unscored": it sets
-   * `scored: false`, so the run cannot be filed and nothing on the board moves.
+   * `scored: false`, so the run is not scored and no leaderboard moves. A solve
+   * still goes to the clear route, which files the line it played: a second
+   * line found this way reaches the puzzle's Solutions like any other.
    * `lockedPuzzleIds` lets it through — a solved sheet is not locked, and the
    * lock exists to stop a *rehearsal before filing*, which is precisely the
    * thing that has already happened here.

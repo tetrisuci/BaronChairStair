@@ -239,8 +239,8 @@ arrives after something from a harder one.
 Every solved daily run, every solve of a puzzle opened from Explore, and every
 replay of a daily the player has already solved (*Play again*) is filed as a
 *solution* — the placements, the log they were derived from, and what the
-engine scored them. Both reach the puzzle's Solutions menu. A rush run files none:
-its segments are scored for the rush alone. A run whose line nobody had
+engine scored them. All three reach the puzzle's Solutions menu. A rush run files
+none: its segments are scored for the rush alone. A run whose line nobody had
 recorded before is a discovery, and the Discoveries board counts them.
 
 **When two solutions are the same solution** is the whole of it. Placements as

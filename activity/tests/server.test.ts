@@ -18,12 +18,15 @@ import { setupFor, solvingLog } from "./solving-log";
 import { readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-// Type-only, so nothing under `server/` is loaded before `beforeAll` has set the
-// environment `config` reads once at import.
+// Nothing imported here may load `server/config.ts`, which reads the
+// environment once, before `beforeAll` has set it: the app would then serve
+// `data/daily.sqlite` while this file reads and writes `DB`. `server/db.ts`
+// does not load it; `server/http.ts` does, through `auth.ts`, which is why
+// `GUEST_ID` comes from `shared/site`.
 import { Store, type StoredRushRun } from "../server/db";
 import { meetsTarget, type Puzzle, type PuzzlePrompt } from "../shared/puzzle";
 import { RUSH_DURATION_MS, RUSH_SEQUENCE_LENGTH, RUSH_SKIPS } from "../shared/rush";
-import { GUEST_ID } from "../server/http";
+import { GUEST_ID } from "../shared/site";
 import { SOLUTION_KEY_VERSION } from "../shared/solution-key";
 import { DEFAULT_HANDLING } from "../shared/tetris/handling";
 import { MAX_FRAMES, type InputEvent, verifyRun } from "../shared/tetris/verify";
