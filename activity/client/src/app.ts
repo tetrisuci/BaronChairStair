@@ -12,14 +12,15 @@ import { attachPointerPlay } from "./game/pointer";
 import type { Handling } from "@shared/tetris/handling";
 import type { InputEvent } from "@shared/tetris/verify";
 import type { Connection } from "./discord";
-import type { DailyEntry, DailyResponse, GalleryLine, RushState, StoredRun } from "./api";
+import type { DailyEntry, DailyResponse, GalleryLine, RetryNotice, RushState, StoredRun } from "./api";
 import type { ArchiveListing } from "@shared/puzzle";
 import { filterArchive } from "@shared/archive-filter";
-import { ApiError } from "./api";
+import { ApiError, DAILY_STALE_STATUS } from "./api";
+import { CLIENT_BUILD_ID, type PlayState } from "./build-id";
 import { InputRouter } from "./game/input";
 
 import { type LocalAction, keyName } from "@shared/keybinds";
-import { RushSession, type RushSummary } from "./game/rush";
+import { RushSession, rushHandInDeadline, type RushSummary } from "./game/rush";
 import { PuzzleRun, type RunSnapshot } from "./game/runner";
 import { createDailyBoard } from "./ui/daily-board";
 import { createDiscoveryBoard } from "./ui/discovery-board";
@@ -66,11 +67,14 @@ import {
 import { createSettingsDialog } from "./ui/settings-dialog";
 import { createSiteVisibilityRow } from "./ui/site-visibility-row";
 import type { ShareFields } from "./ui/share";
+import { createUpdateNotice, type UpdateNotice } from "./ui/update-chip";
 
 const COUNTDOWN_TICK_MS = 1000;
 /** Fast enough for a tenth-of-a-second stopwatch to look like one. */
 const CLOCK_TICK_MS = 100;
 const TOAST_MS = 2200;
+/** What a hand-in says while it waits out a restart. */
+const RECONNECTING = "Reconnecting…";
 
 /**
  * How long the verdict badge stays on a board that has a solution to read.
@@ -184,7 +188,13 @@ export class App {
    * stage and must never both be driving it.
    */
   private rush: RushSession | null = null;
-  private rushTicket: string | null = null;
+  /**
+   * The signed ticket the rush will be handed in with, and the last moment
+   * that is worth trying — kept until the server has answered the hand-in,
+   * not merely until it was sent, so a restart in between costs a retry
+   * rather than the run.
+   */
+  private rushTicket: { readonly token: string; readonly handInBy: number } | null = null;
   /** Whether the run on screen was a practice run, as opposed to the day's. */
   private rushPractice = false;
   private rushSkips = 0;
@@ -233,6 +243,10 @@ export class App {
   private dailyTier: DailyTier = "easy";
   private submitting = false;
   private toastTimer: ReturnType<typeof setTimeout> | null = null;
+  private countdownTimer: ReturnType<typeof setInterval> | null = null;
+
+  /** "Update ready", in the header, when the server is serving a build this page is not. */
+  private readonly updateNotice: UpdateNotice;
 
   /**
    * The sheet on the table. Today's puzzle is scored; an archive sheet picked
@@ -275,13 +289,25 @@ export class App {
    */
   private cleared: ReadonlySet<number> = new Set();
 
+  /**
+   * @param clientBuild this page's build, compiled in. A parameter so a test
+   * can be a real build; under `bun test` the compiled one is always dev,
+   * which never offers an update.
+   */
   constructor(
     private readonly root: HTMLElement,
     private readonly connection: Connection,
     private readonly settings: SettingsStore,
+    clientBuild: string = CLIENT_BUILD_ID,
   ) {
     this.started = createStartedPuzzles(connection.player.id);
     this.sittings = createSittings(connection.player.id);
+    this.updateNotice = createUpdateNotice({
+      clientBuild,
+      api: connection.api,
+      playState: () => this.playState(),
+      reload: () => window.location.reload(),
+    });
     this.input = new InputRouter(settings.value.keybinds, {
       onGameKey: (key, down) => {
         if (this.mode === "duel") this.duel?.input(key, down);
@@ -1076,6 +1102,7 @@ export class App {
     });
     this.input.setGameInputEnabled(true);
     this.builderRun.renderOnce();
+    this.updateNotice.refresh();
   }
 
   private stopBuilderTest(): void {
@@ -1155,7 +1182,11 @@ export class App {
   // ── 1v1 ────────────────────────────────────────────────────────────────────
 
   private enterDuel(): void {
-    if (this.mode === "duel") return;
+    // Both, not the mode alone. The mode used to outlive a closed socket, so
+    // after the server dropped one, pressing Duel again did nothing at all.
+    // A closed duel now leaves the mode (see `onClosed` below), and a mode
+    // with no client behind it is still not a duel to return early from.
+    if (this.mode === "duel" && this.duel) return;
     this.disposeActiveMode();
     this.mode = "duel";
     this.badge.hide();
@@ -1215,13 +1246,21 @@ export class App {
           // sending them. Put the last agreed rules back on screen.
           if (this.duelState?.phase === "lobby") this.showDuelLobby(this.duelState);
         },
-        onClosed: () => {
-          if (this.mode === "duel") this.toast("The duel connection closed");
+        // The server, or the network, ended it — once, with why. Whatever was
+        // on screen cannot continue without a socket (Open, Join and Rematch
+        // all send on it), so the duel is left the way Back leaves it, and
+        // pressing Duel opens a fresh connection. After a handover that is
+        // the whole remedy: the new server is already listening.
+        onClosed: (closure) => {
+          if (this.mode !== "duel") return;
+          this.toast(closure.message);
+          this.leaveDuel();
         },
       },
     );
     this.duel.connect();
     this.showDuelIntro();
+    this.updateNotice.refresh();
   }
 
   /** A round started: put the board back and hand the keyboard over. */
@@ -1393,7 +1432,9 @@ export class App {
       // at the day's own stack is unranked but it is not practice, and "play
       // again" after one should deal that stack rather than a random one.
       this.rushPractice = practice;
-      this.rushTicket = start.ticket;
+      // Now, on this clock: the moment the start landed is the ticket's own
+      // start as this page sees it — see `rushHandInDeadline`.
+      this.rushTicket = { token: start.ticket, handInBy: rushHandInDeadline(Date.now(), start.durationMs) };
       this.rushSkips = start.skips;
       this.rushRanked = start.ranked;
       this.mode = "rush";
@@ -1435,6 +1476,7 @@ export class App {
       replaceChildren(this.hud.right, this.hud.panels.goal, this.hud.panels.queue);
       this.showPlayfield();
       this.input.setGameInputEnabled(true);
+      this.updateNotice.refresh();
       this.toast(practice ? "Practice rush — go" : "Today's rush — go");
     } catch (error) {
       this.toast(error instanceof ApiError ? error.message : "Could not start a rush");
@@ -1448,18 +1490,29 @@ export class App {
 
   private async finishRush(summary: RushSummary): Promise<void> {
     const ticket = this.rushTicket;
+    // Which rush this hand-in is for. Retries can hold it open for seconds,
+    // and a player who presses Home in that time has left — and must not be
+    // pulled back to this one's result, or into the middle of the next rush.
+    const session = this.rush;
     this.input.setGameInputEnabled(false);
     this.stampBadge(summary.solved > 0, `${summary.solved} solved`);
     if (!ticket) return;
 
     try {
-      const response = await this.connection.api.submitRush({
-        ticket,
-        handling: this.settings.value.handling,
-        segments: summary.segments.map((segment) => ({ events: segment.events })),
-        timeToLastSolveMs: summary.timeToLastSolveMs,
-        skipsUsed: summary.skipsUsed,
-      });
+      const response = await this.connection.api.submitRush(
+        {
+          ticket: ticket.token,
+          handling: this.settings.value.handling,
+          segments: summary.segments.map((segment) => ({ events: segment.events })),
+          timeToLastSolveMs: summary.timeToLastSolveMs,
+          skipsUsed: summary.skipsUsed,
+        },
+        // Retried through a restart until the server would refuse it anyway:
+        // its own start, five minutes, and its grace. At the buzzer that is
+        // the whole of the grace; handed in early, the schedule runs out first.
+        { deadline: ticket.handInBy, onRetrying: this.showReconnecting },
+      );
+      this.clearReconnecting();
       // A rush files a clear for every puzzle it solved, so the set the
       // Solutions gate reads is stale the moment one ends. Re-read rather than
       // reconstructed: the server decided which segments counted.
@@ -1492,10 +1545,16 @@ export class App {
       });
       this.toast(error instanceof ApiError ? error.message : "Could not file the rush");
     } finally {
-      this.rush?.dispose();
-      this.rush = null;
-      this.rushTicket = null;
-      this.showScreen({}, this.rushResult.element, this.rushBoard.element, this.rushRecords.element);
+      // The ticket is let go only now, with the server's answer — or the
+      // last retry's failure — in hand. If the player has moved on,
+      // `disposeActiveMode` already put this rush away and the screen is
+      // theirs; the rush board above has still taken the new standings.
+      if (this.rush === session) {
+        this.rush?.dispose();
+        this.rush = null;
+        this.rushTicket = null;
+        this.showScreen({}, this.rushResult.element, this.rushBoard.element, this.rushRecords.element);
+      }
       void this.loadRushRecords();
     }
   }
@@ -1521,6 +1580,9 @@ export class App {
       this.settingsDialog.element,
       this.toastNode,
     );
+    // Ahead of the controls, where it reads as a remark about the page rather
+    // than one more place to go — and hidden until there is something to say.
+    this.masthead.mountControl(this.updateNotice.element);
     // First control, and the only one that is a way *back* rather than a way
     // somewhere else: every screen can be left without knowing which one it is.
     this.masthead.mountControl(
@@ -1638,6 +1700,8 @@ export class App {
     // after the first run fell back to the banded layout on a phone.
     // Idempotent where the playfield is already up: same nodes, one relayout.
     this.showPlayfield();
+    // A run is under way, so "Update ready" gets out of its way at once.
+    this.updateNotice.refresh();
   }
 
   /**
@@ -1675,10 +1739,14 @@ export class App {
       // ever solve of a puzzle used to miss the Solutions button it had just
       // earned by one round trip.
       if (snapshot.phase === "solved") {
-        void this.fileClear(sheet.puzzle, events).then(() => {
-          if (this.sheet?.puzzle.id === sheet.puzzle.id) {
-            this.presentVerdict(this.toShareFields(snapshot), null);
-          }
+        // Keyed on the run, not only the puzzle: the clear rides out a
+        // restart, so it can land seconds later, after "Try again" has dealt
+        // a new run of the same puzzle — and re-mounting this verdict then
+        // would put a result card over a board still being played.
+        const finished = this.run;
+        const stillShowing = () => this.run === finished && this.sheet?.puzzle.id === sheet.puzzle.id;
+        void this.fileClear(sheet.puzzle, events, stillShowing).then(() => {
+          if (stillShowing()) this.presentVerdict(this.toShareFields(snapshot), null);
         });
       }
       return;
@@ -1688,20 +1756,45 @@ export class App {
       return;
     }
 
+    // A scored sheet is only ever dealt from `daily`, so this is always there;
+    // the guard is for the type, and still leaves the card on screen.
+    const day = this.daily?.day;
+    if (day === undefined) {
+      this.presentVerdict(this.toShareFields(snapshot), null);
+      return;
+    }
+
     this.submitting = true;
     this.toast("Filing sheet…");
+    // Whether the filing needed a retry, for the one sentence that would
+    // otherwise misread one — see "already filed" below.
+    let retried = false;
     try {
-      const response = await this.connection.api.submitRun({
-        // Which tier this log was played on. The server replays it
-        // against that board, so naming the wrong one fails to solve rather
-        // than filing anything.
-        tier: this.dailyTier,
-        // The handling the attempt was played under, not whatever is set now.
-        handling: this.run?.handling ?? this.settings.value.handling,
-        events,
-        resets: snapshot.resets,
-        totalMs: snapshot.elapsedMs,
-      });
+      const response = await this.connection.api.submitRun(
+        {
+          // Which tier this log was played on. The server replays it
+          // against that board, so naming the wrong one fails to solve rather
+          // than filing anything.
+          tier: this.dailyTier,
+          // The day the sheet was dealt on. `daily` is replaced only by a
+          // filing's own answer or by the refusal below, so it is still that
+          // day here — and the server refuses it once the day is over, rather
+          // than replaying the log against tomorrow's puzzle of this tier.
+          day,
+          // The handling the attempt was played under, not whatever is set now.
+          handling: this.run?.handling ?? this.settings.value.handling,
+          events,
+          resets: snapshot.resets,
+          totalMs: snapshot.elapsedMs,
+        },
+        {
+          onRetrying: (notice) => {
+            retried = true;
+            this.showReconnecting(notice);
+          },
+        },
+      );
+      this.clearReconnecting();
       // Remember the filed sheet so returning from practice restores it.
       // Only the tier that was filed. The other two are untouched — and their
       // solutions must stay null, or filing the easy one would reveal them.
@@ -1745,7 +1838,11 @@ export class App {
         );
         void this.loadDiscoveries();
       }
-      if (!response.isFirst) this.toast("Today's sheet was already filed");
+      // Not after a retry. The likeliest reason a retry finds the sheet
+      // already filed is that the first attempt landed and its answer was
+      // lost in the restart — which is the player's run, filed once, and
+      // telling them otherwise would be about the wire, not about them.
+      if (!response.isFirst && !retried) this.toast("Today's sheet was already filed");
       // The server has just recorded a clear for this puzzle if the run solved
       // it. Without this the gate it opens stays shut on the client.
       if (response.run.solved) {
@@ -1754,8 +1851,26 @@ export class App {
     } catch (error) {
       this.presentVerdict(this.toShareFields(snapshot), null);
       this.toast(error instanceof ApiError ? error.message : "Could not file the sheet");
+      // The day this sheet was dealt on is over. The server's sentence says
+      // so; reading the day again puts today's sheets on the front door and
+      // unlocks this one for practice, so "Play again" opens it unscored.
+      if (error instanceof ApiError && error.status === DAILY_STALE_STATUS) void this.refreshDaily();
     } finally {
       this.submitting = false;
+    }
+  }
+
+  /**
+   * Reads the day again, after the server said the one on screen is over.
+   *
+   * Quiet on failure: the old day stays, and the next filing — or the next
+   * time the activity is opened — asks again.
+   */
+  private async refreshDaily(): Promise<void> {
+    try {
+      this.daily = await this.connection.api.daily();
+    } catch {
+      // The refusal has already been said; a second message would be noise.
     }
   }
 
@@ -1975,9 +2090,18 @@ export class App {
     }
   }
 
+  /**
+   * The practice clear itself (documented above `refreshCleared`). It rides
+   * out a restart like the other hand-ins, and quietly: no "Reconnecting…"
+   * over a board played for fun.
+   *
+   * @param stillShowing whether the run that solved is still the one on
+   * screen. A retry can land seconds late, after the player has moved on.
+   */
   private async fileClear(
     puzzle: PuzzlePrompt,
     events: readonly InputEvent[],
+    stillShowing: () => boolean,
   ): Promise<void> {
     try {
       const { solved, solution } = await this.connection.api.clearPuzzle(puzzle.id, {
@@ -1990,10 +2114,11 @@ export class App {
       // The answer this solve just earned. The sheet was fetched before the
       // puzzle was cleared, so it carries no solution and the reveal above it
       // did nothing — without this, cracking a board for the first time would
-      // show no walkthrough and the second visit would. Guarded on the board
-      // still being the one on screen: this lands a round trip later, and by
-      // then the player may have moved on.
-      if (solution && this.sheet?.puzzle.id === puzzle.id) {
+      // show no walkthrough and the second visit would. Guarded on the run
+      // still being the one on screen: this lands a round trip later — or a
+      // restart later — and by then the player may have moved on, or be
+      // playing it again, with the queue in the rail this would replace.
+      if (solution && stillShowing()) {
         this.attachWalkthrough(puzzle, solution);
       }
     } catch {
@@ -2203,6 +2328,9 @@ export class App {
     // A timer outliving the app it was started in fires against a badge that
     // is no longer on screen.
     this.clearBadgeLinger();
+    // The same for the once-a-second tick, which now reads the modes too.
+    if (this.countdownTimer !== null) clearInterval(this.countdownTimer);
+    this.countdownTimer = null;
   }
 
   private readonly relayout = (): void => {
@@ -2222,27 +2350,68 @@ export class App {
   };
 
   private startCountdown(): void {
-    const tick = () => {
-      if (this.daily) {
-        this.credits.setCountdown(formatCountdown(this.daily.resetsAt - Date.now()));
-      }
+    this.tickChrome();
+    this.countdownTimer = setInterval(() => this.tickChrome(), COUNTDOWN_TICK_MS);
+  }
+
+  /**
+   * The once-a-second refresh of the page's furniture: the countdown, and
+   * whether the update chip may show.
+   *
+   * The chip is *hidden* the moment a run, a rush, a duel or a test begins —
+   * each of those refreshes it itself — and *shown* again from here, up to a
+   * second after it ends. Showing late costs nothing; hooking
+   * every way a mode can end would be a dozen call sites, and the next one
+   * added would be the one that forgot.
+   */
+  private tickChrome(): void {
+    if (this.daily) {
+      this.credits.setCountdown(formatCountdown(this.daily.resetsAt - Date.now()));
+    }
+    this.updateNotice.refresh();
+  }
+
+  /** What a reload would interrupt, for the update chip to stay out of the way of. */
+  private playState(): PlayState {
+    return {
+      runPhase: this.run?.snapshot().phase ?? null,
+      rushLive: this.rush !== null,
+      duelOpen: this.duel !== null,
+      testing: this.builderRun !== null,
     };
-    tick();
-    setInterval(tick, COUNTDOWN_TICK_MS);
   }
 
   /**
    * Shows a message briefly. Any state the player could wonder about is
    * spoken here — a refusal, a clock, a mode — and each speaker owns its
    * wording; this only paints and times it.
+   *
+   * @param holdMs how long it stays. Longer only for "Reconnecting…", which
+   * has to outlast the wait it describes or it blinks out between retries.
    */
-  private toast(message: string): void {
+  private toast(message: string, holdMs: number = TOAST_MS): void {
     this.toastNode.textContent = message;
     this.toastNode.hidden = false;
     if (this.toastTimer) clearTimeout(this.toastTimer);
     this.toastTimer = setTimeout(() => {
       this.toastNode.hidden = true;
-    }, TOAST_MS);
+    }, holdMs);
+  }
+
+  /**
+   * Says "Reconnecting…" for as long as a hand-in waits to try again, plus
+   * the attempt itself; whatever the attempt brings back speaks over it.
+   */
+  private readonly showReconnecting = (notice: RetryNotice): void => {
+    this.toast(RECONNECTING, notice.delayMs + TOAST_MS);
+  };
+
+  /** Takes "Reconnecting…" down once the hand-in it was about has landed. */
+  private clearReconnecting(): void {
+    if (this.toastNode.textContent !== RECONNECTING) return;
+    if (this.toastTimer) clearTimeout(this.toastTimer);
+    this.toastTimer = null;
+    this.toastNode.hidden = true;
   }
 
   private showFatal(error: unknown): void {

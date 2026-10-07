@@ -19,6 +19,7 @@ import type {
   DuelView,
 } from "@shared/duel";
 import type { PuzzlePrompt, SolutionStep } from "@shared/puzzle";
+import { SERVER_GOING_AWAY } from "@shared/runtime-status";
 import type { Handling } from "@shared/tetris/handling";
 import type { GameKey, InputEvent } from "@shared/tetris/verify";
 import type { BoardView } from "../render/board";
@@ -26,6 +27,45 @@ import { PuzzleRun, type RunSnapshot } from "./runner";
 
 /** How often the opponent is told how far along we are. */
 const PROGRESS_EVERY_MS = 400;
+
+/** The code a socket closes with when it ends without a close frame: a dropped connection. */
+const ABNORMAL_CLOSURE = 1006;
+
+/**
+ * Why the duel socket closed, and the one sentence that says so.
+ *
+ * `handover` is the server closing a lobby because a new process is already
+ * listening: the player can open it again at once, on the new one. `restart`
+ * is the server stopping, which ends a match in progress. `lost` is the
+ * network or a server that died without saying goodbye; `closed` is anything
+ * else that ended cleanly — the server's "Opened elsewhere" among them.
+ */
+export interface DuelClosure {
+  readonly kind: "handover" | "restart" | "lost" | "closed";
+  readonly message: string;
+}
+
+/**
+ * Reads a close. `failed` is whether an `error` came first — browsers fire one
+ * before the `close` of any socket that did not close cleanly, and it carries
+ * nothing the close does not, so it is folded in here rather than reported as
+ * a second thing that happened.
+ *
+ * A 1012 without a reason this build knows is read as a restart: the server
+ * is going away either way, and "the duel ended" is the safer thing to have
+ * said if the lobby turns out to be gone.
+ */
+export function describeDuelClose(code: number, reason: string, failed: boolean): DuelClosure {
+  if (code === SERVER_GOING_AWAY.code) {
+    return reason === SERVER_GOING_AWAY.handover
+      ? { kind: "handover", message: "The server is updating — open the lobby again" }
+      : { kind: "restart", message: "The server restarted, so the duel ended." };
+  }
+  if (failed || code === ABNORMAL_CLOSURE) {
+    return { kind: "lost", message: "Lost the connection to the duel" };
+  }
+  return { kind: "closed", message: "The duel connection closed" };
+}
 
 export interface DuelCallbacks {
   readonly onFrame: (view: BoardView, run: RunSnapshot) => void;
@@ -53,8 +93,13 @@ export interface DuelCallbacks {
   ) => void;
   readonly onMatchOver: (winnerId: string | null, duel: DuelView) => void;
   readonly onLobbies: (open: readonly DuelView[]) => void;
+  /** The server refused something — a full lobby, a bad rule. The socket stays open. */
   readonly onError: (message: string) => void;
-  readonly onClosed: () => void;
+  /**
+   * The socket closed without being asked to — once per close, with why.
+   * A close this side asked for ({@link DuelClient.close}) is not reported.
+   */
+  readonly onClosed: (closure: DuelClosure) => void;
 }
 
 export class DuelClient {
@@ -82,12 +127,22 @@ export class DuelClient {
   connect(): void {
     const socket = new WebSocket(this.url);
     this.socket = socket;
+    // An `error` is always followed by a `close`, so it only marks the close
+    // as unclean. Toasting on both told the player about one event twice.
+    let failed = false;
     socket.onmessage = (message) => this.receive(JSON.parse(String(message.data)) as DuelEvent);
-    socket.onclose = () => {
-      this.disposeRun();
-      this.callbacks.onClosed();
+    socket.onerror = () => {
+      failed = true;
     };
-    socket.onerror = () => this.callbacks.onError("Lost the connection to the duel");
+    socket.onclose = (event) => {
+      // `close()` lets go of the socket before closing it, so a close this
+      // side asked for — leaving duel mode, a new duel replacing this one —
+      // lands here as somebody else's and says nothing.
+      if (this.socket !== socket) return;
+      this.socket = null;
+      this.disposeRun();
+      this.callbacks.onClosed(describeDuelClose(event.code, event.reason, failed));
+    };
   }
 
   private send(command: DuelCommand): void {
@@ -138,10 +193,12 @@ export class DuelClient {
     this.send({ type: "rematch" });
   }
 
+  /** Closes the socket on purpose. Reports nothing: the caller already knows. */
   close(): void {
     this.disposeRun();
-    this.socket?.close();
+    const socket = this.socket;
     this.socket = null;
+    socket?.close();
   }
 
   input(key: GameKey, down: boolean): void {
