@@ -55,6 +55,14 @@ export interface Pm2App {
   readonly autorestart: true;
   readonly watch: false;
   readonly kill_timeout?: number;
+  /**
+   * pm2 signals the whole process tree by default. The bot's polite stop
+   * waits for commands in flight, but `/archive sync` and `/highlights` run a
+   * child process, and a tree-wide SIGINT would end the child under the
+   * command the bot is waiting for. Off for the bot only: the game runs Bun on
+   * its file and starts no children.
+   */
+  readonly treekill?: false;
   readonly env: Readonly<Record<string, string>>;
 }
 
@@ -69,6 +77,7 @@ function botApp(ctx: Context, release: string): Pm2App {
     cwd: releaseDir(layout, release),
     ...COMMON,
     kill_timeout: BOT_KILL_TIMEOUT_MS,
+    treekill: false,
     env: {
       BUILD_ID: release,
       STATUS_FILE: botStatusFile(layout),

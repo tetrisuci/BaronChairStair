@@ -197,7 +197,7 @@ the next `pm2 start` of the file).
 
 | | script, args | cwd | environment |
 |---|---|---|---|
-| bot | `botPython client/discord_bot.py` | `releases/<sha>` | `BUILD_ID`, `STATUS_FILE=shared/run/bot.json`, `STATS_DB=shared/stats.db`, `DATABASE_PATH`, `PYTHONUNBUFFERED=1`, `PATH`; `kill_timeout` 30 s |
+| bot | `botPython client/discord_bot.py` | `releases/<sha>` | `BUILD_ID`, `STATUS_FILE=shared/run/bot.json`, `STATS_DB=shared/stats.db`, `DATABASE_PATH`, `PYTHONUNBUFFERED=1`, `PATH`; `kill_timeout` 30 s; `treekill: false`, so a stop reaches only the bot and its polite wait can let `/archive sync`'s and `/highlights`' child processes finish |
 | game slot | `bun run server/index.ts` | `releases/<sha>/activity` | `NODE_ENV=production`, `PORT=gamePort`, `BUILD_ID`, `STATUS_FILE=shared/run/<slot>.json`, `DATABASE_PATH`, `PATH`; `kill_timeout` 15 s |
 | site | `bun --env-file=shared/puzzledb.env puzzledb/server/main.ts` | `releases/<sha>/activity` | `PUZZLEDB_PORT=sitePort`, `BUILD_ID`, `DATABASE_PATH`, `PATH` |
 

@@ -34,6 +34,7 @@ describe("the apps", () => {
         autorestart: true,
         watch: false,
         kill_timeout: 30_000,
+        treekill: false,
         env: {
           BUILD_ID: OLD,
           STATUS_FILE: join(shared, "run", "bot.json"),
