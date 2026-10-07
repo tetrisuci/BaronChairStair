@@ -179,6 +179,15 @@ each release its own directory, see whether a restart would cut anybody off,
 and restart the bot without dropping a command on the floor. Every setting
 below is in [example.env](../example.env).
 
+**Set each one in exactly one place: the deploy's environment or `.env`, never
+both.** The bot loads the root `.env` with `override=True`, so a line there
+beats the process environment for every setting on this page, not only for
+the token. A `STATUS_FILE` in `.env` and a different one in pm2's environment,
+and the bot writes a file the deploy never reads, and the deploy waits on a
+status it reads as `unknown`; the same split on `STATS_DB` opens a database
+the deploy did not mean. `BUILD_ID` is the one that never goes in `.env` —
+below says why.
+
 ### Where its state lives — `STATS_DB`
 
 `stats.db` holds everything the bot remembers across a restart: the recap
@@ -218,8 +227,8 @@ runs the bot's writer and reads the result with the deploy's reader.
   look busy for ever.
 
 `BUILD_ID` is the release's commit, which the file reports. The deploy sets
-it in the process environment — **never in `.env`**, which overrides the
-environment and would name one build for every release. Unset, it reads
+it in the process environment — **never in `.env`**, which, as above, would
+beat the deploy's value and name one build for every release. Unset, it reads
 `dev`.
 
 ### How it stops — `BOT_SHUTDOWN_GRACE_S`
