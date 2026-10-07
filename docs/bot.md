@@ -259,6 +259,9 @@ grace. Three things outside the bot have to agree with this:
   command the grace was waiting for fails instead. With `treekill: false` pm2
   signals the bot alone; with `KillMode=mixed` systemd sends SIGTERM to the bot
   alone and keeps its SIGKILL for whatever is left once the bot has exited.
+  Both send the stop to the one process the manager tracks, so that process
+  must be the venv's python itself, not a shell or other wrapper around it:
+  [DEPLOY.md](../DEPLOY.md), *Restarting*, has the `ps` check to run first.
   Until then, stop the bot only when the status file says `inflight: 0`.
 - **`/archive sync` can run five minutes**, far past the grace, and the bot
   does not wait for it. Stop the bot only when the status file says

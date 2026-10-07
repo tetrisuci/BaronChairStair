@@ -231,7 +231,10 @@ Restart again after editing `.env`.
 The server stops politely. On SIGINT — pm2's own stop and restart — or SIGTERM —
 systemd's, and `kill`'s — it stops listening, gives the requests in flight up to 8
 seconds, closes every duel socket with "The server restarted, so the duel ended.",
-writes its last status and exits 0. A second signal exits at once. Around that:
+writes its last status and exits 0. A second signal more than 2 seconds after the first
+exits at once: the duels still get that message and the status is still written, but
+the requests in flight are not waited for. One inside those 2 seconds is the same stop
+arriving twice, and changes nothing. Around that:
 
 - **Hand-ins ride out the gap.** A page built from this code retries a daily filing, a
   rush hand-in or a practice clear on a lost connection, a 502, 503 or 504, for about
@@ -267,11 +270,24 @@ process, and it passes a stop signal on to the game. pm2's stop signals every pr
 the app's tree as well (its `treekill`, on unless turned off), and so does systemd's
 (its default `KillMode=control-group` signals every process in the unit). So one
 `pm2 restart` or `systemctl restart` reaches the game twice, from the manager and again
-from the script runner, and the game can take the second as the "exit now" a second
-signal means: no 8 seconds for the hand-ins in flight, duel sockets cut as a lost
-connection rather than closed with the restart's message, and no last status. When it
-happens, the log says `[lifecycle] a second stop signal: exiting now` on an ordinary
-restart.
+from the script runner, well under a millisecond apart.
+
+The game now treats a repeat inside 2 seconds as the same stop: the log says
+`[lifecycle] the same stop signal again, … ms later: still stopping`, and the stop goes
+on as above. A stop handler from before that window took the repeat as the "exit now" a
+second signal means — no 8 seconds for the hand-ins in flight, duel sockets cut as a
+lost connection rather than closed with the restart's message, and no last status — and
+its log said `[lifecycle] a second stop signal: exiting now` on an ordinary restart.
+Run on the file all the same, because the repeat is not the only reason:
+
+- **one stop, once** — nothing depends on the 2-second window, and a real second stop
+  still means "exit now";
+- **the PID the manager reports is the game** — `pm2 pid` and systemd's `MainPID` name
+  the server itself, the same PID as the status file's `pid`, so a signal sent by exact
+  PID, a handover's included, reaches the game rather than a runner that may or may not
+  pass it on;
+- **`NODE_ENV` is set where you can see it**, in the manager's entry, rather than
+  inside a script.
 
 `NODE_ENV=production` belongs in the manager's environment because the `start` script
 is the only place this repository sets it, and without it the server runs as a
@@ -299,12 +315,20 @@ ExecStart=<bun's absolute path> run server/index.ts
 `interpreter: "none"` is for the reason [`puzzledb/DEPLOY.md`](puzzledb/DEPLOY.md), *Start
 it under pm2*, gives: pm2 6 and later wrap a Bun interpreter in a loader of their own.
 pm2 takes a changed entry only on a fresh start, so this is `pm2 delete <its name>` and
-a start from the entry, at the quiet moment below. To see what the manager runs now:
+a start from the entry, at the quiet moment below. To see what the manager runs, before
+the change and again after it:
 
 ```sh
 ps -o args= -p "$(pm2 pid <the game's name>)"       # bun run server/index.ts — not bun run start
 systemctl show <the game's unit> -p ExecStart        # under systemd instead
 ```
+
+**Under pm2, finish with `pm2 save`.** Until then pm2's saved list still holds the old
+`bun run start` entry, with its old `kill_timeout` and no `STATUS_FILE`, and the next
+reboot's `pm2 resurrect` quietly brings it back. `pm2 save` records every app `pm2 list`
+shows, so first check that it lists the game and everything else on the box — the bot,
+the site, DIAYN — the way you want them. Under systemd the unit file is the saved
+definition: `sudo systemctl daemon-reload` after editing it, before the restart.
 
 Run on the file, the game has no child process, so pm2's `treekill` and systemd's
 `KillMode` make no difference to it. **Only if an entry must keep `bun run start` for

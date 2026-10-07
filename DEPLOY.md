@@ -280,8 +280,9 @@ cat <the bot's STATUS_FILE>; echo     # if it sets one: "syncRunning":false and 
 ```
 
 On SIGINT — pm2's own stop — or SIGTERM — systemd's, and `kill`'s — the bot reports
-`stopping`, answers every new command privately with "Restarting — try again in a few
-seconds." instead of running it, waits up to `BOT_SHUTDOWN_GRACE_S` (20 seconds by
+`stopping`, answers every new slash command privately (a `!` command gets the same
+words as a reply) with "Restarting — try again in a few seconds." instead of running
+it, waits up to `BOT_SHUTDOWN_GRACE_S` (20 seconds by
 default) for the commands already running, closes its Discord connection and exits 0.
 A second signal stops the wait. **`/archive sync` can run five minutes, and the stop
 does not wait for it**: stopped part-way, the sync loses its reply and its reload, and
@@ -302,7 +303,27 @@ run a child process: `/highlights` (and `!highlights`) runs the replay bridge,
 app has `treekill: false`, and systemd's default `KillMode=control-group` sends SIGTERM
 to every process in the unit. Either way the child is signalled at the same moment as
 the bot. The bridge has no handler and dies at once, so a `/highlights` the grace was
-waiting for fails with "Unexpected error" instead of finishing. So:
+waiting for fails with "Unexpected error" instead of finishing.
+
+**First check that the process the manager tracks is the bot itself**, because both
+settings below send the stop to that one process and no further:
+
+```sh
+ps -o args= -p "$(pm2 pid <the bot's name>)"                             # under pm2
+ps -o args= -p "$(systemctl show -p MainPID --value <the bot's unit>)"   # under systemd
+```
+
+It must show the venv's python running `client/discord_bot.py`. A shell, a script, or
+`bash -c 'source .venv/bin/activate && python client/discord_bot.py'` is a wrapper, and
+a wrapper does not pass the stop on. Under pm2 with `treekill: false` the bot then never
+hears it; once `kill_timeout` runs out pm2 SIGKILLs the wrapper's PID alone, the bot
+stays connected, and the restart starts a second bot on the same token. Under systemd
+with `KillMode=mixed` the wrapper dies on the SIGTERM and the SIGKILL that follows takes
+the bot with no grace at all. So point the entry at the interpreter first — in pm2, the
+venv python's absolute path as `script` with `args: ["client/discord_bot.py"]` and
+`interpreter: "none"`; in systemd, `ExecStart=<venv python's absolute path>
+client/discord_bot.py` — or make the wrapper `exec` the interpreter as its last line.
+Then:
 
 - **under pm2, `treekill: false`** — pm2 then signals the bot alone, and only the bot
   decides when its children end: a running `/highlights` finishes inside the grace;
@@ -343,6 +364,12 @@ systemctl show <the bot's unit> -p KillMode -p TimeoutStopUSec    # KillMode=mix
 
 Add `KillMode=mixed` under `[Service]` (`sudo systemctl edit <the bot's unit>` keeps it
 in a drop-in), then `sudo systemctl daemon-reload`.
+
+**After every restart, `pgrep -af discord_bot.py` must list exactly one process**, and
+its PID must be the one the `ps` check above asks the manager for. A second line is
+either a wrapper still in front of the bot (go back to that check) or an old bot that
+outlived its stop and is still answering beside the new one. Stop the old one by its
+exact PID — `kill -TERM <pid>`, which gives it the grace — and never with `pkill -f`.
 
 **A new slash command needs a restart to appear.** The command tree is synced by
 `_sync_global_commands()`, called from the `on_ready` handler and nowhere else — there
@@ -429,7 +456,9 @@ and four of them fail silently:
   exits 0; pm2's default `kill_timeout` of 1600 ms kills it part-way, so give the game's
   pm2 app at least 10000. And the manager must run Bun on `server/index.ts`, with
   `NODE_ENV=production` in its environment, not `bun run start`: the script runner
-  passes the stop on as well, and a stop that arrives twice can exit at once.
+  passes the stop on as well, so the game hears one stop twice. It now takes a repeat
+  inside 2 seconds as the same stop, but a stop handler from before that exits at
+  once on it, and run on the file the manager's PID is the game's own.
   *Restarts and handovers* in that guide has this, the signals, the handover and the
   status file.
 

@@ -493,9 +493,10 @@ somebody's match rather than a place on a board.
 A deploy either restarts the server or hands it over to a new one on the same port
 ([DEPLOY.md](DEPLOY.md), *Restarts and handovers*). What a player sees:
 
-- **A hand-in waits it out.** Finishing the daily, a rush or a practice clear while
-  the server is away shows "Reconnecting…" and tries again for about fifteen seconds
-  — a rush only as long as its own grace allows — before failing as it used to. A
+- **A hand-in waits it out.** Handing in the daily or a rush while the server is away
+  shows "Reconnecting…" and tries again for about fifteen seconds — a rush only as
+  long as its own grace allows — before failing as it used to. A practice clear
+  tries again the same way, without the message. A
   sheet solved before the daily reset and handed in after it is refused with "That
   day is over — today's puzzles are new. Open the daily again.", rather than judged
   against the new day's puzzle.
