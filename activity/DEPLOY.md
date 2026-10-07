@@ -31,9 +31,14 @@ On a box moved to the release layout — pm2 runs the game from
 | *Rolling back* | `rollback game`: code only, no rebuild, by the same handover. Data goes back only from `shared/backups/` |
 
 The ordering rule still holds: `switch game` is the start of the new code, so confirm
-the backfill (verification step 2) before `bun run puzzles` or any accepting. The whole
-deploy is `bun run deploy deploy <ref>` — prepare, backup, then the game, the site and
-the bot, in that order — with `--dry-run` first, inside `tmux`. Which of the game's two
+the backfill (verification step 2) before `bun run puzzles` or any accepting. A deploy
+goes a step at a time, inside `tmux`, `--dry-run` first: `prepare`, `backup`,
+`switch game`, then this guide's *Verification*; only once that has passed, the site's
+switch and its checks, and the bot's last (the tool's README, *A deploy, in the guides'
+order*, has the commands). `bun run deploy deploy <ref>` runs the same switches back to
+back, with only the tool's own checks between them — the new slot's status file, the
+site's `/health` — so it moves the site and restarts the bot before anyone has run
+*Verification*. Do the stricter thing and switch one at a time. Which of the game's two
 pm2 names in `shared/deploy.json` is live, `bun run deploy status` says. Each release has
 its own `dist/`, its own `.env` link and its own link to `shared/solutions.json`, so
 nothing is rebuilt under a running server.

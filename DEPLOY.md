@@ -71,16 +71,21 @@ not through *Restarting* below. Its README has the detail; what it means for the
 | The root `.env` | `shared/bot.env`, linked into each release. It must not set `DATABASE_PATH`, `BUILD_ID`, `STATUS_FILE`, `STATS_DB`, `PATH` or `PUZZLE_ACTIVITY_DIR`: the deploy sets them, and the bot loads `.env` over them. `prepare` and `switch bot` refuse a file that does |
 | `stats.db` at the repository root | `shared/stats.db`, which the deploy names in `STATS_DB` |
 
-`bun run deploy deploy <ref>` switches the bot last, after the game and the site, which
-is this guide's order. To switch it alone, from the current release's `activity/`:
-`bun run deploy --dry-run switch bot <ref>`, then the same without `--dry-run`. Either
-way, *Verifying the bot* below still applies, and the pm2 name is the one in
-`shared/deploy.json`, never DIAYN's.
+**This guide's order is the switches one at a time, with the checks between them:**
+`prepare`, `backup`, `switch game` and the activity's *Verification*, `switch site` and
+the site's *Verify it publicly*, and only then `switch bot`, from the current release's
+`activity/`, `--dry-run` first each time (the tool's README, *A deploy, in the guides'
+order*, has the commands). `bun run deploy deploy <ref>` runs the same switches back to
+back, with only the tool's own checks between them, so it restarts the bot, and makes
+the new release notes readable, before anyone has verified the game or the site. Do the
+stricter thing and switch one at a time. Either way, *Verifying the bot* below still
+applies, and the pm2 name is the one in `shared/deploy.json`, never DIAYN's.
 
 **`/archive sync` runs the activity's `sync-archive` from the bot's own release**, which
 moves only when the bot is switched. A release that changes `activity/tools/sync-archive.ts`,
-or what it imports, reaches `/archive sync` only with `switch bot <ref> --force` (the
-tool's README, *Known limits*).
+or what it imports, reaches `/archive sync` with `switch bot <ref> --force`, or by adding
+those paths to `botFiles` in `shared/deploy.json`, after which a plain `switch bot`
+restarts the bot for them (the tool's README, *Known limits*).
 
 A box not yet migrated follows this guide as it stands, and moves by the tool's
 *First-time migration*. The manual steps below stay the path for a box not yet

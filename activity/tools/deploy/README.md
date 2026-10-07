@@ -112,7 +112,7 @@ bun run deploy <command>
 | `switch game <ref> [--allow-cold] [--force]` | The handover above. Timeouts: 90 s for the new slot to serve, `drainLimitMinutes` for the drain (progress every 30 s, saying "status stale" when the old slot has stopped writing). At the limit the old slot is stopped anyway, which ends its remaining matches with a "restarted" notice. If its process exits, or pm2 restarts it, mid-drain, it is stopped at once. |
 | `switch site <ref> [--force]` | Delete; refuse, with nothing started, if anything still answers the site's port after 10 s; start; wait up to 60 s for `/health` to answer `ok: true`; then confirm through pm2 that the new app is `online` on a live pid and on the same pid 5 s later. A failed check leaves the new app in pm2 for its logs, runs no `pm2 save`, keeps `rollback site` recorded, and says how to find what holds the port (`ss -ltnp`, `lsof`). |
 | `switch bot <ref> [--now] [--force]` | If no `botFiles` file differs from the bot's release, records the new release without restarting. Otherwise waits up to `botQuietLimitMinutes` for quiet, deletes the old bot, checks its pid is gone, starts the new one and waits up to 120 s for `ready` on the new build. |
-| `deploy <ref> [--allow-cold] [--now] [--force]` | `prepare`, `backup`, then switch the game, the site and the bot. Stops at the first failure, saying what already moved and the `rollback` commands that move it back. |
+| `deploy <ref> [--allow-cold] [--now] [--force]` | `prepare`, `backup`, then switch the game, the site and the bot. Stops at the first failure, saying what already moved and the `rollback` commands that move it back. It does not pause for the guides' checks between switches: see *A deploy, in the guides' order*. |
 | `rollback game [--allow-cold]`, `rollback site`, `rollback bot [--now]` | Switches the app to the release `state.json` recorded as its previous one, with the same checks. Code goes back; data does not — that is what the backups are for. |
 | `status [--wait-quiet [--timeout <minutes>]]` | One line per app. `--wait-quiet` waits (`--timeout`, default `botQuietLimitMinutes`) until no duel is in a match, no rush can still be handed in, and the bot is quiet; exit 1 if the time runs out. |
 | `ecosystem` | Rewrite `shared/ecosystem.config.cjs` from `state.json`. |
@@ -154,6 +154,40 @@ game (puzzle-activity, abc1234): serving · 1 duel, 0 lobbies, 0 rushes, 3 sessi
 bot (bcs-bot, abc1234): ready · idle 14 min · no sync
 site (puzzle-db, abc1234): online
 ```
+
+## A deploy, in the guides' order
+
+Each guide switches its app only once the one before it has passed that
+guide's own checks, and the bot last of all, because its restart is what
+makes the new release notes readable (`DEPLOY.md`). `deploy <ref>` runs the
+three switches back to back, and between them checks only what the tool can
+see: the game's status file, the site's `/health` and pm2. So it switches
+the site before anyone has run the game's *Verification*, and restarts the
+bot, and with it the notes, before anyone has checked what they describe.
+On the box, go a step at a time instead, from the current release's
+`activity/`, inside `tmux`:
+
+```sh
+bun run deploy --dry-run deploy <ref>   # the whole plan, from the real box; changes nothing
+bun run deploy prepare <ref>            # ends "prepared <sha> in <its directory>": that sha from here on
+bun run deploy backup <sha>
+bun run deploy switch game <sha>        # then activity/DEPLOY.md, Verification
+bun run deploy switch site <sha>        # then activity/puzzledb/DEPLOY.md, Check it on loopback and Verify it publicly
+bun run deploy switch bot <sha>         # then DEPLOY.md, Verifying the bot, if it restarted
+```
+
+A check that fails is a stop (`CLAUDE.md`): report it and run nothing after
+it. What already switched stays switched until `rollback <app>` takes it
+back, latest first. `deploy <ref>` is the same commands without the pauses,
+and the guides' order is the stricter of the two.
+
+**A site taken down on purpose comes back at the next switch of the site.**
+`switch site` starts the site whatever pm2 shows: a stopped entry is deleted
+and started again on the release, and a missing one is simply started;
+`deploy <ref>` and `rollback site` run it too. While the site must stay
+down, deploy by the steps above without `switch site`, and never run
+`switch site` or `rollback site` until whoever took it down says it may
+come back.
 
 ## What each app is started with
 
@@ -322,24 +356,57 @@ client — `beta 0.21` or later in `changelog.json`, and this tool in
    mkdir -p ~/bcs
    cd <checkout>
    git log --oneline -1    # the commit they run: the way back for code
+   git status --short --untracked-files=no    # nothing: no tracked file changed on the box
+   git log --oneline @{upstream}..HEAD        # nothing: no commit the remote lacks
    pm2 ls                  # every app by name, DIAYN's among them
    pm2 jlist | bun -e '
+     import {existsSync} from "node:fs";
      const text = await Bun.stdin.text();
      const line = text.split("\n").filter((l) => l.trim().startsWith("[{") || l.trim() === "[]").pop();
      let apps;
      try { apps = JSON.parse(line ?? ""); } catch { console.log("pm2 jlist printed no list (output withheld); use pm2 ls"); process.exit(1); }
      const dir = process.argv[1];
+     const SHOWN = ["NODE_ENV", "PORT", "PUZZLEDB_PORT", "PYTHONUNBUFFERED"];   // never secret: their values are kept
      for (const p of apps) {
        const e = p.pm2_env ?? {};
+       const env = e.env ?? {};
        const ours = e.pm_cwd === dir || String(e.pm_cwd).startsWith(`${dir}/`);
-       const how = ours ? { script: e.pm_exec_path, args: e.args, interpreter: e.exec_interpreter, kill_timeout: e.kill_timeout ?? "unset" } : {};
+       const how = ours ? {
+         script: e.pm_exec_path, args: e.args, interpreter: e.exec_interpreter, kill_timeout: e.kill_timeout ?? "unset",
+         env: Object.fromEntries(SHOWN.filter((k) => k in env).map((k) => [k, env[k]])),
+         bunOnPath: String(env.PATH ?? "").split(":").some((d) => d !== "" && existsSync(`${d}/bun`)),
+         envNames: Object.keys(env).sort(),
+       } : {};
        console.log(JSON.stringify({ name: p.name, status: e.status, pid: p.pid, cwd: e.pm_cwd, ...how }));
      }' "$PWD" | tee ~/bcs/before-migration.txt
+   chmod 400 ~/bcs/before-migration.txt
    ```
 
+   **If either `git` check lists anything, stop and report it.** Step 6
+   builds the release from the remote, so a tracked file changed on the box
+   — `data/puzzles.json` from `bun run puzzles`, the tracked archive from
+   `rederive-clears --write` or `sync-archive --db` — or a commit made here
+   would be dropped without a word at the switch, and that can change which
+   puzzles players are dealt: not the implementer's decision (`CLAUDE.md`).
+   An error from the second (no upstream, or a detached head) is a stop too:
+   it has not shown that nothing is unpushed.
+
    `pm2 jlist` on its own prints every app's environment, tokens included;
-   this prints names, states and working directories, and how each app is
-   started only for the apps that run from this checkout. Confirm from it:
+   this prints names, states and working directories, and, only for the apps
+   that run from this checkout, how each is started: its script, arguments,
+   interpreter and `kill_timeout`, the values of the four variables above
+   that it has, whether its PATH has bun on it, and the **names** of the
+   rest of its environment, never their values. pm2 gave each app the
+   environment of the shell that started it; rollback step 3 needs to know
+   what that was.
+
+   **`~/bcs/before-migration.txt` is written once, here, and is the only
+   record of the way back.** By step 10 the switched apps no longer run from
+   the checkout, so a second run of this line would record nothing of how
+   they started. Never run it again with its `tee`, and never edit, move or
+   overwrite the file: the `chmod 400` makes a second `tee` fail
+   ("Permission denied") rather than replace it. The re-checks below run the
+   same line without the `| tee …`. Confirm from it:
 
    - **Exactly three apps run from this checkout**: the bot
      (`client/discord_bot.py`), the game (`server/index.ts`, from
@@ -457,9 +524,14 @@ client — `beta 0.21` or later in `changelog.json`, and this tool in
    bun install --frozen-lockfile
    bun run deploy status                   # reads deploy.json and pm2; changes nothing
    bun run deploy --dry-run prepare main
-   bun run deploy prepare main             # ends "prepared <sha>": note the sha
+   bun run deploy prepare main             # ends "prepared <short sha> in <its directory>": note both
    ls ~/bcs/shared/daily.sqlite 2>/dev/null && echo STOP || echo absent
    ```
+
+   - The release's directory is named by the full commit,
+     `~/bcs/releases/<40 characters>`; the short sha before it is only
+     a label. Steps 10 and 11 `cd` into that directory, and give the short
+     sha to the switches, which take either.
 
    - `status` names the three apps, the game and the bot `online · no status
      file`: old code writes none. A config error is reported here, all
@@ -511,7 +583,9 @@ client — `beta 0.21` or later in `changelog.json`, and this tool in
            const [from, to] = process.argv.slice(1);
            if (!existsSync(from)) throw new Error(`${from} is not there`);
            if (existsSync(to)) throw new Error(`${to} exists already`);
-           new Database(from).exec(`VACUUM INTO "${to}"`);
+           const db = new Database(from, {readonly: true});
+           db.run("VACUUM INTO ?", [to]);
+           db.close();
            console.log("backed up", from, "->", to);' <the game's database> ~/bcs/shared/backups/daily-before-migration.sqlite
    ```
 
@@ -520,8 +594,10 @@ client — `beta 0.21` or later in `changelog.json`, and this tool in
    line, and `ls -l ~/bcs/shared/backups/` must show both files. `VACUUM
    INTO`, never `cp` (`activity/DEPLOY.md`, *Before you start*, has the
    measurement), and `import`, never `require`, so a failure is printed
-   rather than swallowed. These copies hold real Discord ids: they stay in
-   `shared/backups/`.
+   rather than swallowed. It is what `backup` does: a read-only connection,
+   which cannot change the database it copies, and the target bound as a
+   parameter, so no path can break the statement. These copies hold real
+   Discord ids: they stay in `shared/backups/`.
 
 9. **Move the databases into `shared/`**, each with its `-wal` and `-shm`
    when they exist. The `-wal` can hold nearly all the data
@@ -544,7 +620,7 @@ client — `beta 0.21` or later in `changelog.json`, and this tool in
 10. **Switch, in the guides' order, checking as you go**, from the release:
 
     ```sh
-    cd ~/bcs/releases/<sha>/activity
+    cd <the directory step 6's last line named>/activity    # ~/bcs/releases/<the full sha>/activity
     bun run deploy --dry-run switch game <sha>
     bun run deploy switch game <sha>
     ```
@@ -580,16 +656,20 @@ client — `beta 0.21` or later in `changelog.json`, and this tool in
     systemctl is-enabled "pm2-$(id -un)"    # enabled. Never run pm2 startup again
     ```
 
-    Step 1's `jlist` line, run again, shows each app's `cwd` under
-    `~/bcs/releases/<sha>`. Keep the old checkout, untouched, until the new
+    Step 1's `jlist` line, run again from `<checkout>` **without its
+    `| tee ~/bcs/before-migration.txt`** (ending at `"$PWD"`), shows each
+    app's `cwd` under `~/bcs/releases/<the full sha>`; to keep that too,
+    end it `| tee ~/bcs/after-migration.txt` instead. `before-migration.txt`
+    stays as step 1 wrote it. Keep the old checkout, untouched, until the new
     layout has run through a few deploys: it is the only way back to code
     from before the move. Do not pull it, build in it or start anything from
     it; its `activity/puzzledb/ecosystem.config.cjs` is superseded by
     `shared/ecosystem.config.cjs`. A database that appears again at the old
     path (`ls "$DB"`) means something still runs from the old checkout.
 
-After this, a deploy is `bun run deploy deploy <ref>` from the current
-release, `--dry-run` first, inside `tmux`; each guide's *On a box migrated to
+After this, a deploy goes from the current release a step at a time, with
+each guide's checks between the switches (*A deploy, in the guides' order*),
+`--dry-run` first, inside `tmux`; each guide's *On a box migrated to
 releases* says what is left to check.
 
 ### If the migration fails part-way
@@ -601,11 +681,14 @@ delete it once nobody needs it.
 From step 7 on, put the box back the way step 1 found it:
 
 1. **Take out what the tool started**: each app whose working directory is
-   under `~/bcs/releases/`, which step 1's `jlist` line, run again, shows —
-   `pm2 stop <name>`, then `pm2 delete <name>`, by name. Leave an entry whose
-   `cwd` is still the old checkout: that is the old app, stopped, and step 3
-   starts it again. Then `pgrep -af 'discord_bot[.]py'` prints nothing, and
-   nothing listens on the two ports. (Before step 10 the tool has started
+   under `~/bcs/releases/` — `pm2 stop <name>`, then `pm2 delete <name>`, by
+   name. Step 1's `jlist` line shows which, run again from `<checkout>`
+   **without its `| tee …`** (ending at `"$PWD"`):
+   `~/bcs/before-migration.txt` must stay as step 1 wrote it, because step 3
+   starts the old apps from it. Leave an entry whose `cwd` is still the old
+   checkout: that is the old app, stopped, and step 3 starts it again. Then
+   `pgrep -af 'discord_bot[.]py'` prints nothing, and nothing listens on the
+   two ports. (Before step 10 the tool has started
    nothing: skip this.)
 2. **Put the databases back** where step 1 found them, each with its `-wal`
    and `-shm`: step 9's loops the other way round, with `DB` and `ST` set as
@@ -626,12 +709,31 @@ From step 7 on, put the box back the way step 1 found it:
    app the tool switched has lost its old entry — a switch deletes the
    stopped entry and starts its own under that name — so start it afresh
    from the old checkout as `~/bcs/before-migration.txt` records it:
-   `pm2 start <script> --name <name> --cwd <cwd> --interpreter <interpreter> --kill-timeout <ms> -- <args>`.
-   The site goes the way its own guide starts it,
-   `pm2 start puzzledb/ecosystem.config.cjs` from `<checkout>/activity`, if
-   that is how it ran. Start them from a shell that exports no secret: pm2
-   hands the starting shell's environment to the app, and the site refuses
-   to start with the game's.
+   `pm2 start <script> --name <name> --cwd <cwd> --interpreter <interpreter> --kill-timeout <ms> -- <args>`,
+   leaving out `--kill-timeout` where the record says `"unset"` (pm2's own
+   default then applies, as it did). The site goes the way its own guide
+   starts it, `pm2 start puzzledb/ecosystem.config.cjs` from
+   `<checkout>/activity`, if that is how it ran.
+
+   **The environment does not come back by itself.** pm2 hands the starting
+   shell's environment to the app, and the switched app's old entry, which
+   held the environment of whatever shell first started it, is gone. So, for
+   each app started afresh:
+
+   - Start it from a shell that exports no secret: the site refuses to start
+     with the game's.
+   - Where the record says `"bunOnPath": true`, `command -v bun` must print a
+     path in that shell first (`DEPLOY.md`, *Restarting*): the old bot's
+     `/archive sync` and `/highlights` run bun from its PATH.
+   - Give it back the record's `env` values on the start's own command line,
+     for example `NODE_ENV=production PORT=<the recorded port> pm2 start …`
+     for the game, `PYTHONUNBUFFERED=1 pm2 start …` for the bot.
+   - A name in its `envNames` that is none of those, not in the app's own
+     `.env`, not in the shell you start from, and not pm2's own bookkeeping
+     (names beginning `PM2_` or `pm_`, `unique_id`, a key named after a pm2
+     app) came from the shell that first started it. Stop and report it, by
+     name only: its value was never recorded, and guessing it is not a way
+     back.
 4. **Check, then save.** `pm2 ls` shows the three online, from the old
    checkout, and `pgrep -af 'discord_bot[.]py'` one bot; then the guides'
    verification; then `pm2 save`. Each switch the tool finished saved the new
