@@ -143,6 +143,7 @@ const PAGE_PATHS = [
   "/players",
   "/player/:key",
   "/solves",
+  "/alternates",
 ] as const;
 
 /** Every miss under `/data/`, byte for byte: a page's body is JSON, so its miss is too. */

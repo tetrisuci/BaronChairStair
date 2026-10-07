@@ -16,8 +16,9 @@
  * hide, the guest, a player an older build inserted without a key, and a name
  * holding a run of seventeen digits, which is what a Discord id looks like.
  * `players.id` is used to join and to group, never selected; `found_by` and
- * `found_at` likewise. So no id, and no hidden player's name or key, is ever a
- * JS value for a leak to start from — every per-player number a hidden player
+ * `found_at` likewise — a line's day is worked out of `found_at` in SQL
+ * ({@link LINE_DAY}) and only the day is selected. So no id, no exact time, and
+ * no hidden player's name or key, is ever a JS value for a leak to start from — every per-player number a hidden player
  * contributes is aggregated before it leaves SQLite, and arrives unlabelled.
  *
  * **Nothing from today, or later.** Every read is cut at {@link PlayerSnapshot.cut},
@@ -90,12 +91,21 @@ const GUILD_NAME = "CASE WHEN g.name GLOB $digits17 THEN NULL ELSE g.name END";
  * The game's day a line aliased `s` was filed on: the last day whose start in
  * the game's zone is at or before `found_at`.
  *
- * `$starts` is a JSON list of every day's start from `$lo` on, so the zone
- * stays in JS — SQLite has none — while the rows it orders stay in SQL. A line
- * filed before `$lo` gets `$lo - 1`, still before every published day.
+ * `$starts` is a JSON list of every day's start from `$startsFrom` on, so the
+ * zone stays in JS — SQLite has none — while the time it is compared with
+ * stays in SQL. A line filed before `$startsFrom` gets `$startsFrom - 1`.
+ *
+ * **Published since schema 3**, as the line's `day`: the owner chose to let
+ * lines be sorted by when they were found. The snapshot binds `$startsFrom`
+ * to {@link FIRST_GAME_DAY} rather than the site's first day, so a line found
+ * before the site's history starts keeps its true day rather than all of them
+ * reading as one day before it. The day, and only the day, leaves SQL.
  */
 export const LINE_DAY =
-  "((SELECT COALESCE(MAX(j.key), -1) FROM json_each($starts) j WHERE j.value <= s.found_at) + $lo)";
+  "((SELECT COALESCE(MAX(j.key), -1) FROM json_each($starts) j WHERE j.value <= s.found_at) + $startsFrom)";
+
+/** Day 1, `EPOCH_UTC`: the first day the game's calendar has, and where {@link LINE_DAY}'s starts begin. */
+const FIRST_GAME_DAY = 1;
 
 /** The four tiers as SQL literals: a legacy run, from a day of one puzzle, is no tier's. */
 const TIERS = DAILY_TIERS.map((tier) => `'${tier}'`).join(", ");
@@ -117,6 +127,7 @@ type Bounds = {
   readonly $lo: number;
   readonly $cut: number;
   readonly $cutStart: number;
+  readonly $startsFrom: number;
   readonly $starts: string;
 };
 
@@ -137,7 +148,8 @@ export function readPlayers(db: Database, clockToday: number, firstTieredDay: nu
     $lo: firstTieredDay,
     $cut: cut,
     $cutStart: startOfDay(cut, { timeZone }),
-    $starts: JSON.stringify(dayStarts(firstTieredDay, cut, { timeZone })),
+    $startsFrom: FIRST_GAME_DAY,
+    $starts: JSON.stringify(dayStarts(FIRST_GAME_DAY, cut, { timeZone })),
   };
   return deepFrozen({
     cut,
@@ -344,6 +356,7 @@ function counted(db: Database, bounds: Bounds, sql: string): SnapshotCount[] {
 
 interface LineCells {
   puzzleId: number;
+  day: number;
   placements: string;
   attack: number;
   clears: string;
@@ -351,20 +364,25 @@ interface LineCells {
 
 /**
  * The live credited lines filed before the cut, in publication order: by
- * puzzle, then by the game's day each was filed on, then as filed. Nothing
- * that orders them is selected, so the order is all a reader gets of when.
+ * puzzle, then by the game's day each was filed on, then as filed.
+ *
+ * The day is selected — the owner publishes it — and `found_at` is not: the
+ * order within a day is the only trace of the time, and `solution_id` orders
+ * it as well as the time would.
  */
 function lines(db: Database, bounds: Bounds): SnapshotLine[] {
   return db
     .query<LineCells, Bounds>(
-      `SELECT s.puzzle_id AS puzzleId, s.placements AS placements, s.attack AS attack, s.clears AS clears
+      `SELECT s.puzzle_id AS puzzleId, ${LINE_DAY} AS day, s.placements AS placements,
+              s.attack AS attack, s.clears AS clears
          FROM puzzle_solutions s
         WHERE ${CREDITED} AND s.${LIVE} AND s.found_at < $cutStart
-        ORDER BY s.puzzle_id, ${LINE_DAY}, s.solution_id`,
+        ORDER BY s.puzzle_id, day, s.solution_id`,
     )
     .all(bounds)
     .map((row) => ({
       puzzleId: row.puzzleId,
+      day: row.day,
       attack: row.attack,
       clears: knownClears(JSON.parse(row.clears), row.puzzleId),
       steps: reprojected(row.placements, row.puzzleId),

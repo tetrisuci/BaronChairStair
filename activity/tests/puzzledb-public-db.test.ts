@@ -57,6 +57,7 @@ import {
   fixtureSources,
   gameFixture,
   type GameFixture,
+  LINES,
   MAY_PUBLISH,
   NOW,
   PLANTED,
@@ -123,7 +124,7 @@ const ALLOWLIST = {
   rush_boards: ["day", "rank", "server_key", "player_key", "solved", "time_ms"],
   standings: ["board", "scope", "rank", "player_key", "value", "detail", "time_ms", "day"],
   puzzle_stats: ["puzzle_id", "hand_ins", "solves", "fastest_ms", "median_ms", "fastest_player_key"],
-  lines: ["puzzle_id", "position", "attack", "clears", "steps"],
+  lines: ["puzzle_id", "position", "day", "attack", "clears", "steps"],
 } as const;
 
 /** The fixture's policy: the owner's, with the quiet server on the hide list, as every privacy test has it. */
@@ -355,8 +356,8 @@ describe("no personal data (full fixture)", () => {
   test("carries none of them in any /data/ body either", () => {
     const bodies = bodyTexts(dataset);
 
-    // A body for every finished day, listed puzzle and shown player, the leaderboards, the players table and the feed's.
-    expect(bodies.length).toBe(dataset.data.days.length + dataset.data.puzzles.length + dataset.data.players.length + 3);
+    // A body for every finished day, listed puzzle and shown player, the leaderboards, the players table, the feed's and the alternates table's.
+    expect(bodies.length).toBe(dataset.data.days.length + dataset.data.puzzles.length + dataset.data.players.length + 4);
     for (const kind of ["players", "solves"] as const) expect(dataset.bodies.has(bodyPathFor({ kind })!)).toBe(true);
     expect(bodies.flatMap((text) => leaksIn(text, WITHHELD_WITH_COMMUNITY))).toEqual([]);
   });
@@ -366,6 +367,23 @@ describe("no personal data (full fixture)", () => {
 
     expect(MAY_PUBLISH.filter((value) => !served.includes(value))).toEqual([]);
     expect(dataset.data.players.map((player) => player.name)).toEqual([PLAYERS.unchosen.name, PLAYERS.visible.name]);
+  });
+
+  test("does print the day each published line was found, the one thing about when that leaves the game", () => {
+    // The positive control for the planted `found_at`: the scans above find no
+    // exact time, and here the day worked out of it is in the download.
+    const db = Database.deserialize(dataset.sqlite, { readonly: true });
+    try {
+      const days = db
+        .query<{ puzzleId: number; day: number }, []>("SELECT puzzle_id AS puzzleId, day FROM lines ORDER BY puzzle_id, position")
+        .all();
+      expect(days).toEqual([
+        { puzzleId: LINES.hidden.puzzleId, day: LINES.hidden.day },
+        { puzzleId: LINES.visible.puzzleId, day: LINES.visible.day },
+      ]);
+    } finally {
+      db.close();
+    }
   });
 
   test("has no cell holding any of them when read as text, which catches an id stored as INTEGER", () => {

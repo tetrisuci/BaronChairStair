@@ -40,6 +40,8 @@ import {
   type SitePlayerBody,
   type SitePuzzleBody,
 } from "../puzzledb/wire";
+import type { SiteAlternatesBody } from "../puzzledb/wire-alternates";
+import type { ClearName } from "../shared/puzzle";
 import { COMMUNITY_ID, CORRECTED_ID, fixtureSources, gameFixture, type GameFixture, NOW, TODAY } from "./puzzledb-fixture";
 
 const ALICE: SnapshotPlayer = { playerKey: "aaaaaaaaa2", name: "alice" };
@@ -444,15 +446,15 @@ describe("puzzles", () => {
     const step = { piece: "T" as const, cells: [[0, 0], [1, 0], [2, 0], [1, 1]] as [number, number][], clear: "tsd" as const, attack: 4 };
     const dataset = build({
       lines: [
-        { puzzleId: 6, attack: 10, clears: ["tsd"], steps: [step] },
-        { puzzleId: 6, attack: 12, clears: [], steps: [step, step] },
-        { puzzleId: COMMUNITY_ID, attack: 9, clears: ["tsd"], steps: [step] },
+        { puzzleId: 6, day: YESTERDAY - 3, attack: 10, clears: ["tsd"], steps: [step] },
+        { puzzleId: 6, day: YESTERDAY, attack: 12, clears: [], steps: [step, step] },
+        { puzzleId: COMMUNITY_ID, day: YESTERDAY, attack: 9, clears: ["tsd"], steps: [step] },
       ],
     });
 
     expect(body<SitePuzzleBody>(dataset, "/data/puzzle/6.json").lines).toEqual([
-      { position: 1, attack: 10, clears: ["tsd"], steps: [step] },
-      { position: 2, attack: 12, clears: [], steps: [step, step] },
+      { position: 1, day: YESTERDAY - 3, attack: 10, clears: ["tsd"], steps: [step] },
+      { position: 2, day: YESTERDAY, attack: 12, clears: [], steps: [step, step] },
     ]);
     expect(dataset.bodies.has(`/data/puzzle/${COMMUNITY_ID}.json`)).toBe(false);
     const db = Database.deserialize(dataset.sqlite, { readonly: true });
@@ -461,6 +463,52 @@ describe("puzzles", () => {
     } finally {
       db.close();
     }
+  });
+});
+
+describe("the alternates body", () => {
+  const step = { piece: "T" as const, cells: [[0, 0], [1, 0], [2, 0], [1, 1]] as [number, number][], clear: "tsd" as const, attack: 4 };
+
+  test("lists every listed puzzle's lines by puzzle and position, with the day found and its length, and no steps", () => {
+    const dataset = build({
+      lines: [
+        { puzzleId: 6, day: YESTERDAY - 3, attack: 10, clears: ["tsd"], steps: [step] },
+        { puzzleId: 6, day: YESTERDAY, attack: 12, clears: [], steps: [step, step] },
+        { puzzleId: 50, day: YESTERDAY - 1, attack: 7, clears: ["tsd", "tsd"], steps: [step, step, step] },
+        { puzzleId: COMMUNITY_ID, day: YESTERDAY, attack: 9, clears: ["tsd"], steps: [step] },
+      ],
+    });
+
+    const alternates = body<SiteAlternatesBody>(dataset, "/data/alternates.json");
+
+    expect(alternates).toEqual({
+      builtAt: new Date(NOW).toISOString(),
+      lines: [
+        { puzzleId: 6, position: 1, day: YESTERDAY - 3, attack: 10, pieces: 1, clears: ["tsd"] },
+        { puzzleId: 6, position: 2, day: YESTERDAY, attack: 12, pieces: 2, clears: [] },
+        { puzzleId: 50, position: 1, day: YESTERDAY - 1, attack: 7, pieces: 3, clears: ["tsd", "tsd"] },
+      ],
+    });
+  });
+
+  test("stays near ninety bytes a line, since it is the one body that grows with every line found", () => {
+    // Three-digit positions and days, two-digit attacks and a line that made three clears:
+    // longer than most, so a real archive's lines come in under this.
+    const many = Array.from({ length: 600 }, (_, at) => ({
+      puzzleId: at % 2 === 0 ? 6 : 50,
+      day: YESTERDAY - (at % 30),
+      attack: 10 + (at % 50),
+      clears: ["tsd", "tsd", "single"] as ClearName[],
+      steps: [step, step, step, step, step, step, step, step, step],
+    }));
+
+    const bytes = build({ lines: many }).bodies.get("/data/alternates.json")!.byteLength;
+
+    expect(bytes / many.length).toBeLessThan(120);
+  });
+
+  test("is an empty list, not a missing body, before anybody has found a line", () => {
+    expect(body<SiteAlternatesBody>(build({}), "/data/alternates.json").lines).toEqual([]);
   });
 });
 

@@ -1,5 +1,6 @@
 /**
- * The players table's and the solves feed's choices, kept in the address bar.
+ * The players table's, the solves feed's and the alternates table's choices,
+ * kept in the address bar.
  *
  * Both are lists people send each other — "the players of our server, by best
  * rush", "every hard solve of #42" — so, like the browse filter
@@ -23,8 +24,15 @@
  * | `server` | either: a server's key |
  * | `tier` | the feed: `easy`, `medium`, `hard` or `extreme` |
  * | `puzzle` | the feed: a listed puzzle's id |
+ * | `sort` | the alternates table: `difficulty`, `title`, `number`, `attack` or `pieces`; date found is the default |
+ * | `dir` | the alternates table: `asc` or `desc`, left out while it is the sort's natural one |
+ *
+ * The alternates table's order is read by `readAlternateOrder`, the rule the
+ * activity's own list reads a select by (`shared/alternate-sort.ts`), so the two
+ * lists cannot disagree about what an unknown sort means.
  */
 
+import { type AlternateOrder, DEFAULT_ALTERNATE_ORDER, defaultDirection, readAlternateOrder } from "@shared/alternate-sort";
 import { DAILY_TIERS, type DailyTier } from "@shared/daily";
 import type { SiteIndex } from "./data";
 import { serverFromQuery } from "./server-chips";
@@ -103,5 +111,24 @@ export function queryForSolves(query: SolvesQuery): string {
   if (query.tier !== null) params.set("tier", query.tier);
   if (query.server !== null) params.set("server", query.server);
   if (query.puzzle !== null) params.set("puzzle", String(query.puzzle));
+  return written(params);
+}
+
+/**
+ * The alternates table's order a query string asks for: an unknown sort is the
+ * default order, a missing direction the sort's natural one. A missing sort is
+ * the default sort, so `?dir=asc` — the oldest finds first, as
+ * {@link queryForAlternates} writes it — keeps its direction.
+ */
+export function alternatesQueryFrom(search: string): AlternateOrder {
+  const params = new URLSearchParams(search);
+  return readAlternateOrder(params.get("sort") ?? DEFAULT_ALTERNATE_ORDER.sort, params.get("dir"));
+}
+
+/** The query string for an alternates order: `""` for the default, and no `dir` while it is the sort's natural one. */
+export function queryForAlternates(order: AlternateOrder): string {
+  const params = new URLSearchParams();
+  if (order.sort !== DEFAULT_ALTERNATE_ORDER.sort) params.set("sort", order.sort);
+  if (order.direction !== defaultDirection(order.sort)) params.set("dir", order.direction);
   return written(params);
 }

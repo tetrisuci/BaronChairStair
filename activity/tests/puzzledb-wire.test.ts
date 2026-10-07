@@ -15,6 +15,7 @@ import { dayNumber } from "../shared/daily";
 import { PUBLIC_KEY_PATTERN } from "../shared/site";
 import {
   ALL_SERVERS,
+  ALTERNATES_TEXT,
   bodyPathFor,
   dateOfDay,
   dayLabel,
@@ -87,6 +88,18 @@ function descriptionOf(puzzle: SitePuzzle): string {
 }
 
 describe("the page routes", () => {
+  test("reads /alternates, every player's line across the archive", () => {
+    expect(parsePage("/alternates")).toEqual({ kind: "alternates" });
+    expect(pathOf({ kind: "alternates" })).toBe("/alternates");
+  });
+
+  test("reads no other spelling of /alternates", () => {
+    // The sort and direction are in the query string, which never reaches `parsePage`.
+    const strays = ["/alternates/", "/Alternates", "/alternates/1", "/alternates.json", "/alternate", "/alternates%2F"];
+
+    expect(strays.filter((path) => parsePage(path) !== null)).toEqual([]);
+  });
+
   test("reads /solves, the feed of every solve", () => {
     expect(parsePage("/solves")).toEqual({ kind: "solves" });
     expect(pathOf({ kind: "solves" })).toBe("/solves");
@@ -425,7 +438,8 @@ describe("page text", () => {
   test("names the site and the schema the download carries", () => {
     expect(SITE_NAME).toBe("Tetris at UCI puzzle archive");
     // 2 is the schema with player data in it: boards, standings, stats, lines.
-    expect(SCHEMA_VERSION).toBe(2);
+    // 3 gives each line the day it was found; 2 had been served by then.
+    expect(SCHEMA_VERSION).toBe(3);
   });
 
   test("names the leaderboards and players pages, which exist whatever the data holds", () => {
@@ -441,6 +455,18 @@ describe("page text", () => {
         "The players of the Tetris at UCI daily, by the name the game shows: days solved, " +
         "streaks, puzzles cleared, lines found and best rush, each with a page of their finished days.",
     });
+  });
+
+  test("names the alternates page, which exists whatever the data holds", () => {
+    expect(pageText({ kind: "alternates" }, NOTHING)).toBe(ALTERNATES_TEXT);
+    expect(ALTERNATES_TEXT).toEqual({
+      title: "Alternate solutions — Puzzle archive",
+      description:
+        "Every other way through a club puzzle that players of the Tetris at UCI daily found, " +
+        "across all puzzles, by the day it was found, difficulty, name, number, attack or length.",
+    });
+    expect(Array.from(ALTERNATES_TEXT.description).length).toBeLessThanOrEqual(DESCRIPTION_LIMIT);
+    expect(Object.isFrozen(ALTERNATES_TEXT)).toBe(true);
   });
 
   test("names the solves feed, which exists whatever the data holds", () => {
@@ -467,6 +493,7 @@ describe("page text", () => {
       players: { kind: "players" },
       player: { kind: "player", key: KEY },
       solves: { kind: "solves" },
+      alternates: { kind: "alternates" },
     };
     const day: SiteDay = { day: 274, date: "2026-10-01", deals: [{ tier: "hard", puzzleId: 42 }] };
     const lookup = lookupOf([sitePuzzle()], [day], [sitePlayer()]);
@@ -531,6 +558,10 @@ describe("the data a page fetches beside the index", () => {
     expect(bodyPathFor({ kind: "solves" })).toBe("/data/solves.json");
   });
 
+  test("names one body for the alternates page", () => {
+    expect(bodyPathFor({ kind: "alternates" })).toBe("/data/alternates.json");
+  });
+
   test("names none for the pages the index alone can draw", () => {
     expect(bodyPathFor({ kind: "browse" })).toBeNull();
     expect(bodyPathFor({ kind: "days" })).toBeNull();
@@ -539,7 +570,7 @@ describe("the data a page fetches beside the index", () => {
   test("puts each body at its page's own path, under /data and ending .json", () => {
     // A body's path is its page's path with a prefix and a suffix, so a body
     // can exist only where `parsePage` already said a page might.
-    for (const path of ["/day/274", "/puzzle/42", `/player/${KEY}`, "/leaderboards", "/players", "/solves"]) {
+    for (const path of ["/day/274", "/puzzle/42", `/player/${KEY}`, "/leaderboards", "/players", "/solves", "/alternates"]) {
       const route = parsePage(path)!;
       expect(bodyPathFor(route)).toBe(`/data${path}.json`);
     }
