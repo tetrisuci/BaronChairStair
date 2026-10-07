@@ -62,6 +62,22 @@ export const SIGNALS = {
   stop: ["SIGINT", "SIGTERM"],
 } as const;
 
+/**
+ * How the game closes a duel socket when the process is going away, so the
+ * client can say what happened instead of "the connection closed".
+ *
+ * 1012 is the WebSocket code for "service restart". The reason tells the two
+ * cases apart: `handover` closes a lobby nobody was matched in — the new
+ * process is already listening, so the player can open it again at once —
+ * and `restart` ends whatever was left when the process stops, a match
+ * included.
+ */
+export const SERVER_GOING_AWAY = {
+  code: 1012,
+  handover: "handover",
+  restart: "restart",
+} as const;
+
 /** How often a process rewrites its status file, at most this many ms apart. */
 export const STATUS_INTERVAL_MS = 5_000;
 
