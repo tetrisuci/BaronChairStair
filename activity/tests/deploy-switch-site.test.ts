@@ -162,6 +162,22 @@ describe("an ok from /health is not taken as the new site's own", () => {
     expect(box.readState().site).toEqual({ release: NEW, previous: OLD });
   });
 
+  test("a new site pm2 still shows online on a pid that is gone fails, though /health answered ok", async () => {
+    const box = siteBox();
+    let startedPid = 0;
+    onSiteStart(box, (pid) => {
+      // It died at once, before pm2 noticed: pm2 still reports it online, on the same pid.
+      startedPid = pid;
+      box.alive.delete(pid);
+    });
+    const switched = switchSite(box.context(), NEW, OPTIONS);
+    await expect(switched).rejects.toThrow(/pm2 shows it online as pid (\d+), which is not alive/);
+    await expect(switched).rejects.toThrow(/cannot tell[\s\S]*ss -ltnp[\s\S]*rollback site/);
+    expect(box.processes.get(SITE)).toMatchObject({ status: "online", pid: startedPid });
+    expect(box.pm2Mutations().some((argv) => argv[0] === "save")).toBe(false);
+    expect(box.readState().site).toEqual({ release: NEW, previous: OLD });
+  });
+
   test("a new site pm2 keeps restarting fails: its pid changes while /health answers ok", async () => {
     const box = siteBox();
     let startedAt = 0;
