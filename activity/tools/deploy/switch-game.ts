@@ -72,16 +72,39 @@ function otherSlot(ctx: Context, slot: string): string {
   return slot === first ? second : first;
 }
 
+/**
+ * The refusal when both slots run, with the whole way out.
+ *
+ * Stop, delete *and* save: a slot that is only stopped stays in pm2's table,
+ * and running the switch again then answers "nothing to do" without a
+ * `pm2 save`, so pm2's saved list is still the one from before the
+ * interrupted switch — and a reboot brings the old slot back on old code
+ * instead of the new one.
+ */
+function bothRunning(state: DeployState, online: readonly string[]): DeployError {
+  const head =
+    `both game slots are running (${online.join(", ")}): a switch was interrupted, or one was started by hand. ` +
+    "Check `bun run deploy status`. ";
+  const live = state.game.activeSlot;
+  const retiring = live !== null && online.includes(live) ? online.find((slot) => slot !== live) : undefined;
+  if (retiring === undefined) {
+    return new DeployError(
+      `${head}state.json names neither as live, so the tool will not guess which to keep. ` +
+        "Take the one that should not serve out of pm2 once it has no duel left — `pm2 stop <name>`, " +
+        "`pm2 delete <name>`, then `pm2 save` — and run this again.",
+    );
+  }
+  return new DeployError(
+    `${head}state.json names ${live} as live. Once ${retiring} has no duel left, take it out of pm2: ` +
+      `\`pm2 stop ${retiring}\`, \`pm2 delete ${retiring}\`, then \`pm2 save\` ` +
+      "(stopped alone, it stays in pm2's table and pm2's saved list still brings it back on a reboot).",
+  );
+}
+
 function pickSlots(ctx: Context, state: DeployState, processes: readonly Pm2Process[]): Slots {
   const slots = ctx.config.pm2.gameSlots;
   const online = slots.filter((slot) => isOnline(findProcess(processes, slot)));
-  if (online.length === 2) {
-    throw new DeployError(
-      `both game slots are running (${online.join(", ")}): a switch was interrupted, or one was started by hand. ` +
-        "Check `bun run deploy status`; once the slot state.json does not name as active has drained, " +
-        "stop it with `pm2 stop <name>` and run this again.",
-    );
-  }
+  if (online.length === 2) throw bothRunning(state, online);
   const active = online[0] ?? null;
   if (active !== null && state.game.activeSlot !== null && active !== state.game.activeSlot) {
     ctx.host.out(`warning: state.json says ${state.game.activeSlot} is live, but pm2 runs ${active}; going by pm2`);

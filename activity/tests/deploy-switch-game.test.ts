@@ -347,6 +347,43 @@ describe("a box in a state the switch cannot reason about", () => {
     expect(box.pm2Mutations()).toEqual([]);
   });
 
+  /*
+   * Found in the rehearsal on a real box layout: the refusal used to say only
+   * "stop it with `pm2 stop <name>` and run this again". Done that way, the
+   * stopped slot stays in pm2's table and the run again answers "nothing to
+   * do" without a `pm2 save`, so pm2's saved list is still the one from before
+   * the interrupted switch — a reboot resurrects the old slot on old code and
+   * not the new one. The README's recovery is stop, delete, save.
+   */
+  test("the refusal names the slot to take out, and the whole recovery: stop, delete, save", async () => {
+    const box = liveBox();
+    box.writeState({ game: { activeSlot: GREEN, release: NEW, previous: OLD } });
+    box.addProcess(GREEN, join(box.layout.releases, NEW, "activity"));
+    const refusal = await switchGame(box.context(), NEW, OPTIONS).then(
+      () => null,
+      (error: Error) => error.message,
+    );
+    expect(refusal).toContain(`state.json names ${GREEN}`);
+    expect(refusal).toContain(`pm2 stop ${BLUE}`);
+    expect(refusal).toContain(`pm2 delete ${BLUE}`);
+    expect(refusal).toContain("pm2 save");
+    expect(box.pm2Mutations()).toEqual([]);
+  });
+
+  test("with state.json naming neither running slot, the refusal says so rather than guessing which to take out", async () => {
+    const box = liveBox();
+    box.writeState({});
+    box.addProcess(GREEN, join(box.layout.releases, NEW, "activity"));
+    const refusal = await switchGame(box.context(), NEW, OPTIONS).then(
+      () => null,
+      (error: Error) => error.message,
+    );
+    expect(refusal).toMatch(/names neither/);
+    expect(refusal).not.toContain(`pm2 delete ${BLUE}`);
+    expect(refusal).not.toContain(`pm2 delete ${GREEN}`);
+    expect(refusal).toContain("pm2 save");
+  });
+
   test("nothing running at all starts the first slot, with nothing to drain", async () => {
     const box = liveBox();
     box.processes.clear();
