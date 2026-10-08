@@ -321,7 +321,16 @@ What the rehearsal showed that is easy to misread:
 
 ## Lock recovery
 
-An interrupted deploy can leave `shared/run/deploy.lock`. The tool refuses
+Ctrl-C (`SIGINT`) or `SIGTERM` stops further commands, waits for any active
+pm2, git or build command to finish while keeping the lock, then releases
+the interrupted run's own lock and exits with 130 or 143. It prints the last
+saved game slot and app releases,
+the path to `state.json`, and the recovery instruction: check `bun run deploy
+status`, then run the same command again as described below. It leaves apps
+and saved state in place, and never removes a lock another run has replaced.
+
+A crash, `SIGKILL` or an unhandled exit can still leave
+`shared/run/deploy.lock`. The tool refuses
 to replace it, even when its recorded pid is dead: two deploys trying to
 recover at once must not remove each other's newly acquired lock. An empty,
 malformed or unreadable lock is also refused; an empty lock may belong to a

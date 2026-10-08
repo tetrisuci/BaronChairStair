@@ -56,6 +56,12 @@ export interface HttpReply {
 
 export interface Host {
   readonly run: Runner;
+  /**
+   * Freeze command callers and wait for commands already sent to finish.
+   * The interrupt handler keeps the deploy lock until this resolves, then
+   * exits: neither new commands nor the interrupted deploy may continue.
+   */
+  readonly interrupt?: () => Promise<void>;
   readonly clock: Clock;
   readonly readStatus: (path: string) => StatusReading;
   /** A GET with a short timeout; null when nothing answered. */

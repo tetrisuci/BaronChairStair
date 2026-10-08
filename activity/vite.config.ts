@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { BUILD_ID_FILE, ENV } from "./shared/runtime-status";
-import { DEV_BUILD_ID, isBuildId } from "./client/src/build-id";
+import { DEV_BUILD_ID, isBuildId } from "./shared/build-id";
 
 /**
  * The client is a plain TypeScript app: no framework, one canvas, and a small
@@ -31,7 +31,7 @@ import { DEV_BUILD_ID, isBuildId } from "./client/src/build-id";
  *
  * The build names itself twice, with one id: compiled into the page as
  * `__BUILD_ID__`, and written beside it as `build.json`, which the server reads
- * at boot and sends back as `X-Build-Id`. A page that hears an id other than
+ * and sends back as `X-Build-Id`. A page that hears an id other than
  * its own offers a reload — see `client/src/build-id.ts`. Both come from one
  * plugin that runs only for `vite build`, so the dev server compiles in no id
  * and its page calls itself dev. The site's build (`puzzledb/vite.config.ts`)
@@ -73,7 +73,7 @@ export function resolveBuildId(
   if (given) {
     if (!isBuildId(given)) {
       throw new Error(
-        `${ENV.buildId} must be 1-64 letters, digits, dots, dashes or underscores; got ${JSON.stringify(given)}`,
+        `${ENV.buildId} must be 1-64 letters, digits, dots, dashes, underscores or pluses; got ${JSON.stringify(given)}`,
       );
     }
     return given;

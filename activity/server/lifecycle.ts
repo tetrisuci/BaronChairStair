@@ -34,6 +34,7 @@
  */
 
 import type { Server } from "bun";
+import { AsyncLocalStorage } from "node:async_hooks";
 import {
   BUILD_ID_HEADER,
   SIGNALS,
@@ -91,7 +92,10 @@ export interface Listener {
 export type LifecycleLog = StatusLog;
 
 export interface LifecycleOptions {
+  /** The server process's startup identity, retained in its status file. */
   readonly buildId: string;
+  /** The bundle on disk now; a manual rebuild can change it before a restart. */
+  readonly servedBuildId?: () => string;
   /** The configured port, until the listener says which one it got. */
   readonly port: number;
   /** Absolute path of the status file, or null to write none. */
@@ -118,6 +122,8 @@ export interface Health {
 export class Lifecycle {
   readonly activity: Activity;
   readonly buildId: string;
+  private readonly readServedBuildId: () => string;
+  private readonly requestBuild = new AsyncLocalStorage<string>();
   private current: GameState = "starting";
   private port: number;
   private readonly startedAt: number;
@@ -137,6 +143,7 @@ export class Lifecycle {
 
   constructor(options: LifecycleOptions) {
     this.buildId = options.buildId;
+    this.readServedBuildId = options.servedBuildId ?? (() => this.buildId);
     this.port = options.port;
     this.duels = options.duels;
     this.now = options.now ?? Date.now;
@@ -155,6 +162,17 @@ export class Lifecycle {
 
   get state(): GameState {
     return this.current;
+  }
+
+  /**
+   * The bundle served by this request, or the current one outside a request.
+   * Take it once per request: an async route may straddle a rebuild, but its
+   * JSON body and its response header must still tell the page the same id.
+   * The process's status keeps `buildId`, because new client files are not
+   * new server code and must not masquerade as a newly started release.
+   */
+  get servedBuildId(): string {
+    return this.requestBuild.getStore() ?? this.readServedBuildId();
   }
 
   /** Whether this process is on its way out, and should say so on every response. */
@@ -178,7 +196,7 @@ export class Lifecycle {
 
   /** `GET /api/health`: cheap enough to poll, and touches no database. */
   health(): Health {
-    return { ok: true, buildId: this.buildId, state: this.current };
+    return { ok: true, buildId: this.servedBuildId, state: this.current };
   }
 
   /** Rewrites the status file now. A no-op without one; never throws. */
@@ -197,8 +215,10 @@ export class Lifecycle {
   async handle<S>(request: Request, server: S | undefined, route: Route<S>): Promise<Response> {
     this.activity.requestStarted();
     try {
-      if (this.goingAway && isUpgrade(request)) return this.stamp(refusedUpgrade());
-      return this.stamp(await route(request, server));
+      return await this.requestBuild.run(this.readServedBuildId(), async () => {
+        if (this.goingAway && isUpgrade(request)) return this.stamp(refusedUpgrade());
+        return this.stamp(await route(request, server));
+      });
     } finally {
       this.activity.requestFinished();
     }
@@ -319,7 +339,7 @@ export class Lifecycle {
   }
 
   private stamp(response: Response): Response {
-    const headers: [string, string][] = [[BUILD_ID_HEADER, this.buildId]];
+    const headers: [string, string][] = [[BUILD_ID_HEADER, this.servedBuildId]];
     if (this.goingAway) headers.push(["Connection", "close"]);
     return withHeaders(response, headers);
   }

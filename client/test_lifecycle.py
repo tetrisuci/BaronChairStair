@@ -8,7 +8,8 @@ it rises and falls once per interaction however many times either end is
 reported, and it cannot stick above zero forever, because a stuck count would
 make every stop wait out its whole grace and every deploy believe the bot is
 busy. And a stop is polite: it refuses new work, waits for what is running,
-closes, and exits 0 — and a second signal does not wait.
+closes, and exits 0 — immediate duplicate signals keep the grace, while a
+second signal at least two seconds later does not wait.
 
 The last class runs a real process and sends it real signals, because a
 handler that is installed on the wrong loop, or not at all, passes every test
@@ -229,14 +230,34 @@ class StoppingPolitely(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.close.calls, 1)
         self.assertIn("1 still running", self.log.getvalue())
 
-    async def test_one_signal_stops_gracefully_and_a_second_closes_at_once(self):
+    async def test_one_signal_stops_gracefully_and_a_later_second_closes_at_once(self):
         self.life.admit(("interaction", 1))
-        stop = lifecycle.SignalStop(self.life, self.close, grace_s=60)
+        mono = Ticks()
+        stop = lifecycle.SignalStop(self.life, self.close, grace_s=60, monotonic=mono)
         stop.handle("SIGTERM")
         await asyncio.sleep(0.02)
         self.assertTrue(stop.requested)
         self.assertEqual(self.close.calls, 0)
+        mono.value = lifecycle.STOP_REPEAT_WINDOW_S
         stop.handle("SIGINT")
+        await asyncio.sleep(0.02)
+        self.assertEqual(self.close.calls, 1)
+
+    async def test_duplicate_signals_preserve_the_grace_and_do_not_reset_the_window(self):
+        self.life.admit(("interaction", 1))
+        mono = Ticks()
+        stop = lifecycle.SignalStop(self.life, self.close, grace_s=60, monotonic=mono)
+        stop.handle("SIGTERM")
+        await asyncio.sleep(0.02)
+        stop.handle("SIGTERM")
+        mono.value = lifecycle.STOP_REPEAT_WINDOW_S - 0.001
+        stop.handle("SIGINT")
+        await asyncio.sleep(0.02)
+        self.assertEqual(self.close.calls, 0, "a repeat skipped the running command's grace")
+        self.assertIn("the same stop again", self.log.getvalue())
+
+        mono.value = lifecycle.STOP_REPEAT_WINDOW_S
+        stop.handle("SIGTERM")
         await asyncio.sleep(0.02)
         self.assertEqual(self.close.calls, 1)
 
@@ -483,16 +504,18 @@ class ARealProcess(unittest.TestCase):
         self.assertLess(took, 6)
         self.assertIn("1 still running", err)
 
+    def test_a_duplicate_stop_signal_still_waits_for_the_command_grace(self):
+        code, took, _, err, *_ = self.run_child(
+            1.0, True, [signal.SIGTERM, signal.SIGINT])
+        self.assertEqual(code, 0, err)
+        self.assertGreaterEqual(took, 0.9, "a duplicated stop cut the command off")
+        self.assertIn("1 still running", err)
+
     def test_while_it_drains_the_file_on_disk_already_says_stopping(self):
         # What the deploy reads between its signal and the exit: a bot that
         # is stopping and still has a command running, not a stale "ready".
-        def look_then_hurry(child, status_path):
-            seen = self.status_while_alive(child, status_path)
-            child.send_signal(signal.SIGTERM)  # the second signal: no need to wait out the grace
-            return seen
-
         code, _, _, err, _, seen = self.run_child(
-            DRAIN_GRACE_S, True, [signal.SIGTERM], watch=look_then_hurry)
+            DRAIN_GRACE_S, True, [signal.SIGTERM], watch=self.status_while_alive)
         self.assertEqual(code, 0, err)
         self.assertIsNotNone(seen, "the file never said stopping while the bot drained")
         self.assertEqual((seen["state"], seen["inflight"]), ("stopping", 1))
@@ -507,7 +530,12 @@ class ARealProcess(unittest.TestCase):
         self.assertNotIn("Traceback", err)
 
     def test_a_second_signal_does_not_wait_out_the_grace(self):
-        code, took, _, err, *_ = self.run_child(60, True, [signal.SIGTERM, signal.SIGTERM])
+        def hurry_later(child, _status_path):
+            time.sleep(lifecycle.STOP_REPEAT_WINDOW_S)
+            child.send_signal(signal.SIGTERM)
+
+        code, took, _, err, *_ = self.run_child(
+            60, True, [signal.SIGTERM], watch=hurry_later)
         self.assertEqual(code, 0, err)
         self.assertLess(took, 10)
 

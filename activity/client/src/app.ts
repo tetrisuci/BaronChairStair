@@ -1691,9 +1691,6 @@ export class App {
     this.stampBadge(summary.solved > 0, `${summary.solved} solved`);
     if (!ticket) return;
 
-    // Whether the hand-in needed a retry, for the one line that would
-    // otherwise misread one — see `isFirst` below.
-    let retried = false;
     try {
       const response = await this.handingIn(() =>
         this.connection.api.submitRush(
@@ -1709,10 +1706,7 @@ export class App {
           // the whole of the grace; handed in early, the schedule runs out first.
           {
             deadline: ticket.handInBy,
-            onRetrying: (notice) => {
-              retried = true;
-              this.showReconnecting(notice);
-            },
+            onRetrying: (notice) => this.showReconnecting(notice),
           },
         ),
       );
@@ -1725,12 +1719,9 @@ export class App {
         run: response.run,
         played: response.played,
         ranked: response.ranked,
-        // A ranked ticket is minted only while no rush is filed for the day,
-        // so a retry told "not first" is hearing about its own first attempt,
-        // filed in the restart with its answer lost — this player's run,
-        // filed once. Without a retry the server's word stands: two ranked
-        // rushes started side by side, and the other one was handed in first.
-        isFirst: response.isFirst || (retried && response.ranked),
+        // The server remembers which signed ticket filed the ranked run, so
+        // this remains exact even if another device filed during a retry.
+        isFirst: response.isFirst,
         best: response.best,
       });
       this.rushBoard.update(response.leaderboard, this.connection.player.id);

@@ -327,7 +327,8 @@ On SIGINT — pm2's own stop — or SIGTERM — systemd's, and `kill`'s — the 
 words as a reply) with "Restarting — try again in a few seconds." instead of running
 it, waits up to `BOT_SHUTDOWN_GRACE_S` (20 seconds by
 default) for the commands already running, closes its Discord connection and exits 0.
-A second signal stops the wait. **`/archive sync` can run five minutes, and the stop
+A second signal at least two seconds after the first stops the wait; an immediate
+repeat keeps the grace. **`/archive sync` can run five minutes, and the stop
 does not wait for it**: stopped part-way, the sync loses its reply and its reload, and
 can leave rows synced but not published. So stop the bot only while no sync runs. The
 `pgrep` line sees the sync's own process whether or not the bot writes a status file;

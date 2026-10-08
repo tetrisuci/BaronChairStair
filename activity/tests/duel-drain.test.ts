@@ -180,6 +180,49 @@ describe("a handover", () => {
     expect(duels.duelCounts()).toEqual({ duelsInMatch: 1, lobbies: 0 });
   });
 
+  for (const mode of ["puzzle", "rush"] as const) {
+    test(`a dropped connection during a ${mode} match cancels it without awarding a win`, async () => {
+      const { host, guest } = await seated({ ...oneRound, mode });
+      host.send({ type: "ready" });
+      await host.take(mode === "rush" ? "rush" : "round");
+      await guest.take(mode === "rush" ? "rush" : "round");
+      duels.drainDuels();
+
+      guest.close();
+
+      expect(await host.closed).toEqual(handover);
+      // A reconnect cannot reach this process, so no player forfeited and no
+      // result is reported. The remaining player can open Duel on the new one.
+      expect(host.received.some((event) => event.type === "matchOver")).toBe(false);
+      expect(lastNotice(host)).toMatch(/open duel again/i);
+      expect(duels.duelCounts()).toEqual({ duelsInMatch: 0, lobbies: 0 });
+    });
+  }
+
+  test.skipIf(!hasSolutions)("a connection dropped between rounds cancels the match and its next round", async () => {
+    const { host, guest } = await seated({ ...oneRound, rounds: 3 });
+    duels.useIntermission(1_000);
+    try {
+      host.send({ type: "ready" });
+      const round = await host.take("round");
+      await guest.take("round");
+      host.send({ type: "claim", position: round.round, events: solvingLog(answerFor(round.puzzle)) });
+      expect((await host.take("roundOver")).nextRoundAt).not.toBeNull();
+      await guest.take("roundOver");
+      duels.drainDuels();
+
+      guest.close();
+      expect(await host.closed).toEqual(handover);
+      // Outlast the real pause, so a pending next round would have run.
+      await Bun.sleep(1_100);
+      expect(host.received.filter((event) => event.type === "round")).toHaveLength(1);
+      expect(host.received.some((event) => event.type === "matchOver")).toBe(false);
+      expect(duels.duelCounts()).toEqual({ duelsInMatch: 0, lobbies: 0 });
+    } finally {
+      duels.useIntermission(1);
+    }
+  });
+
   test("once the match ends, offers no rematch and sends both players away", async () => {
     const { host, guest } = await inMatch();
     duels.drainDuels();

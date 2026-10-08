@@ -24,7 +24,7 @@ export const BUILD_ID_HEADER = "X-Build-Id";
 
 /**
  * Where the client's build records its id, inside the build directory: the
- * game reads it at boot so its header names the bundle it serves, and the
+ * game checks it while running so its header names the bundle it serves, and the
  * client is compiled with the same id, so the two can be compared.
  */
 export const BUILD_ID_FILE = "build.json";

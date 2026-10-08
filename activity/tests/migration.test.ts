@@ -422,6 +422,9 @@ describe("writing down what a day dealt", () => {
         "guilds",
         "players",
         "preferences",
+        // Retry receipts are additive; old clear rows and their counts stay
+        // untouched while new hand-ins can be recognised after a restart.
+        "puzzle_clear_attempts",
         // Append-only, beside the current-state row above: one `updated_by` for
         // five fields meant the second officer to correct a puzzle took credit
         // for the first one's work, and a revert erased that a correction had

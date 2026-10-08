@@ -2,6 +2,14 @@
   "$comment": "The project's version and its player-facing release notes. Newest first; order in this list IS the version order. Read by client/changelog.py for /puzzle changelog, requested privately. Adding a release means putting it at the top. Keep `changes` to things a player can see.",
   "releases": [
     {
+      "version": "beta 0.24",
+      "changes": [
+        "**A dropped duel connection during a server handover now ends the match without a winner.** The other player is told the server is updating. Using the Leave command still forfeits the match.",
+        "**Retrying a practice or rush hand-in after a lost reply counts each solved puzzle once.** A rush retry also reports whether that run earned the day's ranked result, even if another device handed in a rush while it was reconnecting.",
+        "**Update ready now follows the client bundle when it is rebuilt.** The server notices the new bundle within two seconds when answering requests, and newly opened pages no longer keep offering a reload for the bundle they already have."
+      ]
+    },
+    {
       "version": "beta 0.23",
       "changes": [
         "**A hand-in now retries when the connection drops partway through the server's reply**, as well as before the reply starts. Daily sheets, rushes and practice clears can recover from that interruption instead of failing at once."

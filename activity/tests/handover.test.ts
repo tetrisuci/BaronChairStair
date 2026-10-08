@@ -7,6 +7,8 @@
  * way on the old one keeps working — which needs the old process to stay alive
  * once it has nothing left to listen on — and the old one exits 0 on
  * `SIGTERM`, closing the match it was still holding with 1012 "restart".
+ * A connection dropped while draining cancels only its own match, without
+ * a forfeit: reconnects go to the new process, which cannot restore it.
  *
  * Nothing is asserted about the overlap, while both processes are listening:
  * which one a new connection reaches then depends on the operating system
@@ -185,8 +187,10 @@ describe("a handover on one port", () => {
   let host: DuelSocket;
   let guest: DuelSocket;
   let waiting: DuelSocket;
+  let droppedHost: DuelSocket;
+  let droppedGuest: DuelSocket;
 
-  test("the old process serves, and holds a match and a lobby", async () => {
+  test("the old process serves, and holds matches and a lobby", async () => {
     old = startGame("old", "build-old");
     const status = await waitForStatus(old, (s) => s.state === "serving", "serving");
     expect(status).toMatchObject({ pid: old.process.pid, port, buildId: BUILT ? status.buildId : "build-old" });
@@ -203,6 +207,16 @@ describe("a handover on one port", () => {
     await guest.take("round");
     waiting.send({ type: "open", settings: DEFAULT_DUEL_SETTINGS });
     await waiting.take("duel");
+
+    droppedHost = await duelSocketFor("handover-dropped-host");
+    droppedGuest = await duelSocketFor("handover-dropped-guest");
+    droppedHost.send({ type: "open", settings: DEFAULT_DUEL_SETTINGS });
+    const droppedRoom = await droppedHost.take("duel");
+    droppedGuest.send({ type: "join", duelId: droppedRoom.duel.id });
+    await droppedGuest.take("duel");
+    droppedHost.send({ type: "ready" });
+    await droppedHost.take("round");
+    await droppedGuest.take("round");
   }, BOOT_TIMEOUT_MS);
 
   test("the new process starts beside it, on the same port", async () => {
@@ -215,7 +229,7 @@ describe("a handover on one port", () => {
   test("SIGHUP: the old one drains, sends the lobby away and keeps the match", async () => {
     old.process.kill("SIGHUP");
     const status = await waitForStatus(old, (s) => s.state === "draining", "draining");
-    expect(status).toMatchObject({ duelsInMatch: 1, lobbies: 0 });
+    expect(status).toMatchObject({ duelsInMatch: 2, lobbies: 0 });
     expect(await waiting.closed).toEqual({ code: SERVER_GOING_AWAY.code, reason: SERVER_GOING_AWAY.handover });
 
     // Still alive with nothing to listen on, and still refereeing.
@@ -243,6 +257,26 @@ describe("a handover on one port", () => {
     // And a player sent away reopens there: the old process would refuse it.
     const reopened = await duelSocketFor("handover-waiting");
     reopened.close();
+  }, BOOT_TIMEOUT_MS);
+
+  test("a dropped match during the drain ends without a forfeit, and its player reopens on the new process", async () => {
+    droppedGuest.close();
+    expect(await droppedHost.closed).toEqual({
+      code: SERVER_GOING_AWAY.code,
+      reason: SERVER_GOING_AWAY.handover,
+    });
+    expect(droppedHost.received.some((event) => event.type === "matchOver")).toBe(false);
+    await waitForStatus(old, (s) => s.duelsInMatch === 1, "one remaining match");
+
+    const reopened = await duelSocketFor("handover-dropped-guest");
+    reopened.close();
+    // The independent match still runs on the old process.
+    host.send({
+      type: "progress",
+      progress: { piecesPlaced: 2, pieceBudget: 5, attack: 0, targetAttack: 4, solved: 0 },
+    });
+    await guest.take("opponent");
+    expect(old.process.exitCode).toBeNull();
   }, BOOT_TIMEOUT_MS);
 
   test("SIGTERM: the old one ends the match with 1012 restart and exits 0", async () => {

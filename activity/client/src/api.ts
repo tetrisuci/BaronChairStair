@@ -726,16 +726,15 @@ export class Api {
    * sent because the server replays it — a bare claim would let `puzzle_clears` fill with puzzles nobody played,
    * and the Explore ticks and the Archive board both read it as fact.
    *
-   * Rides out a restart like the other two hand-ins. A retry whose first
-   * attempt landed counts the clear twice in `times`, which is the price of
-   * not losing it; nothing ranks on that count.
+   * Rides out a restart like the other two hand-ins. One receipt is minted per
+   * solve, before retries begin, so a lost reply never counts that solve twice.
    */
   clearPuzzle(
     id: number,
     body: { handling: Handling; events: readonly InputEvent[] },
     options?: HandInOptions,
   ): Promise<{ solved: boolean; solution: readonly SolutionStep[] | null }> {
-    return this.handIn(`/api/puzzles/${id}/clear`, body, options);
+    return this.handIn(`/api/puzzles/${id}/clear`, { ...body, attemptId: crypto.randomUUID() }, options);
   }
 
   /**

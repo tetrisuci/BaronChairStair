@@ -2,7 +2,7 @@
  * The game's build names itself, twice: compiled into the client, and written
  * beside it as `build.json`.
  *
- * The two have to agree. The server reads `build.json` at boot and sends it as
+ * The two have to agree. The server reads the served `build.json` and sends it as
  * `X-Build-Id` on every response; a page compiled from a different build sees
  * a different id and offers a reload. So one id, resolved once per build, goes
  * into both — and this checks the resolving, the file, and that the config
@@ -25,6 +25,7 @@ import { type Plugin, resolveConfig } from "vite";
 import viteConfig, { BUILD_ID_DEFINE, buildIdPlugin, resolveBuildId, writeBuildIdFile } from "../vite.config";
 import { BUILD_ID_FILE } from "../shared/runtime-status";
 import { DEV_BUILD_ID } from "../client/src/build-id";
+import { readBuildId } from "../server/build-id";
 
 let scratch: string;
 
@@ -37,6 +38,15 @@ afterAll(() => {
 });
 
 describe("resolveBuildId", () => {
+  test("a plus in a release name survives the build and the server's recorded id", () => {
+    const buildId = resolveBuildId({ BUILD_ID: "release+hotfix" }, () => null);
+    const dir = join(scratch, "plus");
+    writeBuildIdFile(dir, buildId);
+    expect(readBuildId(dir, null)).toBe(buildId);
+    const config = buildIdPlugin(buildId).config as unknown as () => { define: Record<string, string> };
+    expect(JSON.parse(config().define[BUILD_ID_DEFINE]!)).toBe(buildId);
+  });
+
   test("BUILD_ID wins when the deploy sets it", () => {
     expect(resolveBuildId({ BUILD_ID: "0fcedc3" }, () => "a1b2c3d")).toBe("0fcedc3");
   });
