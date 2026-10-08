@@ -5,7 +5,10 @@
  * The order is the guides' order, and load-bearing: both installs come before
  * any check, the checks before either build, and the marker last — written
  * only when every step passed, so a switch can never pick up a release that
- * failed halfway.
+ * failed halfway. A marker already there that does not count (its directory
+ * was removed by hand, so it vouches for nothing) is removed before the
+ * release is checked out again: the new checkout would otherwise revive it,
+ * whatever the checks then said.
  *
  * **No check can reach the live database or a secret.** The links to the env
  * files (activity/.env -> shared/activity.env, .env -> shared/bot.env) are
@@ -226,6 +229,9 @@ export async function prepare(ctx: Context, ref: string): Promise<string> {
     host.out(`${shortSha(sha)} is already prepared`);
     return sha;
   }
+  // A marker that vouches for nothing — its directory removed by hand, or unreadable — goes
+  // first: the checkout below would revive it, and it would outlive a failed check.
+  removeFile(ctx, markerPath(layout, sha));
   if (existsSync(dir)) {
     host.out(`${dir} exists without a marker: checking it again in place`);
     clearEnvLinks(ctx, dir);

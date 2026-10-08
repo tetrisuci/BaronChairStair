@@ -299,6 +299,33 @@ describe("a release that fails", () => {
     await expect(prepare(box.context(), "no-such-branch")).rejects.toThrow(/no-such-branch/);
   });
 
+  /*
+   * The marker lives beside the release, so it outlives a directory removed
+   * by hand (`git worktree remove`, or `rm -rf` and `git worktree prune`).
+   * A prepare that checked the release out again would bring that old marker
+   * back to life, and if its checks then failed, the release would still
+   * count as prepared — with no `.env` links, so a bot switched to it would
+   * start with no token.
+   */
+  test("a marker left from a release directory removed by hand is gone before it is checked out again", async () => {
+    const box = buildingBox();
+    const dir = box.prepareRelease(NEW);
+    rmSync(dir, { recursive: true });
+    const marker = markerPath(box.layout, NEW);
+    const markerAtCheckout: boolean[] = [];
+    const build = box.respond;
+    box.respond = (command) => {
+      if (command.argv[3] === "worktree") markerAtCheckout.push(existsSync(marker));
+      return command.argv.join(" ") === `${BUN} test` ? { code: 1, stdout: "", stderr: " 1 fail\n" } : build(command);
+    };
+
+    await expect(prepare(box.context(), NEW)).rejects.toThrow(/bun test failed/);
+
+    expect(markerAtCheckout).toEqual([false]);
+    expect(existsSync(marker)).toBe(false);
+    expect(isPrepared(box.layout, NEW)).toBe(false);
+  });
+
   test("a failed release is rechecked in place on the next prepare, without a second checkout", async () => {
     const box = buildingBox();
     const build = box.respond;
