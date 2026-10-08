@@ -9,17 +9,31 @@
  * that process lives. So the order is:
  *
  * 1. start the idle slot on the new release, and wait until its status file
- *    says it is serving *that* build, from a live pid, freshly written;
+ *    says it is serving *that* build, from a live pid, freshly written — and
+ *    still says so, from the same pid, a few seconds later (`new-slot.ts`);
  * 2. only then tell the live slot to drain (SIGHUP): it stops listening,
  *    closes empty lobbies, and keeps its matches going to their end;
  * 3. wait until it reports drained, or the drain limit passes — or its
  *    process is known to be gone; a stale status is not that
- *    (`game-drain.ts`);
- * 4. stop it — pm2's graceful stop, which ends any match still going with a
- *    "restarted" notice — and remove it from pm2's table.
+ *    (`game-drain.ts`) — watching the new slot all the while;
+ * 4. once the new slot still serves, stop the old one — pm2's graceful stop,
+ *    which ends any match still going with a "restarted" notice — and remove
+ *    it from pm2's table.
  *
- * If the new slot never comes up, it is stopped and the live slot is never
- * touched: the box is exactly as it was.
+ * If the new slot never comes up, or does not stay up, it is stopped and the
+ * live slot is never touched: the box is exactly as it was. If it dies once
+ * the drain has begun, the old slot is not stopped either — it no longer
+ * listens, but its matches go on — and the switch stops, saying how to
+ * recover.
+ *
+ * Running a switch again finishes one that was interrupted. state.json names
+ * the new slot before the drain, and pm2's list is saved only at the end, so
+ * a run stopped in between leaves the old slot in pm2 — draining, stopped, or
+ * deleted without a save — and pm2's saved list on the old code. When the
+ * slot state.json names serves the release asked for, the switch drains what
+ * is left of the old slot (to the usual limit), takes it out of pm2, and
+ * saves pm2's list; with nothing left over, it only saves. The slot
+ * state.json names is never the one taken out.
  *
  * A live slot that cannot drain (code from before the contract, which writes
  * no status file and binds the port without reusePort, or a hung process) is
@@ -42,6 +56,7 @@ import { reportDone } from "./exec";
 import { drain, servingPid, type LiveSlot } from "./game-drain";
 import type { Context } from "./host";
 import { slotStatusFile } from "./layout";
+import { STEADY_MS, confirmSteady, newSlotGone, newSlotLost, readServing, stillServing, type NewSlot } from "./new-slot";
 import { findProcess, isOnline, pm2Delete, pm2List, pm2Save, pm2Start, pm2Stop, type Pm2Process } from "./pm2";
 import { gameOf, gameServing, unusableReason } from "./readiness";
 import { requirePrepared, shortSha } from "./release";
@@ -73,13 +88,14 @@ function otherSlot(ctx: Context, slot: string): string {
 }
 
 /**
- * The refusal when both slots run, with the whole way out.
+ * The refusal when both slots run and the switch cannot finish the job
+ * itself — state.json names neither, the target is another release, the slot
+ * it names does not serve, or the other cannot be told to drain — with the
+ * whole way out.
  *
  * Stop, delete *and* save: a slot that is only stopped stays in pm2's table,
- * and running the switch again then answers "nothing to do" without a
- * `pm2 save`, so pm2's saved list is still the one from before the
- * interrupted switch — and a reboot brings the old slot back on old code
- * instead of the new one.
+ * and pm2's saved list, still the one from before the interrupted switch,
+ * brings it back on old code at the next reboot instead of the new one.
  */
 function bothRunning(state: DeployState, online: readonly string[]): DeployError {
   const head =
@@ -130,8 +146,17 @@ async function probe(ctx: Context, sha: string, when: string): Promise<void> {
   ctx.host.out(`health probe ${when}: ${reply.status}, answered by ${build}`);
 }
 
-/** Start `idle` on `sha` and wait for it to serve; on failure, stop it and leave the box as it was. */
-async function startIdle(ctx: Context, state: DeployState, slots: Slots, sha: string, idleProcess: Pm2Process | undefined): Promise<void> {
+/**
+ * Start `idle` on `sha` and wait for it to serve, steadily; on failure, stop
+ * it and leave the box as it was. Null in a dry run, which starts nothing.
+ */
+async function startIdle(
+  ctx: Context,
+  state: DeployState,
+  slots: Slots,
+  sha: string,
+  idleProcess: Pm2Process | undefined,
+): Promise<NewSlot | null> {
   const { idle, active } = slots;
   const statusFile = slotStatusFile(ctx.layout, idle);
   if (idleProcess) await pm2Delete(ctx, idle);
@@ -149,27 +174,123 @@ async function startIdle(ctx: Context, state: DeployState, slots: Slots, sha: st
     throw error;
   }
   if (ctx.dryRun) {
-    ctx.host.out(`would wait up to ${START_TIMEOUT_MS / 1000} s for ${idle} to report serving ${shortSha(sha)}`);
-    return;
+    ctx.host.out(
+      `would wait up to ${START_TIMEOUT_MS / 1000} s for ${idle} to report serving ${shortSha(sha)}, ` +
+        `and ${STEADY_MS / 1000} s more for it to stay up`,
+    );
+    return null;
   }
   const { host } = ctx;
   const serving = await waitUntil(ctx, () => gameServing(host.readStatus(statusFile), sha, host.clock.now(), host.pidAlive), {
     timeoutMs: START_TIMEOUT_MS,
     intervalMs: START_POLL_MS,
   });
-  if (serving) {
-    host.out(`${idle} serves ${shortSha(sha)}`);
-    return;
+  const steady = serving ? await confirmSteady(ctx, idle, sha) : null;
+  if (steady?.ok) {
+    host.out(`${idle} serves ${shortSha(sha)} (pid ${steady.pid}, steady for ${STEADY_MS / 1000} s)`);
+    return { name: idle, pid: steady.pid, sha };
   }
   const reading = host.readStatus(statusFile);
-  const last = unusableReason(reading, host.clock.now()) ?? describeLast(gameOf(reading), sha);
+  const why =
+    steady === null
+      ? `did not report serving ${shortSha(sha)} within ${START_TIMEOUT_MS / 1000} s ` +
+        `(${unusableReason(reading, host.clock.now()) ?? describeLast(gameOf(reading), sha)})`
+      : `reported serving ${shortSha(sha)}, then did not stay up: ${steady.problem}`;
   await pm2Stop(ctx, idle);
   await pm2Delete(ctx, idle);
   writeEcosystem(ctx, assignmentsOf(state));
   throw new DeployError(
-    `${idle} did not report serving ${shortSha(sha)} within ${START_TIMEOUT_MS / 1000} s (${last}). ` +
-      `It is stopped and out of pm2. ` +
+    `${idle} ${why}. It is stopped and out of pm2. ` +
       `Its output is in pm2's logs for ${idle} (~/.pm2/logs/${idle}-out.log and -error.log).`,
+  );
+}
+
+/**
+ * Drain `old` while watching the new slot, then stop `old` — but only once
+ * the new slot still serves. `previous` is where `rollback game` would go.
+ * `started` is null only in a dry run.
+ */
+async function retire(
+  ctx: Context,
+  previous: string | null,
+  old: LiveSlot & { readonly drainable: true },
+  started: NewSlot | null,
+): Promise<void> {
+  if (started === null) {
+    await drain(ctx, old);
+  } else {
+    const problem = (await drain(ctx, old, () => newSlotGone(ctx, started))) ?? (await stillServing(ctx, started));
+    if (problem !== null) throw newSlotLost(ctx, previous, old.name, started, problem);
+  }
+  await pm2Stop(ctx, old.name);
+}
+
+/**
+ * The slot state.json names, when pm2 runs it and it serves `sha`: the switch
+ * to `sha` happened already, or all of it but the old slot's removal and the
+ * save. Null otherwise; a recorded slot that runs but does not serve `sha` is
+ * said, and switched again.
+ */
+function recordedServing(ctx: Context, state: DeployState, processes: readonly Pm2Process[], sha: string): string | null {
+  const slot = state.game.activeSlot;
+  if (slot === null || state.game.release !== sha || !isOnline(findProcess(processes, slot))) return null;
+  const serving = readServing(ctx, slot, sha);
+  if (serving.ok) return slot;
+  ctx.host.out(
+    `warning: state.json records ${slot} on ${shortSha(sha)} and pm2 runs it, but it does not serve ${shortSha(sha)} ` +
+      `(${serving.problem}); switching again`,
+  );
+  return null;
+}
+
+/** The old slot still runs beside the recorded one: a switch stopped mid-drain. Drain it to the usual limit, and stop it. */
+async function finishDrain(ctx: Context, state: DeployState, live: string, other: string, sha: string): Promise<void> {
+  const old = inspectLive(ctx, other);
+  if (!old.drainable) throw bothRunning(state, [live, other]);
+  ctx.host.out(
+    `${other} still runs beside ${live}, which serves ${shortSha(sha)}: a switch was interrupted before ${other} ` +
+      "had drained. Finishing it",
+  );
+  let started: NewSlot | null = null;
+  if (!ctx.dryRun) {
+    const steady = await confirmSteady(ctx, live, sha);
+    if (!steady.ok) {
+      throw new DeployError(
+        `${live}, which state.json names, does not serve ${shortSha(sha)} steadily (${steady.problem}), so ${other} ` +
+          "is not told to drain; neither slot was touched. Check `bun run deploy status`, and run this again.",
+      );
+    }
+    started = { name: live, pid: steady.pid, sha };
+  }
+  await retire(ctx, state.game.previous, old, started);
+}
+
+/** Finish a switch to `sha` that state.json already records: take out what is left of the old slot, and save. */
+async function finishRecorded(
+  ctx: Context,
+  state: DeployState,
+  processes: readonly Pm2Process[],
+  live: string,
+  sha: string,
+): Promise<void> {
+  const other = otherSlot(ctx, live);
+  const leftover = findProcess(processes, other);
+  if (leftover !== undefined) {
+    if (isOnline(leftover)) {
+      await finishDrain(ctx, state, live, other, sha);
+    } else {
+      ctx.host.out(`${other} is still in pm2's table (${leftover.status}): a switch was interrupted after its drain; taking it out`);
+    }
+    await pm2Delete(ctx, other);
+  }
+  // The file and pm2's saved list may both still be the interrupted run's.
+  writeEcosystem(ctx, assignmentsOf(state));
+  await pm2Save(ctx);
+  reportDone(
+    ctx,
+    leftover === undefined
+      ? `game: ${live} already serves ${shortSha(sha)}; nothing to switch, pm2's list saved (--force switches anyway)`
+      : `game: ${live} serves ${shortSha(sha)}; ${other} is out of pm2, and pm2's list saved`,
   );
 }
 
@@ -210,23 +331,20 @@ function describeLast(status: GameStatus | null, sha: string): string {
 export async function switchGame(ctx: Context, sha: string, options: GameSwitchOptions): Promise<void> {
   requirePrepared(ctx, sha, options.assumePrepared);
   requireSharedFiles(ctx, ["daily"], "the game");
-  const { host } = ctx;
   const state = loadState(ctx);
   const processes = await pm2List(ctx);
+  const recorded = options.force ? null : recordedServing(ctx, state, processes, sha);
+  if (recorded !== null) return finishRecorded(ctx, state, processes, recorded, sha);
   const slots = pickSlots(ctx, state, processes);
   const { active, idle } = slots;
-
-  if (!options.force && active !== null && active === state.game.activeSlot && state.game.release === sha) {
-    host.out(`game: ${active} already serves ${shortSha(sha)}; nothing to do (--force switches anyway)`);
-    return;
-  }
   const live = active === null ? null : inspectLive(ctx, active);
   if (live !== null && !live.drainable) {
     if (!options.allowCold) throw coldRefused(live);
     await stopCold(ctx, live);
   }
+  let started: NewSlot | null;
   try {
-    await startIdle(ctx, state, slots, sha, findProcess(processes, idle));
+    started = await startIdle(ctx, state, slots, sha, findProcess(processes, idle));
   } catch (error) {
     throw startFailed(ctx, error, live);
   }
@@ -237,10 +355,7 @@ export async function switchGame(ctx: Context, sha: string, options: GameSwitchO
   writeEcosystem(ctx, assignmentsOf(next));
 
   if (live !== null) {
-    if (live.drainable) {
-      await drain(ctx, live);
-      await pm2Stop(ctx, live.name);
-    }
+    if (live.drainable) await retire(ctx, next.game.previous, live, started);
     await pm2Delete(ctx, live.name);
   }
   for (const leftover of ctx.config.pm2.gameSlots) {

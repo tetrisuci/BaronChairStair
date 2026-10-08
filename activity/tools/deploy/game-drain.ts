@@ -11,6 +11,10 @@
  * match still running there with a "restarted" notice, so the wait goes on,
  * to the drain limit if need be, and the progress line says the status is
  * stale.
+ *
+ * The wait also ends, at once, when the caller's `abortIf` says so: the new
+ * slot's process is gone (`new-slot.ts`). Then nothing is reported as
+ * drained, and the old slot is left for the caller to explain, never stopped.
  */
 
 import { isDrained, isFresh, type GameStatus } from "../../shared/runtime-status";
@@ -71,8 +75,16 @@ function describeReading(reading: DrainReading, lastCounts: GameStatus | null): 
   return `${reading.reason}${known}`;
 }
 
-/** Tell the live slot to drain, and wait for it — or for the limit. */
-export async function drain(ctx: Context, live: LiveSlot & { readonly drainable: true }): Promise<void> {
+/**
+ * Tell the live slot to drain, and wait for it — or for the limit. Returns
+ * null when the wait ended so (drained, the limit, the old process gone), or
+ * what `abortIf` said when it ended the wait instead.
+ */
+export async function drain(
+  ctx: Context,
+  live: LiveSlot & { readonly drainable: true },
+  abortIf: () => string | null = () => null,
+): Promise<string | null> {
   const { host, config } = ctx;
   const slot = live.name;
   // Read again: pm2 may have restarted the slot while the new one started.
@@ -80,13 +92,16 @@ export async function drain(ctx: Context, live: LiveSlot & { readonly drainable:
   await pm2Drain(ctx, slot);
   if (ctx.dryRun) {
     host.out(`would wait up to ${config.drainLimitMinutes} min for ${slot} to drain`);
-    return;
+    return null;
   }
   let latest = NOT_READ;
   let lastCounts: GameStatus | null = null;
+  let aborted: string | null = null;
   const drained = await waitUntil(
     ctx,
     () => {
+      aborted = abortIf();
+      if (aborted !== null) return true;
       latest = readDrain(ctx, slot, pid);
       if (latest.kind === "counts") lastCounts = latest.status;
       return latest.kind === "gone" || (latest.kind === "counts" && isDrained(latest.status));
@@ -102,7 +117,9 @@ export async function drain(ctx: Context, live: LiveSlot & { readonly drainable:
       },
     },
   );
+  if (aborted !== null) return aborted;
   reportDrain(ctx, slot, drained, latest, lastCounts);
+  return null;
 }
 
 function reportDrain(ctx: Context, slot: string, drained: boolean, latest: DrainReading, lastCounts: GameStatus | null): void {

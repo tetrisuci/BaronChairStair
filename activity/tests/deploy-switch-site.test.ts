@@ -119,6 +119,33 @@ describe("switching the site", () => {
     expect(box.pm2Mutations()).toHaveLength(3);
   });
 
+  /*
+   * Stopped by hand, crashed until pm2 gave up, or gone from pm2: state.json
+   * still records the release, and the switch to it is how the site comes
+   * back. "Already runs" would leave it down.
+   */
+  for (const status of ["stopped", "errored"] as const) {
+    test(`a site ${status} in pm2 on the release state.json records is started again`, async () => {
+      const box = siteBox();
+      box.writeState({ site: { release: NEW, previous: OLD } });
+      const site = box.processes.get(SITE)!;
+      box.alive.delete(site.pid);
+      Object.assign(site, { status, pid: 0, cwd: join(box.layout.releases, NEW, "activity") });
+      await switchSite(box.context(), NEW, OPTIONS);
+      expect(box.pm2Mutations()).toEqual([["delete", SITE], ["start", box.layout.ecosystem, "--only", SITE], ["save"]]);
+      expect(box.output()).not.toContain("already runs");
+      expect(box.readState().site).toEqual({ release: NEW, previous: OLD });
+    });
+  }
+
+  test("a site gone from pm2 on the release state.json records is started", async () => {
+    const box = siteBox();
+    box.writeState({ site: { release: NEW, previous: OLD } });
+    box.processes.clear();
+    await switchSite(box.context(), NEW, OPTIONS);
+    expect(box.pm2Mutations()).toEqual([["start", box.layout.ecosystem, "--only", SITE], ["save"]]);
+  });
+
   test("a missing shared/daily.sqlite is refused before the site is touched", async () => {
     const box = siteBox();
     rmSync(join(box.layout.shared, "daily.sqlite"));

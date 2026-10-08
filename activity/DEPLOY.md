@@ -432,17 +432,21 @@ run at once: restart it through its manager, never with a signal of your own. In
 outline, what a handover does:
 
 1. start the new release's entry on the same `PORT` while the old one serves;
-2. wait for its status file to say `"state":"serving"`;
+2. wait for its status file to say `"state":"serving"`, and to say so again, from the
+   same pid, a few seconds later: a release that crashes just after binding the port is
+   restarted by its manager under a new pid;
 3. send the old process SIGHUP, by exact PID. It stops listening, after which every new
    connection reaches the new one; sends each lobby away with "The server is updating —
    open the lobby again"; keeps each match to its end, with no rematch; answers what
    still arrives on an old connection with `Connection: close`; and reports `draining`;
 4. wait for its file to say `"state":"draining"` with `"duelsInMatch":0` and
    `"inflight":0`, or for 20 minutes at most, since it never exits by itself;
-5. stop the old **entry** through its manager, which sends the stop signal and keeps it
-   stopped: `pm2 stop <its name>`, `pm2 delete <its name>`, then `pm2 save` (stopped
-   alone, it stays in pm2's table, and pm2's saved list can bring it back at a reboot);
-   under systemd, `systemctl stop <its unit>`.
+5. once the new one still serves, stop the old **entry** through its manager, which
+   sends the stop signal and keeps it stopped: `pm2 stop <its name>`, `pm2 delete <its
+   name>`, then `pm2 save` (stopped alone, it stays in pm2's table, and pm2's saved list
+   can bring it back at a reboot); under systemd, `systemctl stop <its unit>`. If the new
+   one has stopped serving by then, leave the old one up — it no longer listens, but its
+   matches go on — and bring the new one back, or roll back, first.
 
 It needs a second process-manager entry for the game, with its own `STATUS_FILE`, and
 the new release built where the new process serves it from. The deploy tool does all of

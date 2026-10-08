@@ -24,12 +24,17 @@ end of this file; until then the guides' manual steps apply unchanged.
   one.
 - **The game hands over on one port.** Both game slots bind the port with
   `reusePort`. The idle slot starts on the new release; once its status file
-  says it serves that exact build, the live slot gets `SIGHUP`: it stops
-  listening (every new connection now reaches the new process), keeps its
-  matches going, and reports when it is drained. Then it is stopped. If the
-  new slot never comes up, it is stopped and the live slot was never touched.
-  (The exception is a live slot running code from before the status
-  contract: see `--allow-cold`.)
+  says it serves that exact build, and says so again from the same pid 5 s
+  later, the live slot gets `SIGHUP`: it stops listening (every new
+  connection now reaches the new process), keeps its matches going, and
+  reports when it is drained. The new slot is watched all the while; once
+  the old one has drained and the new one still serves, the old one is
+  stopped. If the new slot never comes up, or does not stay up, it is
+  stopped and the live slot was never touched. (The exception is a live slot
+  running code from before the status contract: see `--allow-cold`.) If it
+  dies once the drain has begun, the old slot is left running — it no longer
+  listens, but its matches go on — and the switch stops, saying how to
+  recover (*If a switch is interrupted*).
 - **The site is replaced** (delete, start, wait for `/health`): it is
   stateless, and refuses to share its port, so a second or two of 502 is the
   whole cost. Its `/health` names no build, so an ok proves only that
@@ -111,7 +116,7 @@ bun run deploy <command>
 |---|---|
 | `prepare <ref>` | `git fetch`; resolve `<ref>` (a branch means `origin/<branch>`); add the worktree; link `solutions.json`, if the box has one; `bun install --frozen-lockfile` at the root and in `activity/`; `py_compile` of `client/*.py` and the bot's `unittest`; `bun x tsc --noEmit`; `DATABASE_PATH=<release>/activity/data/prepare-test.sqlite bun test` (must report `0 fail`); `BUILD_ID=<sha> bun run build` (must record the sha in `dist/build.json`); `bun run build:puzzledb`; only then link `activity.env` and `bot.env`; the marker. Stops at the first failure, shows its output, and leaves the release no link into `shared/`. Re-running rechecks a failed release in place, its env links taken out first. Preparing a prepared release runs nothing, and puts back a link that went missing. |
 | `backup [<ref>]` | `VACUUM INTO shared/backups/<daily\|stats>-<UTC time>-<sha>.sqlite` from a read-only connection. Refuses to overwrite a file, and refuses if either database is not in `shared/`. |
-| `switch game <ref> [--allow-cold] [--force]` | The handover above. Timeouts: 90 s for the new slot to serve, `drainLimitMinutes` for the drain (progress every 30 s, saying "status stale" when the old slot has stopped writing). At the limit the old slot is stopped anyway, which ends its remaining matches with a "restarted" notice. If its process exits, or pm2 restarts it, mid-drain, it is stopped at once. |
+| `switch game <ref> [--allow-cold] [--force]` | The handover above. Timeouts: 90 s for the new slot to serve, then 5 s on one pid to show it stays up; `drainLimitMinutes` for the drain (progress every 30 s, saying "status stale" when the old slot has stopped writing). At the limit the old slot is stopped anyway, which ends its remaining matches with a "restarted" notice. If its process exits, or pm2 restarts it, mid-drain, it is stopped at once. If the new slot's process exits, or pm2 restarts it, mid-drain, or it does not serve again within 30 s once the drain is over, the switch stops with exit 1 and leaves the old slot running. Run again on the release `state.json` already records, it finishes an interrupted switch (*If a switch is interrupted*), and starts a slot if pm2 runs none on it. |
 | `switch site <ref> [--force]` | Delete; refuse, with nothing started, if anything still answers the site's port after 10 s; start; wait up to 60 s for `/health` to answer `ok: true`; then confirm through pm2 that the new app is `online` on a live pid and on the same pid 5 s later. A failed check leaves the new app in pm2 for its logs, runs no `pm2 save`, keeps `rollback site` recorded, and says how to find what holds the port (`ss -ltnp`, `lsof`). |
 | `switch bot <ref> [--now] [--force]` | If no `botFiles` file differs from the bot's release, records the new release without restarting. Otherwise waits up to `botQuietLimitMinutes` for quiet, deletes the old bot, checks its pid is gone, starts the new one and waits up to 120 s for `ready` on the new build. A bot pm2 does not run — stopped, errored or gone — is started, even on the release `state.json` already records. Refuses, changing nothing, when pm2 lists no bot but a fresh `shared/run/bot.json` names a live pid: a bot running out of this pm2's sight. |
 | `deploy <ref> [--allow-cold] [--now] [--force]` | `prepare`, `backup`, then switch the game, the site and the bot. Stops at the first failure, saying what already moved and the `rollback` commands that move it back. It does not pause for the guides' checks between switches: see *A deploy, in the guides' order*. |
@@ -257,7 +262,10 @@ All with `interpreter: "none"`, `exec_mode: "fork"`, `watch: false`.
 - One deploy at a time (`shared/run/deploy.lock`); a lock left by a dead run is
   taken over. A dry run takes none.
 - A stopped game slot is deleted from pm2, and `pm2 save` runs only after a
-  switch succeeds, so a reboot never brings old code up beside new.
+  switch succeeds, so a reboot never brings old code up beside new. A switch
+  run again on the release `state.json` records takes out what an
+  interrupted one left and saves. The old slot is never stopped while the new
+  one is not serving.
 
 ## What a deploy looks like
 
@@ -268,7 +276,7 @@ these as shapes, not promises.
 | Step | Took | What you see |
 |---|---|---|
 | `prepare` | about 33 s, `bun test` about 21 s of it | One `ok:` line per check. Nothing running is touched. |
-| `switch game`, nothing to drain | about 1–1.5 s | The new slot serves about 1 s after `pm2 start`. `rollback game` took 1.4 s. |
+| `switch game`, nothing to drain | about 1–1.5 s, plus the 5 s steadiness check added since | The new slot serves about 1 s after `pm2 start`. `rollback game` took 1.4 s. |
 | `switch game` with a match going | as long as the match, up to `drainLimitMinutes` | New requests reach the new release from about 0.2 s after the drain signal, and none failed. A lobby on the old slot is closed (WebSocket close 1012, "handover") with "The server is updating"; a new lobby lands on the new slot; the match keeps going on the old one. `status` shows the new slot `serving · 0 duels` and the old `draining · 1 duel`. The old slot is stopped within about 5 s of its last match ending: the tool looks every 5 s. |
 | `switch site` | about 1 s, then 5 s of pm2 checks | db.tetrisatuci.org answers 502 from the delete until the new site has built its first dataset and bound the port: under 200 ms on the tiny database, longer on the box's. The pm2 checks after that cost no gap. |
 | `switch bot` | up to `botQuietLimitMinutes` for quiet, then up to 120 s for `ready` | Not rehearsed: the bot was never started there. |
@@ -284,7 +292,7 @@ What the rehearsal showed that is easy to misread:
 - **Linux is not macOS while both slots are up.** macOS sent every new
   connection to the old process until it stopped listening; Linux spreads
   new connections across both. So on the box some reach the new slot in the
-  second before the drain signal, which is harmless — it already serves — but
+  seconds before the drain signal, which is harmless — it already serves — but
   was not rehearsed.
 - **`0 sessions` during a duel.** Sessions are counted from HTTP requests, so
   a match played over its WebSocket alone shows none. Read the duels.
@@ -305,13 +313,26 @@ What the rehearsal showed that is easy to misread:
 
 ## If a switch is interrupted
 
-`state.json` names the new slot as soon as it serves, before the drain. If the
-tool is stopped mid-drain — Ctrl-C, or an SSH session that drops while it runs
-outside `tmux` — both slots stay up: the old one never exits by itself. Its
-matches go on and nothing is lost, but the next switch refuses ("both game
-slots are running") and names the slot `state.json` calls live. Run
-`bun run deploy status`, and once the other slot shows no duel, take it out
-of pm2 — all three commands, by its name:
+`state.json` names the new slot as soon as it serves steadily, before the
+drain, and pm2's list is saved only at the very end. If the tool stops in
+between — Ctrl-C, an SSH session that drops while it runs outside `tmux`, a
+pm2 command that failed — the old slot is left in pm2: still draining (it
+never exits by itself, so its matches go on and nothing is lost), stopped,
+or deleted with pm2's list not yet saved, so a reboot would bring the old
+code back. **Run the same switch again** (`bun run deploy switch game <sha>`,
+or the same `deploy <ref>`). When the slot `state.json` names is up and
+serves that release, it finishes the job: an old slot still running is told
+to drain again (harmless: one already draining ignores it) and waited for,
+to the usual limit, then stopped; one stopped is deleted; and pm2's list is
+saved. With nothing left over it only saves. The slot `state.json` names is
+never the one taken out.
+
+It refuses instead, touching nothing, when both slots run and it cannot
+tell which to keep: `state.json` names neither, the switch asked for is to
+another release, the slot it names does not serve, or the other writes no
+status and so cannot be told to drain. The refusal names the slot to take
+out when it can. Run `bun run deploy status`, and once that slot shows no
+duel, take it out of pm2 — all three commands, by its name:
 
 ```
 pm2 stop <the other slot>
@@ -319,12 +340,23 @@ pm2 delete <the other slot>
 pm2 save
 ```
 
-Stopped alone, it stays in pm2's table: the switch then answers "nothing to
-do" without a `pm2 save`, and pm2's saved list brings the old slot back on old
-code at the next reboot. The rehearsal found exactly that. If `state.json`
-names neither running slot, the refusal says so: `status` shows which build
-each one serves, and the one to remove is the one not on the release you
-meant.
+Stopped alone, it stays in pm2's table, and pm2's saved list brings it back
+on old code at the next reboot. If `state.json` names neither running slot,
+`status` shows which build each one serves, and the one to remove is the one
+not on the release you meant.
+
+**If the new slot dies mid-drain**, the switch stops at once with exit 1,
+and the old slot is not stopped: it no longer listens, but it keeps its
+matches to their end. Nothing may be answering the game's port. The error
+names both ways back:
+
+- **Start the new slot again.** pm2 may be restarting it already; if
+  `status` shows it stopped or errored, `pm2 start <home>/shared/ecosystem.config.cjs
+  --only <the new slot>`. Once `status` shows it serving the new build, run
+  the same `switch game <sha>` again: it finishes the old slot's drain.
+- **Roll back.** `pm2 stop <the new slot>`, then `bun run deploy rollback
+  game`: it starts that slot on the previous release beside the old one,
+  and only then finishes the old one's drain.
 
 ## Known limits
 
