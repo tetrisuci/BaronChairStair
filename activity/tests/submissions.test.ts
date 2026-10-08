@@ -55,7 +55,7 @@ beforeAll(async () => {
   process.env.ALLOW_GUEST_PLAY = "true";
   process.env.NODE_ENV = "test";
   delete process.env.DISCORD_CLIENT_SECRET;
-  fetchApp = (await import("../server/index")).default.fetch;
+  fetchApp = (await import("../server/index")).entrypoint.fetch;
   mintSession = (await import("../server/auth")).mintSession;
 
   // The path `config` settled on, not the one set above. Every test file in a

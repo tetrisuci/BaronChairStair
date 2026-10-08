@@ -31,12 +31,13 @@
  *
  * **On holding the write lock.** Decoding and replaying the whole sheet takes
  * the better part of a second, and doing it inside the transaction held the WAL
- * write lock for all of it. Nothing in this repository sets `busy_timeout`, so
- * the server's next `recordRun` would not wait — it would fail instantly and a
- * player's finished solve would be lost. So the work is split: every puzzle is
- * built first, with no transaction open, and the transaction wraps only the
- * writes. This connection also sets its own `busy_timeout`, so if the server is
- * mid-write the sync waits for it rather than dying.
+ * write lock for all of it. The server waits for another writer's lock, but only
+ * for `STORE_BUSY_TIMEOUT_MS` (five seconds, `server/db.ts`) — and it used
+ * to wait not at all — so a lock held through a slow replay can still cost a
+ * player's finished solve. So the work is split: every puzzle is built first,
+ * with no transaction open, and the transaction wraps only the writes. This
+ * connection also sets its own `busy_timeout`, so if the server is mid-write the
+ * sync waits for it rather than dying.
  *
  * It creates its one table from {@link ARCHIVE_SCHEMA} rather than constructing
  * a `Store`, for the reason `review-link.ts` gives: a Store construction runs
@@ -277,12 +278,20 @@ async function main(): Promise<void> {
   const db = new Database(options.db, { create: true });
   const now = Date.now();
   try {
-    // Wait for the server rather than failing instantly. Nothing else in this
-    // repository sets this, which is why a second writer normally dies on sight.
+    // Wait for the server rather than failing instantly. The server waits for
+    // us in turn, but only for STORE_BUSY_TIMEOUT_MS, which is why the
+    // transaction below holds nothing but the writes.
     db.run(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
     migrateArchive(db);
 
-    db.transaction(() => {
+    // IMMEDIATE: the write lock is taken at BEGIN, where busy_timeout waits
+    // for it. A DEFERRED transaction began by reading, and if the game
+    // committed a hand-in before the first write, that write failed at once —
+    // a stale snapshot is never retried — so a sync run while anybody played
+    // could report every changed puzzle as "database is locked". Held only for
+    // the loop below, which reads and writes rows and replays nothing:
+    // milliseconds, far inside the game's own wait.
+    const writeAll = db.transaction(() => {
       for (const { puzzle, meta } of built) {
         // A SAVEPOINT per puzzle, because the catch below is INSIDE the
         // transaction: without one, a puzzle that throws half-way through its
@@ -300,7 +309,20 @@ async function main(): Promise<void> {
         }
       }
       if (options.dryRun) throw new DryRun();
-    })();
+    });
+    try {
+      writeAll.immediate();
+    } catch (error) {
+      // The lock was never had: BEGIN IMMEDIATE outwaited busy_timeout. Nothing
+      // was written, and every puzzle is reported as unwritten, under the same
+      // heading a write that fails part-way uses — a database problem, never a
+      // broken puzzle.
+      if (!isLocked(error)) throw error;
+      for (const { puzzle } of built) {
+        report.unwritten.push({ id: puzzle.id, reason: (error as Error).message });
+      }
+      throw new NothingWritten();
+    }
     // After the commit, never inside it: publishing is a decision about what
     // the sync wrote, so it is only taken once that is on file. A dry run
     // never reaches this line — its transaction threw above.
@@ -309,7 +331,7 @@ async function main(): Promise<void> {
       report.published = publishArchive(db, waiting, options.by, now);
     }
   } catch (error) {
-    if (!(error instanceof DryRun)) throw error;
+    if (!(error instanceof DryRun) && !(error instanceof NothingWritten)) throw error;
   } finally {
     db.close();
   }
@@ -325,6 +347,15 @@ async function main(): Promise<void> {
 
 /** Rolls a dry run's transaction back without pretending an error happened. */
 class DryRun extends Error {}
+
+/** The write lock never came: the report already says so, puzzle by puzzle. */
+class NothingWritten extends Error {}
+
+/** SQLite's "database is locked" (SQLITE_BUSY and its extended codes). */
+function isLocked(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === "string" ? code.startsWith("SQLITE_BUSY") : /database is locked/.test(String(error));
+}
 
 if (import.meta.main) {
   await main();

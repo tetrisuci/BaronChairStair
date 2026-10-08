@@ -254,6 +254,9 @@ export function writeOverride(
   changes: OverrideChanges,
   updatedBy: string,
 ): PuzzleOverride | null {
+  // IMMEDIATE: it reads the standing correction before it writes, and a
+  // deferred transaction fails at once rather than wait for another writer at
+  // that point. See STORE_BUSY_TIMEOUT_MS in `server/db.ts`.
   return db.transaction(() => {
     const current = readOverride(db, puzzleId);
     const next: OverrideFields = {
@@ -303,7 +306,7 @@ export function writeOverride(
       throw new Error(`Puzzle ${puzzleId}'s correction vanished immediately after being written`);
     }
     return written;
-  })();
+  }).immediate();
 }
 
 /**
@@ -319,6 +322,8 @@ export function writeOverride(
  * @returns whether there was anything to revert, so a caller can say so.
  */
 export function deleteOverride(db: Database, puzzleId: number, revertedBy?: string): boolean {
+  // IMMEDIATE for the reason `writeOverride` is: it reads before it writes.
+  // Inside that one's transaction this is a savepoint, and the mode is moot.
   return db.transaction(() => {
     const standing = readOverride(db, puzzleId);
     if (revertedBy !== undefined && standing) {
@@ -328,5 +333,5 @@ export function deleteOverride(db: Database, puzzleId: number, revertedBy?: stri
       .query<unknown, [number]>("DELETE FROM puzzle_overrides WHERE puzzle_id = ?1")
       .run(puzzleId);
     return changes.changes > 0;
-  })();
+  }).immediate();
 }

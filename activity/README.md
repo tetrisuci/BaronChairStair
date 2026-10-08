@@ -523,6 +523,28 @@ claims; it cannot prove a person typed it. That is the same trade the daily and
 rush make, and it costs more here, because what a scripted opponent takes is
 somebody's match rather than a place on a board.
 
+## When the server is updated
+
+A deploy either restarts the server or hands it over to a new one on the same port
+([DEPLOY.md](DEPLOY.md), *Restarts and handovers*). What a player sees:
+
+- **A hand-in waits it out.** Handing in the daily or a rush while the server is away
+  shows "Reconnecting…" and tries again for about fifteen seconds — a rush only as
+  long as its own grace allows — before failing as it used to. A practice clear
+  tries again the same way, without the message. A
+  sheet solved before the daily reset and handed in after it is refused with "That
+  day is over — today's puzzles are new. Open the daily again.", rather than judged
+  against the new day's puzzle.
+- **A duel says why it ended.** A handover sends lobbies away with "The server is
+  updating — open the lobby again" and lets every match finish on the old process; a
+  restart ends everything with "The server restarted, so the duel ended." Either way
+  Duel opens again straight after, which it did not after a dropped connection
+  before.
+- **"Update ready — reload when you're done"** appears in the header once the server
+  answers with a build other than the page's own: `X-Build-Id` on every response,
+  against the id compiled into the page. It never shows during a run, a rush, a duel,
+  a builder test or a hand-in still retrying, and it never reloads by itself.
+
 ## The puzzle builder
 
 Paint a board, say which pieces the solver gets, write down what they are
@@ -637,9 +659,9 @@ bun run review-link -- hannah --minutes 5
 ```
 
 It signs a string, prints it and exits — it never opens the database, because
-constructing a `Store` runs the whole schema and its migrations, and a `Store`
-never sets `busy_timeout` (only the archive tools set their own), so a second
-writer against the live WAL file fails instantly rather than waiting. It reads
+constructing a `Store` runs the whole schema and its migrations: writes against
+the live WAL file, contending with the server for its lock, which a `Store` waits
+for only five seconds before failing. It reads
 `REVIEW_SECRET` straight out of the environment for the same kind of reason:
 `server/config.ts` throws at import under `NODE_ENV=production` unless the whole
 production environment is present, which is not a thing a one-off command should

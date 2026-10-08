@@ -2,9 +2,25 @@
   "$comment": "The project's version and its player-facing release notes. Newest first; order in this list IS the version order. Read by client/changelog.py for /puzzle changelog, requested privately. Adding a release means putting it at the top. Keep `changes` to things a player can see.",
   "releases": [
     {
+      "version": "beta 0.23",
+      "changes": [
+        "**A hand-in now retries when the connection drops partway through the server's reply**, as well as before the reply starts. Daily sheets, rushes and practice clears can recover from that interruption instead of failing at once."
+      ]
+    },
+    {
       "version": "beta 0.22",
       "changes": [
         "**Opening an alternate solution now follows your latest choice.** Leaving Explore to play another puzzle keeps you there even if the old solution takes a while to load, and choosing another line opens the one you picked last."
+      ]
+    },
+    {
+      "version": "beta 0.21",
+      "changes": [
+        "**Finishing a puzzle while the server restarts no longer loses it.** A daily sheet or a rush handed in at that moment says **Reconnecting…** and tries again for up to about fifteen seconds, instead of failing at once. A practice clear tries again the same way, without the message.",
+        "**1v1 says when the server is updating** and asks you to open the lobby again, instead of only saying the connection closed. After any dropped duel connection, **Duel** works again straight away.",
+        "**An \"Update ready\" chip appears in the header when a new version of the activity is out.** Reload when you're done: it never shows in the middle of a run, a rush or a duel, and it never reloads by itself.",
+        "**A sheet you finish after the daily reset is no longer judged against the new day's puzzle.** The activity says that day is over and loads today's puzzles.",
+        "**A bot command sent while the bot is finishing others before a restart** now gets \"Restarting — try again in a few seconds.\" instead of no answer. While the bot is fully down, between the old one closing and the new one connecting, Discord still says the application did not respond."
       ]
     },
     {

@@ -90,10 +90,12 @@ interface Opened {
 /**
  * A server start, as far as the rotation is concerned.
  *
- * Two of these never overlap in a test. The database is opened per Store and
- * nothing sets `busy_timeout`, so a second writer on the same file would fail
- * immediately rather than wait — which is a property of the store, not
- * something a test should be discovering.
+ * Two of these never overlap in a test: each is closed before the next opens,
+ * the way a plain restart runs. Two stores on one file at once is a handover,
+ * and what the store does then — wait for the other's write lock, for up to
+ * `STORE_BUSY_TIMEOUT_MS` — is a property of the store, pinned in
+ * `tests/store-busy-timeout.test.ts`, not something a test of the rotation
+ * should be discovering.
  */
 function open(puzzlesPath: string, overrides: Parameters<typeof PuzzleArchive.load>[3] = []): Opened {
   const archive = PuzzleArchive.load(puzzlesPath, {}, [], overrides);

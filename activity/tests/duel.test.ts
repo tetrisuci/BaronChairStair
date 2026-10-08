@@ -70,7 +70,7 @@ import { type GameKey, type InputEvent, MAX_FRAMES } from "../shared/tetris/veri
  */
 const DATABASE = join(tmpdir(), `puzzle-routes-${process.pid}.sqlite`);
 
-type Entrypoint = (typeof import("../server/index"))["default"];
+type Entrypoint = (typeof import("../server/index"))["entrypoint"];
 type AuthModule = typeof import("../server/auth");
 type DuelModule = typeof import("../server/duel");
 
@@ -100,7 +100,7 @@ beforeAll(async () => {
   process.env.ALLOW_GUEST_PLAY = "true";
   process.env.NODE_ENV = "test";
   delete process.env.DISCORD_CLIENT_SECRET;
-  const entry = (await import("../server/index")).default;
+  const entry = (await import("../server/index")).entrypoint;
   ({ mintSession } = await import("../server/auth"));
   ({ CLAIM_LIMIT: claimLimit, resetDuels, sweepDuels, useArchive, useIntermission } = await import(
     "../server/duel"

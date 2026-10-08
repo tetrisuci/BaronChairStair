@@ -280,6 +280,47 @@ describe("when the database is busy", () => {
   });
 });
 
+describe("when the game holds the write lock for a moment", () => {
+  /**
+   * The case a handover makes ordinary: the game commits a hand-in while the
+   * sync is under way. The sync's transaction used to be DEFERRED, so it began
+   * by reading, and when the game committed before the sync's first write that
+   * write failed at once with "database is locked" — busy_timeout never applies
+   * to a read transaction whose snapshot went stale. Taking the write lock at
+   * BEGIN (IMMEDIATE) makes the sync wait for the game instead.
+   */
+  test("waits for it, then writes everything", async () => {
+    const seed = new Database(dbPath, { create: true });
+    seed.run(ARCHIVE_SCHEMA);
+    seed.close();
+
+    const holder = Bun.spawn(
+      [
+        process.execPath,
+        "-e",
+        `
+          const { Database } = require("bun:sqlite");
+          const db = new Database(${JSON.stringify(dbPath)});
+          db.exec("BEGIN IMMEDIATE");
+          db.exec("CREATE TABLE IF NOT EXISTS held (x)");
+          console.log("locked");
+          setTimeout(() => { db.exec("COMMIT"); db.close(); }, 600);
+        `,
+      ],
+      { stdout: "pipe", stderr: "inherit" },
+    );
+    const first = await holder.stdout.getReader().read();
+    expect(new TextDecoder().decode(first.value)).toContain("locked");
+
+    const { code, out } = await sync();
+    expect(await holder.exited).toBe(0);
+
+    expect(out).not.toContain("could NOT BE WRITTEN");
+    expect(out).toContain("added 2");
+    expect(code).toBe(0);
+  });
+});
+
 describe("when the sheet cannot be read", () => {
   test("syncing nothing over a live archive is a failure, not a no-op", async () => {
     // A renamed tab answers 200 with another tab's CSV: well-formed, and

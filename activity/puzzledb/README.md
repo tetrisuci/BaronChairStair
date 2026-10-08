@@ -21,8 +21,9 @@ folding it in:
 - **It is read-only by construction.** It opens the game's database with SQLite's
   own read-only flag, so a write is refused by SQLite rather than by a rule
   somebody has to remember.
-- **Its own builds and restarts never touch the game.** Restarting the game drops
-  every live duel; restarting this drops nothing but its own page for a second. Its
+- **Its own builds and restarts never touch the game.** Restarting the game ends
+  every live duel (handing it over on one port does not); restarting this drops
+  nothing but its own page for a second. Its
   code does live in the game's checkout, though, so a pull that brings the game
   anything is the game's deploy first ([`DEPLOY.md`](DEPLOY.md), rule 1).
 - **Strangers' traffic stays off the event loop that verifies runs.**

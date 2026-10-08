@@ -338,6 +338,30 @@
   from { transform: translate(-50%, 10px); opacity: 0; }
 }
 
+/* ── Update chip ──────────────────────────────────────────────────────────── */
+
+/*
+ * "Update ready" in the header, after a deploy. Quiet on purpose: a hairline
+ * rather than the controls' hard border and drop, faint ink, no motion — it is
+ * a remark about the page, not a place to go, and nothing is wrong. The
+ * `[hidden]` rule is spelled out because `display: inline-flex` would
+ * otherwise beat the attribute's own `display: none`.
+ */
+.update-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 4px 3px 10px;
+  border: 1px solid var(--ink-line);
+  border-radius: 999px;
+  background: var(--cream);
+  color: var(--ink-soft);
+  font-size: 11px;
+  line-height: 1.2;
+}
+.update-chip[hidden] { display: none; }
+.update-chip .btn--small { box-shadow: none; }
+
 /* ── Rush ─────────────────────────────────────────────────────────────────── */
 
 /*

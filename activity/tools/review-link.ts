@@ -12,10 +12,11 @@
  *
  * **Read-only, deliberately.** It signs a string, prints it and exits. It never
  * constructs a `Store`, because that runs the whole `SCHEMA` plus the
- * `addSlotsToRuns` DROP/copy/rename rebuild on every construction — and nothing
- * anywhere in this repo sets `busy_timeout`, so a second writer against the
- * live WAL database fails instantly rather than waiting. A one-off command that
- * can take the server's database down is not a one-off command.
+ * `addSlotsToRuns` DROP/copy/rename rebuild on every construction: writes
+ * against the live WAL database, contending with the server for its lock (a
+ * `Store` waits five seconds for one, `STORE_BUSY_TIMEOUT_MS`, then fails). A
+ * one-off command that can take the server's database down is not a one-off
+ * command.
  *
  * **It reads `REVIEW_SECRET` from the environment directly**, and imports
  * `server/review-token.ts` rather than anything that touches `server/config.ts`.
