@@ -801,6 +801,28 @@ export interface GalleryLine {
   readonly solvedStrict: boolean;
 }
 
+/**
+ * One alternate solution, for the browser that lists them across every puzzle.
+ *
+ * Everything a row of that list can print, and not the placements: the list
+ * never draws a board, and opening a line goes through the puzzle's own
+ * gallery, which has its own gate. `pieces` is the line's length, counted by
+ * the database so the placements never leave it.
+ *
+ * What a *reader* may see of this is a separate question, answered by
+ * `alternateRows` in `server/alternates.ts` — this is the store's half, and
+ * carries the whole line.
+ */
+export interface AlternateLine {
+  readonly solutionId: number;
+  readonly puzzleId: number;
+  readonly foundAt: number;
+  readonly attack: number;
+  readonly clears: readonly ClearName[];
+  readonly pieces: number;
+  readonly finder: PlayerProfile | null;
+}
+
 /** One line of the discovery board. */
 export interface DiscoveryRow {
   readonly player: PlayerProfile;
@@ -1703,6 +1725,66 @@ export class Store {
         .all()
         .map((row) => [row.puzzle_id, row.n] as const),
     );
+  }
+
+  /**
+   * Every alternate solution on file, newest first, across every puzzle.
+   *
+   * An alternate is `CREDITED AND LIVE`: a line a player found that the game
+   * pays them for — it solved the puzzle, or sent more than it asked — and
+   * that still describes a board that exists. Not `solutionGallery`'s
+   * predicate, which also lets through the maker's own answer and any player
+   * line, credited or not: the gallery is "every way through this board", and
+   * this is "every way somebody found that counts", which is the Discoveries
+   * board's question and so its clause. A voided line keeps its credit there,
+   * but is left out here, because there is nothing left to open it on.
+   *
+   * Unbounded on purpose. The owner asked for every alternate, sortable, and
+   * the sort happens in the browser over the whole set; the table holds a few
+   * hundred credited rows and each row here is a few short columns.
+   *
+   * `json_array_length` counts the pieces where the placements already are,
+   * so the JSON is neither parsed here nor sent.
+   */
+  liveAlternates(): AlternateLine[] {
+    return this.db
+      .query<
+        {
+          solution_id: number;
+          puzzle_id: number;
+          found_at: number;
+          attack: number;
+          clears: string;
+          pieces: number;
+          finder_id: string | null;
+          username: string | null;
+          avatar_url: string | null;
+        },
+        []
+      >(
+        `SELECT s.solution_id, s.puzzle_id, s.found_at, s.attack, s.clears,
+                json_array_length(s.placements) AS pieces,
+                s.found_by AS finder_id, p.username, p.avatar_url
+           FROM puzzle_solutions s
+           LEFT JOIN players p ON p.id = s.found_by
+          WHERE ${CREDITED} AND s.${LIVE}
+          ORDER BY s.found_at DESC, s.solution_id DESC`,
+      )
+      .all()
+      .map((row) => ({
+        solutionId: row.solution_id,
+        puzzleId: row.puzzle_id,
+        foundAt: row.found_at,
+        attack: row.attack,
+        clears: JSON.parse(row.clears) as ClearName[],
+        pieces: row.pieces,
+        // As in `solutionGallery`: a finder whose `players` row is missing
+        // reads as unattributed rather than as a blank name.
+        finder:
+          row.finder_id !== null && row.username !== null
+            ? { id: row.finder_id, username: row.username, avatarUrl: row.avatar_url }
+            : null,
+      }));
   }
 
   /**

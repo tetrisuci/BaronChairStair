@@ -3,11 +3,13 @@
  * every line players found through it, each a chip over one replay.
  *
  * **A line says what it did and nothing about who.** The owner chose to
- * publish players' lines with no finder (beta 0.13), so the site has nothing
- * to say about a line but its place in publication order, what it sent and
- * how many pieces it placed — `Line 2 · 10 atk · 9p`. Its position is the
- * public database's `lines.position`, the same number in the download, so a
- * reader can find the row a chip came from.
+ * publish players' lines with no finder (beta 0.13), so a chip names a line by
+ * its place in publication order, what it sent and how many pieces it placed —
+ * `Line 2 · 10 atk · 9p`. Its position is the public database's
+ * `lines.position`, the same number in the download and in `#line-2`, so a
+ * reader can find the row a chip came from. Since schema 3 a line also carries
+ * the day it was found, which the panel says beside the replay rather than on
+ * the chip, where it would crowd the row of chips.
  *
  * **One replay, rebound.** A chip press points the panel's one replay at a new
  * player rather than building a second, because two replays would both own
@@ -21,6 +23,10 @@ import type { SiteLine, SitePuzzle } from "../wire";
 /** One answer the panel can step. */
 export interface AnswerChoice {
   readonly label: string;
+  /** A player's line's position, which `#line-N` names; null for the maker's answer. */
+  readonly position: number | null;
+  /** The game's day a player's line was found on; null for the maker's answer. */
+  readonly day: number | null;
   readonly steps: readonly SolutionStep[];
   /** The Blueprint viewer's link to this answer: the maker's alone has one. */
   readonly blueprintUrl: string | null;
@@ -35,11 +41,11 @@ export function lineLabel(line: SiteLine): string {
 export function answerChoices(puzzle: SitePuzzle, lines: readonly SiteLine[]): AnswerChoice[] {
   const maker: AnswerChoice[] =
     puzzle.solution && puzzle.solution.length > 0
-      ? [{ label: "Maker's answer", steps: puzzle.solution, blueprintUrl: puzzle.solutionUrl }]
+      ? [{ label: "Maker's answer", position: null, day: null, steps: puzzle.solution, blueprintUrl: puzzle.solutionUrl }]
       : [];
   const found = lines
     .filter((line) => line.steps.length > 0)
-    .map((line) => ({ label: lineLabel(line), steps: line.steps, blueprintUrl: null }));
+    .map((line) => ({ label: lineLabel(line), position: line.position, day: line.day, steps: line.steps, blueprintUrl: null }));
   return [...maker, ...found];
 }
 

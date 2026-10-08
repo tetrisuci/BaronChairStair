@@ -76,8 +76,9 @@ const READ_WHOLE = ["archive_puzzles", "day_puzzles", "puzzle_overrides", "submi
 /**
  * Every column a build may read from the tables that hold players, their play
  * and the site's facts. `players.id`, `guild_id`, `found_by` and `found_at`
- * are read inside SQL — to join, group and cut — and never selected into JS;
- * the snapshot scan below holds that half.
+ * are read inside SQL — to join, group and cut, and `found_at` to work out the
+ * day a line was found, which alone is selected — and never selected into JS
+ * themselves; the snapshot scan below holds that half.
  */
 const READ_COLUMNS: Readonly<Record<string, readonly string[]>> = {
   players: ["id", "username", "site_hidden", "public_key"],

@@ -21,6 +21,7 @@ import type { GalleryLine } from "../api";
 import { SolutionPlayer } from "../game/solution-player";
 import { cellsGlyph, stackOnly } from "../render/piece-glyph";
 import { el, panel, replaceChildren } from "./dom";
+import { ago } from "./ago";
 
 export interface SolutionsMenuCallbacks {
   /** Step this line out on the board. */
@@ -38,17 +39,6 @@ export interface SolutionsMenu {
 function credit(line: GalleryLine, selfId: string): string {
   if (line.source !== "player" || !line.finder) return "The maker's answer";
   return line.finder.id === selfId ? "You" : line.finder.username;
-}
-
-/** "3 days ago", roughly. A gallery wants an age, not a timestamp. */
-function ago(at: number, now: number): string {
-  const days = Math.floor((now - at) / 86_400_000);
-  if (!Number.isFinite(days) || days < 0) return "";
-  if (days === 0) return "today";
-  if (days === 1) return "yesterday";
-  if (days < 30) return `${days} days ago`;
-  const months = Math.floor(days / 30);
-  return months === 1 ? "a month ago" : `${months} months ago`;
 }
 
 export function createSolutionsMenu(

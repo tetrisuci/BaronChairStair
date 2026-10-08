@@ -21,6 +21,13 @@
  * scrolls to the panel and leaves it shut. Beta 0.13 told players that the
  * site now shows these, and why that undoes beta 0.3's promise there.
  *
+ * **`#line-N` is the one link that opens a line.** The alternates table links
+ * each row to its chip, and a reader who pressed a row asked for that line as
+ * plainly as one who pressed "Show the answers". The lines arrive with the
+ * body, after the panel is drawn, so the panel waits for them and opens on
+ * line N once, when they come; a line the puzzle does not have leaves the
+ * panel shut, exactly as `#lines` does.
+ *
  * **Required clears are never shown.** The game shows them only under
  * `GOAL_ENFORCEMENT=on`, which is the owner's call, and a page that showed them
  * here would be enforcing a rule the game does not. They stay in the data.
@@ -60,14 +67,31 @@ export interface PuzzleView {
   readonly extras: HTMLElement;
   /** Draws the body: the stats card into {@link extras}, and the lines into the answers. */
   addBody(body: SitePuzzleBody, index: SiteIndex): void;
+  /** The line `#line-N` opened the answers on, once its lines arrived; null before then, or for none. */
+  readonly openedLine: number | null;
   /** Gives up the answer's keyboard. Called when the page moves on. */
   detach(): void;
+}
+
+/** What a puzzle page can be asked to open with: the answer, for `#answer`, or one line, for `#line-N`. */
+export interface PuzzleOptions {
+  readonly revealed?: boolean;
+  readonly line?: number | null;
 }
 
 /** The answer panel's id: what `#answer` in a link names, and where the page scrolls for it. */
 export const ANSWER_ID = "answer";
 /** The answers' own anchor, inside that panel: where the game's "every line" link lands, shut. */
 export const LINES_ID = "lines";
+
+/** `#line-2`: one spelling, as a path has one — no zero, no leading zero, no case variant. */
+const LINE_HASH = /^#line-([1-9][0-9]{0,5})$/;
+
+/** The line a `#line-N` hash names, or null for any other hash. */
+export function lineFromHash(hash: string): number | null {
+  const match = LINE_HASH.exec(hash);
+  return match ? Number(match[1]) : null;
+}
 
 /**
  * A link out to the Blueprint viewer, or nothing.
@@ -145,6 +169,8 @@ interface AnswerPanel {
   reveal(): void;
   /** Adds players' lines, before or after the press. */
   setLines(lines: readonly SiteLine[]): void;
+  /** The line the address opened the panel on, once it has. */
+  openedLine(): number | null;
   detach(): void;
 }
 
@@ -167,11 +193,17 @@ function answerSection(body: HTMLElement): HTMLElement {
  * than building another, because two replays would both own the arrow keys
  * and step two players for every press. Each answer gets the rows it needs, so
  * a line that builds higher than the maker's is not cut off.
+ *
+ * `wanted` is the line `#line-N` asked for. It is looked for once, in the
+ * first lines to arrive, and then forgotten, so lines that arrive again never
+ * take away a chip the reader has pressed since.
  */
-function answerPanel(puzzle: SitePuzzle, onView: (view: BoardView) => void): AnswerPanel {
+function answerPanel(puzzle: SitePuzzle, onView: (view: BoardView) => void, wanted: number | null): AnswerPanel {
   let lines: readonly SiteLine[] = [];
   let replay: Replay | null = null;
   let chosen = 0;
+  let pending = wanted;
+  let opened: number | null = null;
   const body = el("div", { class: "pdb-answer__body", attrs: { id: LINES_ID } });
   const choices = () => answerChoices(puzzle, lines);
 
@@ -209,9 +241,23 @@ function answerPanel(puzzle: SitePuzzle, onView: (view: BoardView) => void): Ans
       body,
       all.length > 1 ? answerChips(all, chosen, pick) : null,
       replay.element,
+      choice.day === null ? null : el("p", { class: "note pdb-answer__found", text: foundOn(choice.day) }),
       choice.blueprintUrl ? blueprintLink("Open the answer in Blueprint", choice.blueprintUrl) : null,
     );
   }
+  /** Opens on the line the address asked for, if these lines have it; either way, asks no more. */
+  const openWanted = () => {
+    const at = pending === null ? -1 : choices().findIndex((choice) => choice.position === pending);
+    pending = null;
+    if (at < 0) return false;
+    opened = choices()[at]!.position;
+    if (replay) pick(at);
+    else {
+      chosen = at;
+      reveal();
+    }
+    return true;
+  };
 
   draw();
   return {
@@ -219,10 +265,16 @@ function answerPanel(puzzle: SitePuzzle, onView: (view: BoardView) => void): Ans
     reveal,
     setLines(next) {
       lines = next;
-      draw();
+      if (!openWanted()) draw();
     },
+    openedLine: () => opened,
     detach: () => replay?.detach(),
   };
+}
+
+/** `Found on day 274 · Thu, Oct 1, 2026`: the day, as every day on the site is printed, and never a time. */
+function foundOn(day: number): string {
+  return `Found on day ${day} · ${dayLabel(day)}`;
 }
 
 /** The finished days that dealt it, newest first, each a link to that day. */
@@ -257,12 +309,15 @@ function puzzlePager(puzzle: SitePuzzle, index: SiteIndex): HTMLElement {
   return pager("Other puzzles", previous ? side(previous) : null, next ? side(next) : null);
 }
 
-/** `/puzzle/42`. `revealed` opens the answer at once, for an address ending in `#answer`. */
+/**
+ * `/puzzle/42`. `revealed` opens the answer at once, for an address ending in
+ * `#answer`; `line` opens it on that line once the lines arrive, for `#line-N`.
+ */
 export function createPuzzleView(
   puzzle: SitePuzzle,
   index: SiteIndex,
   handlers: PuzzleHandlers,
-  options: { readonly revealed?: boolean } = {},
+  options: PuzzleOptions = {},
 ): PuzzleView {
   // The whole field, as the game draws it: every board at the same scale, and
   // a shallow stack seen for what it is, a few rows at the bottom of twenty.
@@ -274,7 +329,7 @@ export function createPuzzleView(
   const canvas = el("canvas", {
     attrs: { role: "img", "aria-label": `The board of puzzle #${puzzle.id}, ${titleOf(puzzle)}` },
   });
-  const answer = answerPanel(puzzle, onView);
+  const answer = answerPanel(puzzle, onView, options.line ?? null);
   const extras = el("div", { class: "pdb-slot" });
 
   onView(new SolutionPlayer(puzzle, [], rows).view());
@@ -304,6 +359,9 @@ export function createPuzzleView(
     addBody(body, bodyIndex) {
       replaceChildren(extras, renderPuzzleStats(puzzle, body, bodyIndex));
       answer.setLines(body.lines);
+    },
+    get openedLine() {
+      return answer.openedLine();
     },
     detach: () => answer.detach(),
   };

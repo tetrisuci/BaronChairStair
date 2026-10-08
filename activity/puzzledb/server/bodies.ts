@@ -19,7 +19,8 @@
  * included, as an empty list, so a page never has to tell "nothing yet" from
  * "missing". A player who hid has no body, exactly as a key nobody holds.
  * The players table and the solves feed have one body each, built in
- * `bodies-profiles.ts`.
+ * `bodies-profiles.ts`, and the alternates table one, every published line
+ * without its steps, built in `bodies-alternates.ts`.
  */
 
 import { DAILY_TIERS } from "../../shared/daily";
@@ -39,6 +40,7 @@ import {
   STANDING_BOARDS,
   type StandingBoard,
 } from "../wire";
+import { alternatesBody } from "./bodies-alternates";
 import { playersBody, solvesBody, tierSummaries } from "./bodies-profiles";
 import type { PlayerData } from "./public-db-players";
 import { groupedBy } from "./rank";
@@ -59,6 +61,7 @@ export function buildBodies(data: SiteData, players: PlayerData): ReadonlyMap<st
   put(bodyPathFor({ kind: "leaderboards" }), leaderboardsBody(players, builtAt));
   put(bodyPathFor({ kind: "players" }), playersBody(players, builtAt));
   put(bodyPathFor({ kind: "solves" }), solvesBody(players, builtAt));
+  put(bodyPathFor({ kind: "alternates" }), alternatesBody(data, players, builtAt));
   return bodies;
 }
 

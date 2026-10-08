@@ -26,9 +26,9 @@
  * opened a puzzle when clicked opens the same puzzle when shared, and a page
  * the server answered 404 is the missing view here, never a different page.
  * The tab's title comes from the same function, word for word. The server
- * chip, the players table's sort and search and the feed's filters are in the
- * query string, read here and written back without a history entry, as the
- * browse filter is (`list-queries.ts`).
+ * chip, the players table's sort and search, the feed's filters and the
+ * alternates table's sort are in the query string, read here and written back
+ * without a history entry, as the browse filter is (`list-queries.ts`).
  *
  * **One view at a time, and one answer.** Moving on detaches the puzzle view,
  * which gives up the replay's arrow keys; the browse view is built once and
@@ -49,6 +49,7 @@ import {
   type SitePuzzle,
   UNAVAILABLE_TEXT,
 } from "../wire";
+import { alternatesPage } from "./alternates";
 import { loadBody } from "./api";
 import { BoardStage } from "./board-stage";
 import { type BrowseView, createBrowseView } from "./browse";
@@ -58,10 +59,10 @@ import { createDaysView, createDayView } from "./days";
 import { filterFromQuery, queryFromFilter } from "./filter-url";
 import { markCurrent, missingView, siteFooter, siteHeader, unavailableView } from "./frame";
 import { leaderboardsPage } from "./leaderboards";
-import { playersQueryFrom, solvesQueryFrom } from "./list-queries";
+import { alternatesQueryFrom, playersQueryFrom, solvesQueryFrom } from "./list-queries";
 import { playerPage } from "./player-view";
 import { playersPage } from "./players";
-import { ANSWER_ID, createPuzzleView, LINES_ID, type PuzzleView } from "./puzzle-view";
+import { ANSWER_ID, createPuzzleView, lineFromHash, LINES_ID, type PuzzleView } from "./puzzle-view";
 import { type Navigation, startRouter } from "./router";
 import { queryForServer, serverFromQuery } from "./server-chips";
 import { solvesPage } from "./solves";
@@ -189,6 +190,8 @@ export class SitePage {
           isCurrent: () => showing === this.showing,
         });
       }
+      case "alternates":
+        return alternatesPage(index, alternatesQueryFrom(search), this.writeQuery);
     }
   }
 
@@ -226,11 +229,15 @@ export class SitePage {
     return this.browse;
   }
 
-  /** The puzzle view, with its own board stage; the answer opens at once when the address asks for it. */
+  /**
+   * The puzzle view, with its own board stage; the answer opens at once when
+   * the address asks for it, and on one line once the lines come for `#line-N`.
+   */
   private puzzleView(puzzle: SitePuzzle, index: SiteIndex): BodyView {
     const stage = new BoardStage(this.win);
     const revealed = this.win.location.hash === `#${ANSWER_ID}`;
-    const view = createPuzzleView(puzzle, index, { onView: (board) => stage.show(board) }, { revealed });
+    const line = lineFromHash(this.win.location.hash);
+    const view = createPuzzleView(puzzle, index, { onView: (board) => stage.show(board) }, { revealed, line });
     this.puzzle = { view, stage };
     return { element: view.element, slot: view.extras, fill: (body) => view.addBody(readBody("puzzle", body), index) };
   }
@@ -267,6 +274,7 @@ export class SitePage {
       return;
     }
     if (route.kind !== "puzzle") this.settleAnchor();
+    else if ((this.puzzle?.view.openedLine ?? null) !== null) this.scrollToLines();
   }
 
   /**
@@ -307,8 +315,11 @@ export class SitePage {
 
   /**
    * What a puzzle needs once it is in the document: its canvas, and — for an
-   * `#answer` or `#lines` address — the answers scrolled into view, which the
-   * browser could not do itself because the panel did not exist when it looked.
+   * `#answer`, `#lines` or `#line-N` address — the answers scrolled into view,
+   * which the browser could not do itself because the panel did not exist when
+   * it looked. `#line-N` goes where `#lines` does: its line is not there until
+   * the body is, and when it comes the panel opens on it and is scrolled to
+   * again ({@link place}), since the stats card above it may have moved it.
    */
   private settlePuzzle(): void {
     const puzzle = this.puzzle;
@@ -317,7 +328,11 @@ export class SitePage {
     const anchor = this.win.location.hash.slice(1);
     if (anchor === ANSWER_ID || anchor === LINES_ID) {
       puzzle.view.element.querySelector(`#${anchor}`)?.scrollIntoView({ block: "start" });
-    }
+    } else if (lineFromHash(this.win.location.hash) !== null) this.scrollToLines();
+  }
+
+  private scrollToLines(): void {
+    this.puzzle?.view.element.querySelector(`#${LINES_ID}`)?.scrollIntoView({ block: "start" });
   }
 
   private leavePuzzle(): void {
