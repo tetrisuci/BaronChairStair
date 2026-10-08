@@ -31,11 +31,13 @@
  * all of it passed.
  */
 
+import { join } from "node:path";
 import { ensureDirectory } from "./effects";
 import { assignmentsOf, writeEcosystem } from "./ecosystem";
 import { DeployError, withRollbackHint } from "./errors";
 import { reportDone } from "./exec";
 import type { Context } from "./host";
+import { releaseDir } from "./layout";
 import { findProcess, isOnline, pm2Delete, pm2List, pm2Save, pm2Start, type Pm2Process } from "./pm2";
 import { requirePrepared, shortSha } from "./release";
 import { requireSharedFiles } from "./shared-files";
@@ -117,12 +119,15 @@ async function waitForHealth(ctx: Context): Promise<boolean> {
 }
 
 /** Whether pm2 runs the site: online, with a pid, and that pid alive. */
-async function siteRunning(ctx: Context): Promise<Running> {
+async function siteRunning(ctx: Context, sha: string): Promise<Running> {
   const process: Pm2Process | undefined = findProcess(await pm2List(ctx), ctx.config.pm2.site);
   if (process === undefined) return { ok: false, problem: "pm2 has no such app" };
   if (process.status !== "online") return { ok: false, problem: `pm2 shows it ${process.status}` };
   if (process.pid <= 0) return { ok: false, problem: "pm2 shows it online with no pid" };
   if (!ctx.host.pidAlive(process.pid)) return { ok: false, problem: `pm2 shows it online as pid ${process.pid}, which is not alive` };
+  if (process.cwd !== join(releaseDir(ctx.layout, sha), "activity")) {
+    return { ok: false, problem: `pm2 runs it from ${process.cwd}, not the target release's activity directory` };
+  }
   return { ok: true, pid: process.pid };
 }
 
@@ -142,14 +147,29 @@ async function confirmSteady(ctx: Context, sha: string): Promise<number | null> 
     ctx.host.out(`would confirm through pm2 that ${ctx.config.pm2.site} is online and keeps one pid for ${STEADY_MS / 1000} s`);
     return null;
   }
-  const first = await siteRunning(ctx);
+  const first = await siteRunning(ctx, sha);
   if (!first.ok) throw notTheSite(ctx, sha, `${first.problem}, right after /health answered ok`);
   await ctx.host.clock.sleep(STEADY_MS);
-  const later = await siteRunning(ctx);
+  const later = await siteRunning(ctx, sha);
   const after = `${STEADY_MS / 1000} s after /health answered ok`;
   if (!later.ok) throw notTheSite(ctx, sha, `${later.problem}, ${after}`);
   if (later.pid !== first.pid) throw notTheSite(ctx, sha, `pm2 restarted it: pid ${first.pid} became pid ${later.pid}, ${after}`);
   return first.pid;
+}
+
+/** A resumed switch must pass the same readiness checks as a new start. */
+async function requireReady(ctx: Context, sha: string): Promise<number | null> {
+  try {
+    if (!(await waitForHealth(ctx))) {
+      throw new DeployError(
+        `${ctx.config.pm2.site} on ${shortSha(sha)} did not answer /health with ok:true within ${HEALTH_TIMEOUT_MS / 1000} s. ` +
+          `It is left running so \`pm2 logs ${ctx.config.pm2.site}\` shows why.`,
+      );
+    }
+    return await confirmSteady(ctx, sha);
+  } catch (error) {
+    throw withRollbackHint(error, "site");
+  }
 }
 
 export async function switchSite(ctx: Context, sha: string, options: SiteSwitchOptions): Promise<void> {
@@ -159,8 +179,9 @@ export async function switchSite(ctx: Context, sha: string, options: SiteSwitchO
   const name = ctx.config.pm2.site;
   const state = loadState(ctx);
   const current = findProcess(await pm2List(ctx), name);
-  if (!options.force && state.site.release === sha && isOnline(current)) {
-    host.out(`site: ${name} already runs ${shortSha(sha)}; nothing to do (--force restarts it anyway)`);
+  if (!options.force && state.site.release === sha && isOnline(current) && current?.cwd === join(releaseDir(ctx.layout, sha), "activity")) {
+    await requireReady(ctx, sha);
+    host.out(`site: ${name} already serves ${shortSha(sha)} steadily; nothing to switch (--force restarts it anyway)`);
     // Saved anyway, as the game's re-run does: a switch interrupted between its
     // start and its save left pm2's list on the release before.
     await pm2Save(ctx);
@@ -173,19 +194,12 @@ export async function switchSite(ctx: Context, sha: string, options: SiteSwitchO
   ensureDirectory(ctx, ctx.layout.run);
   writeEcosystem(ctx, assignmentsOf(next));
   saveState(ctx, next);
-  let pid: number | null;
   try {
     await pm2Start(ctx, name);
-    if (!(await waitForHealth(ctx))) {
-      throw new DeployError(
-        `${name} on ${shortSha(sha)} did not answer /health with ok:true within ${HEALTH_TIMEOUT_MS / 1000} s. ` +
-          `It is left running so \`pm2 logs ${name}\` shows why.`,
-      );
-    }
-    pid = await confirmSteady(ctx, sha);
   } catch (error) {
     throw withRollbackHint(error, "site");
   }
+  const pid = await requireReady(ctx, sha);
   await pm2Save(ctx);
   const steady = pid === null ? "" : ` (pid ${pid}, online and unchanged for ${STEADY_MS / 1000} s)`;
   reportDone(ctx, `site: ${name} serves ${shortSha(sha)}${steady}`);

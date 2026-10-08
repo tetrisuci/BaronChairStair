@@ -74,6 +74,45 @@ describe("a bot whose files did not change", () => {
     await switchBot(box.context(), NEW, { force: true, now: false });
     expect(box.pm2Mutations()).toEqual([["delete", BOT], ["start", box.layout.ecosystem, "--only", BOT], ["save"]]);
   });
+
+  test("the older identical bot stays ready when the recorded release is switched again", async () => {
+    const box = botBox();
+    box.diff = ["activity/client/src/app.ts"];
+    const pid = box.processes.get(BOT)!.pid;
+    await switchBot(box.context(), NEW, OPTIONS);
+    await switchBot(box.context(), NEW, OPTIONS);
+    expect(box.processes.get(BOT)!.pid).toBe(pid);
+    expect(box.pm2Mutations()).toEqual([["save"], ["save"]]);
+    expect(box.readState().bot).toEqual({ release: NEW, previous: OLD });
+  });
+
+  test("unchanged files do not advance state or save pm2 while the running bot is not ready", async () => {
+    const box = botBox();
+    box.diff = ["activity/client/src/app.ts"];
+    const pid = box.processes.get(BOT)!.pid;
+    box.setStatus(botStatusFile(box.layout), (now) => botStatus({ pid, buildId: OLD, updatedAt: now, state: "starting" }));
+    await expect(switchBot(box.context(), NEW, OPTIONS)).rejects.toThrow(/did not report ready/);
+    expect(box.readState().bot).toEqual({ release: OLD, previous: null });
+    expect(box.pm2Mutations()).toEqual([]);
+  });
+
+  test("an unchanged bot must remain ready on one pid before its new release is recorded", async () => {
+    const box = botBox();
+    box.diff = [];
+    let reads = 0;
+    box.respond = (command) => {
+      if (command.argv.join(" ") === "pm2 jlist" && ++reads === 3) {
+        const bot = box.processes.get(BOT)!;
+        box.alive.delete(bot.pid);
+        bot.pid += 100;
+        box.alive.add(bot.pid);
+      }
+      return undefined;
+    };
+    await expect(switchBot(box.context(), NEW, OPTIONS)).rejects.toThrow(/did not stay ready/);
+    expect(box.readState().bot).toEqual({ release: OLD, previous: null });
+    expect(box.pm2Mutations()).toEqual([]);
+  });
 });
 
 describe("a bot whose files changed", () => {
@@ -186,11 +225,77 @@ describe("a bot whose files changed", () => {
     expect(box.pm2Mutations()).toEqual([["delete", BOT], ["start", box.layout.ecosystem, "--only", BOT]]);
     expect(box.readState().bot).toEqual({ release: NEW, previous: OLD });
   });
+
+  test("a failed switch's re-run still requires ready, and finishes recovery without a second start", async () => {
+    const box = botBox();
+    box.onStart = (_name, app, pid) => {
+      box.setStatus(botStatusFile(box.layout), (now) =>
+        botStatus({ pid, buildId: app.env.BUILD_ID!, updatedAt: now, state: "starting" }),
+      );
+    };
+    await expect(switchBot(box.context(), NEW, OPTIONS)).rejects.toThrow(/did not report ready/);
+    box.calls.length = 0;
+    await expect(switchBot(box.context(), NEW, OPTIONS)).rejects.toThrow(/did not report ready/);
+    expect(box.pm2Mutations()).toEqual([]);
+
+    const pid = box.processes.get(BOT)!.pid;
+    box.setStatus(botStatusFile(box.layout), (now) => botStatus({ pid, buildId: NEW, updatedAt: now }));
+    const before = box.now;
+    await switchBot(box.context(), NEW, OPTIONS);
+    expect(box.now - before).toBeGreaterThanOrEqual(5_000);
+    expect(box.pm2Mutations()).toEqual([["save"]]);
+    expect(box.readState().bot).toEqual({ release: NEW, previous: OLD });
+  });
 });
 
 describe("what the bot's restart depends on", () => {
   test("bot.env is read for names only: a comment, or a bare NAME python-dotenv does not set, assigns nothing", () => {
     expect(assignedNames("# DATABASE_PATH=/x\nPATH\n  export STATS_DB = /y\nA=1\nA=2\n")).toEqual(["STATS_DB", "A"]);
+  });
+
+  test("single-quoted dotenv keys are assignments too", async () => {
+    const box = botBox();
+    writeFileSync(join(box.layout.shared, "bot.env"), "'STATS_DB'='/srv/old/stats.db'\nexport 'DATABASE_PATH'=/srv/old/daily.sqlite\n");
+    const error = await switchBot(box.context(), NEW, OPTIONS).catch((caught: Error) => caught);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain("STATS_DB, DATABASE_PATH");
+    expect((error as Error).message).not.toContain("/srv/old");
+    expect(box.pm2Mutations()).toEqual([]);
+  });
+
+  test("multiline quoted values and valid bare keys do not invent deploy-owned assignments", async () => {
+    const env = [
+      "MESSAGE=\"first line",
+      "STATS_DB=/text/inside/value",
+      "export 'DATABASE_PATH'=also just text",
+      "last line\" # comment",
+      "'OTHER'='another value",
+      "PATH=still text'",
+      "BUILD_ID # a bare name is not set",
+      "A-B=value",
+      "A=1",
+      "A=2",
+      "",
+    ].join("\n");
+    expect(assignedNames(env)).toEqual(["MESSAGE", "OTHER", "A-B", "A"]);
+    const box = botBox();
+    writeFileSync(join(box.layout.shared, "bot.env"), env);
+    await switchBot(box.context(), NEW, OPTIONS);
+    expect(box.pm2Mutations().at(-1)).toEqual(["save"]);
+  });
+
+  test("escaped quotes, CRLF and malformed bindings recover like python-dotenv", () => {
+    expect(assignedNames("TEXT='escaped \\'quote\r\nSTATUS_FILE=still text'\r\nBAD=\"value\" junk\r\n'STATS_DB'=/owned\r\n")).toEqual(["TEXT", "STATS_DB"]);
+  });
+
+  test("dotenv whitespace matches Python, including controls and excluding the byte-order mark", async () => {
+    expect(assignedNames("\u001cSTATS_DB\u0085=\u001f/value\n\ufeffSTATS_DB=/other\nexport\u0085'PATH'=value\n")).toEqual([
+      "STATS_DB", "\ufeffSTATS_DB", "PATH",
+    ]);
+    const box = botBox();
+    writeFileSync(join(box.layout.shared, "bot.env"), "\u0085STATS_DB=/synthetic/old\n");
+    await expect(switchBot(box.context(), NEW, OPTIONS)).rejects.toThrow(/sets STATS_DB/);
+    expect(box.pm2Mutations()).toEqual([]);
   });
 
   test("a bot.env that sets a variable the ecosystem owns is refused, by name and never by value", async () => {
@@ -206,8 +311,6 @@ describe("what the bot's restart depends on", () => {
     expect(error.message).not.toContain("token-value");
     expect(box.pm2Mutations()).toEqual([]);
   });
-
-
   test("a missing shared/stats.db is refused: a fresh one would forget the recap claims", async () => {
     const box = botBox();
     rmSync(join(box.layout.shared, "stats.db"));

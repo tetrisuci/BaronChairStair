@@ -55,6 +55,8 @@ export interface BotSwitchOptions {
 
 const READY_TIMEOUT_MS = 120_000;
 const READY_POLL_MS = 1_000;
+/** A ready heartbeat must belong to the same live pm2 pid again after this wait. */
+const STEADY_MS = 5_000;
 const QUIET_POLL_MS = 5_000;
 const OLD_EXIT_TIMEOUT_MS = 60_000;
 const PROGRESS_EVERY_MS = 30_000;
@@ -160,18 +162,59 @@ async function waitForReady(ctx: Context, sha: string): Promise<boolean> {
   });
 }
 
-/** Whether the switch can be just a note in state.json: same bot files, bot running. */
-async function unchanged(ctx: Context, state: DeployState, sha: string, running: boolean, force: boolean): Promise<boolean> {
-  const from = state.bot.release;
-  if (force || from === null || !running) return false;
-  if (from === sha) {
-    ctx.host.out(`bot: ${ctx.config.pm2.bot} already runs ${shortSha(sha)}; nothing to do (--force restarts it anyway)`);
-    return true;
+async function readyPid(ctx: Context, sha: string): Promise<number | null> {
+  const status = botOf(ctx.host.readStatus(botStatusFile(ctx.layout)));
+  if (status === null || !botReady({ present: true, status }, sha, ctx.host.clock.now(), ctx.host.pidAlive)) return null;
+  const current = findProcess(await pm2List(ctx), ctx.config.pm2.bot);
+  return current?.status === "online" && current.pid === status.pid ? status.pid : null;
+}
+
+/** State records a start before it succeeds, so a re-run must check ready again. */
+async function requireReady(ctx: Context, sha: string): Promise<void> {
+  try {
+    if (!(await waitForReady(ctx, sha))) {
+      throw new DeployError(
+        `${ctx.config.pm2.bot} on ${shortSha(sha)} did not report ready within ${READY_TIMEOUT_MS / 1000} s. ` +
+          `It is left running so \`pm2 logs ${ctx.config.pm2.bot}\` shows why.`,
+      );
+    }
+    if (ctx.dryRun) {
+      ctx.host.out(`would confirm that ${ctx.config.pm2.bot} stays ready on one pm2 pid for ${STEADY_MS / 1000} s`);
+      return;
+    }
+    const first = await readyPid(ctx, sha);
+    if (first !== null) await ctx.host.clock.sleep(STEADY_MS);
+    const later = first === null ? null : await readyPid(ctx, sha);
+    if (first === null || later !== first) {
+      throw new DeployError(
+        `${ctx.config.pm2.bot} on ${shortSha(sha)} did not stay ready on the same live pm2 pid for ${STEADY_MS / 1000} s. ` +
+          "Its status may be stale, or pm2 may be restarting it; pm2's list was not saved.",
+      );
+    }
+  } catch (error) {
+    throw withRollbackHint(error, "bot");
   }
-  const changed = await botFilesChanged(ctx, from, sha);
+}
+
+/** Whether the switch can be just a note in state.json: same bot files, bot running. */
+async function unchanged(ctx: Context, state: DeployState, sha: string, current: Pm2Process | undefined, force: boolean): Promise<boolean> {
+  const from = state.bot.release;
+  if (force || from === null || !isOnline(current)) return false;
+  const changed = from === sha ? [] : await botFilesChanged(ctx, from, sha);
   if (changed.length > 0) {
     ctx.host.out(`bot files changed since ${shortSha(from)}: ${describeChanges(changed)}`);
     return false;
+  }
+  // A previous unchanged-files switch may have advanced state without moving
+  // the process. Accept its older build only when it is this pm2 pid and its
+  // bot files still match; a failed new start must never count as ready.
+  const status = botOf(ctx.host.readStatus(botStatusFile(ctx.layout)));
+  const serving = status !== null && status.pid === current?.pid ? status.buildId : sha;
+  if (serving !== sha && serving !== from && (await botFilesChanged(ctx, serving, sha)).length > 0) return false;
+  await requireReady(ctx, serving);
+  if (from === sha) {
+    ctx.host.out(`bot: ${ctx.config.pm2.bot} is ready steadily; nothing to switch (--force restarts it anyway)`);
+    return true;
   }
   const next: DeployState = { ...state, bot: moved(state.bot, sha) };
   saveState(ctx, next);
@@ -189,7 +232,7 @@ export async function switchBot(ctx: Context, sha: string, options: BotSwitchOpt
   const state = loadState(ctx);
   const current = findProcess(await pm2List(ctx), name);
   const running = isOnline(current);
-  if (await unchanged(ctx, state, sha, running, options.force)) {
+  if (await unchanged(ctx, state, sha, current, options.force)) {
     // Saved anyway, as the game's re-run does: a switch interrupted between its
     // start and its save left pm2's list on the release before.
     await pm2Save(ctx);
@@ -214,13 +257,7 @@ export async function switchBot(ctx: Context, sha: string, options: BotSwitchOpt
   } catch (error) {
     throw withRollbackHint(error, "bot");
   }
-  if (!(await waitForReady(ctx, sha))) {
-    const timedOut = new DeployError(
-      `${name} on ${shortSha(sha)} did not report ready within ${READY_TIMEOUT_MS / 1000} s. ` +
-        `It is left running so \`pm2 logs ${name}\` shows why.`,
-    );
-    throw withRollbackHint(timedOut, "bot");
-  }
+  await requireReady(ctx, sha);
   await pm2Save(ctx);
   reportDone(ctx, `bot: ${name} runs ${shortSha(sha)}`);
 }

@@ -113,13 +113,65 @@ describe("switching the site", () => {
   test("the release it already runs is not restarted without --force", async () => {
     const box = siteBox();
     box.writeState({ site: { release: NEW, previous: OLD } });
+    Object.assign(box.processes.get(SITE)!, { cwd: join(box.layout.releases, NEW, "activity") });
+    box.probe = () => HEALTHY;
     await switchSite(box.context(), NEW, OPTIONS);
     // Saved all the same: a switch interrupted between its start and its save
     // left pm2's list naming the release before, and a reboot would bring
     // that one back while state.json names this one.
     expect(box.pm2Mutations()).toEqual([["save"]]);
-    await switchSite(box.context(), NEW, { force: true });
-    expect(box.pm2Mutations()).toHaveLength(4);
+    const forced = siteBox();
+    forced.writeState({ site: { release: NEW, previous: OLD } });
+    Object.assign(forced.processes.get(SITE)!, { cwd: join(forced.layout.releases, NEW, "activity") });
+    await switchSite(forced.context(), NEW, { force: true });
+    expect(forced.pm2Mutations()).toHaveLength(3);
+  });
+
+  test("a reboot that restores the saved old site does not count as a completed switch", async () => {
+    const box = siteBox();
+    // The failed start recorded NEW but never saved pm2; a reboot brought OLD back.
+    box.writeState({ site: { release: NEW, previous: OLD } });
+    const afterStart = box.probe;
+    box.probe = (url, now) =>
+      box.processes.get(SITE)?.cwd === join(box.layout.releases, OLD, "activity") ? HEALTHY : afterStart(url, now);
+    await switchSite(box.context(), NEW, OPTIONS);
+    expect(box.pm2Mutations()).toEqual([["delete", SITE], ["start", box.layout.ecosystem, "--only", SITE], ["save"]]);
+    expect(box.processes.get(SITE)!.cwd).toBe(join(box.layout.releases, NEW, "activity"));
+    expect(box.readState().site).toEqual({ release: NEW, previous: OLD });
+  });
+
+  test("a failed readiness check still fails on the same release's re-run; recovery verifies without another start", async () => {
+    const box = siteBox(null);
+    await expect(switchSite(box.context(), NEW, OPTIONS)).rejects.toThrow(/did not answer \/health/);
+    box.calls.length = 0;
+    await expect(switchSite(box.context(), NEW, OPTIONS)).rejects.toThrow(/did not answer \/health/);
+    expect(box.pm2Mutations()).toEqual([]);
+    expect(box.readState().site).toEqual({ release: NEW, previous: OLD });
+
+    box.probe = () => HEALTHY;
+    const before = box.now;
+    await switchSite(box.context(), NEW, OPTIONS);
+    expect(box.now - before).toBeGreaterThanOrEqual(5_000);
+    expect(box.pm2Mutations()).toEqual([["save"]]);
+  });
+
+  test("an interrupted switch's re-run still rejects a site pm2 keeps restarting", async () => {
+    const box = siteBox();
+    box.writeState({ site: { release: NEW, previous: OLD } });
+    Object.assign(box.processes.get(SITE)!, { cwd: join(box.layout.releases, NEW, "activity") });
+    box.probe = () => HEALTHY;
+    let reads = 0;
+    box.respond = (command) => {
+      if (command.argv.join(" ") === "pm2 jlist" && ++reads === 3) {
+        const site = box.processes.get(SITE)!;
+        box.alive.delete(site.pid);
+        site.pid += 100;
+        box.alive.add(site.pid);
+      }
+      return undefined;
+    };
+    await expect(switchSite(box.context(), NEW, OPTIONS)).rejects.toThrow(/pm2 restarted it/);
+    expect(box.pm2Mutations()).toEqual([]);
   });
 
   /*
@@ -164,6 +216,15 @@ describe("switching the site", () => {
 });
 
 describe("an ok from /health is not taken as the new site's own", () => {
+  test("a pm2 app from another release cannot pass the post-start check", async () => {
+    const box = siteBox();
+    onSiteStart(box, () => {
+      Object.assign(box.processes.get(SITE)!, { cwd: join(box.layout.releases, OLD, "activity") });
+    });
+    await expect(switchSite(box.context(), NEW, OPTIONS)).rejects.toThrow(/not the target release[\s\S]*rollback site/);
+    expect(box.pm2Mutations()).toEqual([["delete", SITE], ["start", box.layout.ecosystem, "--only", SITE]]);
+  });
+
   test("done only once pm2 shows the new site online on one pid, and the same pid 5 s later", async () => {
     const box = siteBox();
     const reads = jlistReadsAfterStart(box);

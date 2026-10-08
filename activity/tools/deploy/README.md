@@ -40,12 +40,16 @@ end of this file; until then the guides' manual steps apply unchanged.
   whole cost. Its `/health` names no build, so an ok proves only that
   *something* answers the port — a site started by hand answers it while the
   new one dies with EADDRINUSE. So the port must be silent before the new
-  site starts, and pm2 must show the new site online on one pid, and the same
-  pid 5 s after `/health` first said ok.
+  site starts, and pm2 must show the new site in the target release's directory,
+  online on one pid, and the same pid 5 s after `/health` first said ok. A same-release rerun checks health
+  and that stable pid again before it reports success or saves pm2's list.
 - **The bot is restarted only if its files changed, and only when quiet.**
   One token cannot run two copies — they would answer every command twice —
   so the old process is deleted, confirmed gone, and only then is the new one
-  started.
+  started. Before success, its fresh `ready` heartbeat must name the live pm2
+  pid, then the same ready pid 5 s later. A rerun and an unchanged-files
+  switch check that too; the latter can keep an older build only when its
+  bot files still match the target release.
 
 Everything the tool decides about a running process comes from that
 process's status file (`activity/shared/runtime-status.ts`). Anything it
@@ -117,8 +121,8 @@ bun run deploy <command>
 | `prepare <ref>` | `git fetch`; resolve `<ref>` (a branch means `origin/<branch>`); add the worktree; link `solutions.json`, if the box has one; `bun install --frozen-lockfile` at the root and in `activity/`; `py_compile` of `client/*.py` and the bot's `unittest`; `bun x tsc --noEmit`; `DATABASE_PATH=<release>/activity/data/prepare-test.sqlite bun test` (must report `0 fail`); `BUILD_ID=<sha> bun run build` (must record the sha in `dist/build.json`); `bun run build:puzzledb`; only then link `activity.env` and `bot.env`; the marker. Stops at the first failure, shows its output, and leaves the release no link into `shared/`. Re-running rechecks a failed release in place, its env links taken out first. A marker whose release directory was removed by hand counts for nothing, and is removed before the release is checked out again. Preparing a prepared release runs nothing, and puts back a link that went missing. |
 | `backup [<ref>]` | `VACUUM INTO shared/backups/<daily\|stats>-<UTC time>-<sha>.sqlite` from a read-only connection. Refuses to overwrite a file, and refuses if either database is not in `shared/`. |
 | `switch game <ref> [--allow-cold] [--force]` | The handover above. Timeouts: 90 s for the new slot to serve, then 5 s on one pid to show it stays up; `drainLimitMinutes` for the drain (progress every 30 s, saying "status stale" when the old slot has stopped writing). At the limit the old slot is stopped anyway, which ends its remaining matches with a "restarted" notice. If its process exits, or pm2 restarts it, mid-drain, it is stopped at once. If the new slot's process exits, or pm2 restarts it, mid-drain, or it does not serve again within 30 s once the drain is over, the switch stops with exit 1 and leaves the old slot running. Run again on the release `state.json` already records, it finishes an interrupted switch (*If a switch is interrupted*), and starts a slot if pm2 runs none on it. |
-| `switch site <ref> [--force]` | Delete; refuse, with nothing started, if anything still answers the site's port after 10 s; start; wait up to 60 s for `/health` to answer `ok: true`; then confirm through pm2 that the new app is `online` on a live pid and on the same pid 5 s later. A failed check leaves the new app in pm2 for its logs, runs no `pm2 save`, keeps `rollback site` recorded, and says how to find what holds the port (`ss -ltnp`, `lsof`). |
-| `switch bot <ref> [--now] [--force]` | If no `botFiles` file differs from the bot's release, records the new release without restarting. Otherwise waits up to `botQuietLimitMinutes` for quiet, deletes the old bot, checks its pid is gone, starts the new one and waits up to 120 s for `ready` on the new build. A bot pm2 does not run — stopped, errored or gone — is started, even on the release `state.json` already records. Refuses, changing nothing, when pm2 lists no bot but a fresh `shared/run/bot.json` names a live pid: a bot running out of this pm2's sight. |
+| `switch site <ref> [--force]` | Delete; refuse, with nothing started, if anything still answers the site's port after 10 s; start; wait up to 60 s for `/health` to answer `ok: true`; then confirm through pm2 that the new app runs from the target release's `activity/`, is `online` on a live pid and on the same pid 5 s later. A same-release rerun skips replacement only when pm2 runs that release, and repeats the health and pid checks before saving. A failed check leaves the new app in pm2 for its logs, runs no `pm2 save`, keeps `rollback site` recorded, and says how to find what holds the port (`ss -ltnp`, `lsof`). |
+| `switch bot <ref> [--now] [--force]` | If no `botFiles` file differs from the bot's release, first checks that the running build's bot files still match and it is ready steadily, then records the new release without restarting. Otherwise waits up to `botQuietLimitMinutes` for quiet, deletes the old bot, checks its pid is gone, starts the new one and waits up to 120 s for `ready` on the new build. Success requires a fresh ready heartbeat from the live, online pm2 pid and the same ready pid 5 s later, including on a same-release rerun. A bot pm2 does not run — stopped, errored or gone — is started, even on the release `state.json` already records. Refuses, changing nothing, when pm2 lists no bot but a fresh `shared/run/bot.json` names a live pid: a bot running out of this pm2's sight. |
 | `deploy <ref> [--allow-cold] [--now] [--force]` | `prepare`, `backup`, then switch the game, the site and the bot. Stops at the first failure, saying what already moved and the `rollback` commands that move it back. It does not pause for the guides' checks between switches: see *A deploy, in the guides' order*. |
 | `rollback game [--allow-cold]`, `rollback site`, `rollback bot [--now]` | Switches the app to the release `state.json` recorded as its previous one, with the same checks. Code goes back; data does not — that is what the backups are for. |
 | `status [--wait-quiet [--timeout <minutes>]]` | One line per app. `--wait-quiet` waits (`--timeout`, default `botQuietLimitMinutes`) until no duel is in a match, no rush can still be handed in, and the bot is quiet; exit 1 if the time runs out. |
@@ -221,7 +225,9 @@ All with `interpreter: "none"`, `exec_mode: "fork"`, `watch: false`.
   `DATABASE_PATH`, `BUILD_ID`, `STATUS_FILE`, `STATS_DB`, `PATH` or
   `PUZZLE_ACTIVITY_DIR`** (unset, the sync runs in the bot's own release).
   `prepare` and `switch bot` refuse a bot.env that sets any of them, naming
-  the variable and never its value. Only then is the file the game writes,
+  the variable and never its value. This follows Python-dotenv's assignment
+  grammar, including single-quoted keys and multiline quoted values; text
+  inside a value is not another assignment. Only then is the file the game writes,
   the site reads, the bot's sync writes and `backup` copies one file.
 - `PATH` puts bun's directory first (the bot's `/archive sync` and
   `/highlights` run bun), then the tool's own PATH with every
@@ -259,8 +265,10 @@ All with `interpreter: "none"`, `exec_mode: "fork"`, `watch: false`.
   code and the first line of stderr, never its output. Status files hold
   counts only, and bot.env is read for variable names only. Nothing the tool
   prints contains a secret or a Discord id.
-- One deploy at a time (`shared/run/deploy.lock`); a lock left by a dead run is
-  taken over. A dry run takes none.
+- One deploy at a time (`shared/run/deploy.lock`); every existing lock is
+  refused, including one left by a dead run. Recovery is manual (*Lock
+  recovery*, below), so two contenders cannot both take over a stale lock.
+  A dry run takes none.
 - A stopped game slot is deleted from pm2, and `pm2 save` runs only after a
   switch succeeds, so a reboot never brings old code up beside new. A switch
   run again on the release `state.json` records takes out what an
@@ -310,6 +318,28 @@ What the rehearsal showed that is easy to misread:
 - **Not rehearsed:** pm2 restarting a crashed app, and a reboot
   (`pm2 resurrect`); the stand-in pm2 did neither. Watch both the first time
   they happen on the box.
+
+## Lock recovery
+
+An interrupted deploy can leave `shared/run/deploy.lock`. The tool refuses
+to replace it, even when its recorded pid is dead: two deploys trying to
+recover at once must not remove each other's newly acquired lock. An empty,
+malformed or unreadable lock is also refused; an empty lock may belong to a
+deploy that has just created it and has not written its pid yet.
+
+First read the exact lock named by the error, and check its pid with
+`ps -o pid,user,args -p <pid>`. Check the process list for deploy invocations
+under the account and layout you use; a dead pid alone does not prove that
+another operator has not started a deploy. For an empty or malformed lock,
+recheck the file and process list before proceeding. **Never remove a lock
+while any deploy is running**, and have only one operator recover it at a
+time.
+
+Once you have confirmed that no deploy is running, remove only that exact
+`shared/run/deploy.lock` by hand and rerun the intended command. Removing
+the lock does not stop or start an app. Keep `state.json`: it records what an
+interrupted switch moved and the way back. The recovery below still applies
+to a switch interrupted before it finished.
 
 ## If a switch is interrupted
 

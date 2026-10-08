@@ -6,7 +6,7 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { run } from "../tools/deploy/cli";
 import { assertSafeCommand, exec } from "../tools/deploy/exec";
@@ -189,12 +189,45 @@ describe("one deploy at a time", () => {
     expect(await withLock(ctx, async () => "after")).toBe("after");
   });
 
-  test("a lock left by a run that died is taken over", async () => {
+  test("two contenders for a dead run's lock both fail closed until manual recovery", async () => {
     const box = new FakeBox();
     mkdirSync(box.layout.run, { recursive: true });
     writeFileSync(box.layout.lock, "999999");
-    expect(await withLock(box.context(), async () => "ran")).toBe("ran");
-    expect(box.output()).toContain("taking over");
+    let entered = 0;
+    const attempt = () => withLock(box.context(), async () => { entered += 1; });
+    const results = await Promise.allSettled([attempt(), attempt()]);
+    expect(results.map((result) => result.status)).toEqual(["rejected", "rejected"]);
+    expect(entered).toBe(0);
+    expect(readFileSync(box.layout.lock, "utf8")).toBe("999999");
+    expect((results[0] as PromiseRejectedResult).reason.message).toContain("remove this exact lock by hand");
+
+    unlinkSync(box.layout.lock); // the operator's recovery, once no deploy runs
+    box.alive.add(process.pid);
+    await withLock(box.context(), async () => {
+      await expect(attempt()).rejects.toThrow(/another deploy/);
+      expect(entered).toBe(0);
+    });
+    expect(existsSync(box.layout.lock)).toBe(false);
+  });
+
+  for (const contents of ["", "not a pid", "999999junk"]) {
+    test(`an empty or malformed lock is left alone: ${JSON.stringify(contents)}`, async () => {
+      const box = new FakeBox();
+      mkdirSync(box.layout.run, { recursive: true });
+      writeFileSync(box.layout.lock, contents);
+      await expect(withLock(box.context(), async () => "ran")).rejects.toThrow(/empty, malformed or unreadable/);
+      expect(readFileSync(box.layout.lock, "utf8")).toBe(contents);
+    });
+  }
+
+  test("cleanup leaves another owner's replacement lock alone", async () => {
+    const box = new FakeBox();
+    await withLock(box.context(), async () => {
+      unlinkSync(box.layout.lock);
+      writeFileSync(box.layout.lock, "4242");
+    });
+    expect(readFileSync(box.layout.lock, "utf8")).toBe("4242");
+    expect(box.output()).toContain("replacement was left alone");
   });
 
   test("a dry run takes no lock", async () => {

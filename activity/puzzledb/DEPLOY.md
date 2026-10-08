@@ -44,7 +44,7 @@ changes in the table above and the steps below:
 
 | This guide | On a migrated box |
 |---|---|
-| *Checks, then the build*, and *After every activity deploy* | `prepare <ref>` runs the checks and `bun run build:puzzledb` in the new release. `switch site <ref>` replaces the process — delete, a check that nothing else answers the port, start, `/health`, then pm2 must show it online on one pid 5 seconds later. The `pm2 restart` step goes away |
+| *Checks, then the build*, and *After every activity deploy* | `prepare <ref>` runs the checks and `bun run build:puzzledb` in the new release. `switch site <ref>` replaces the process — delete, a check that nothing else answers the port, start, `/health`, then pm2 must show it in the target release's directory, online on one pid 5 seconds later. A same-release rerun skips replacement only when pm2 runs that release, and repeats `/health` and the stable pid checks before success or `pm2 save`. The `pm2 restart` step goes away |
 | *Start it under pm2*, `puzzledb/ecosystem.config.cjs` | `shared/ecosystem.config.cjs`, written by the tool and never edited by hand, with `interpreter: "none"` and `--env-file` in the arguments, for the reasons given there |
 | `puzzledb/.env` | `shared/puzzledb.env`, with the absolute `DATABASE_PATH=<home>/shared/daily.sqlite`. The commands below that read `puzzledb/.env` read that file instead |
 | `data/solutions.json` beside the code | `shared/solutions.json`, linked into each release |
