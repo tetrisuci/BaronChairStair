@@ -112,6 +112,8 @@ export class App {
   /** The puzzle whose solutions are being read, and its lines. */
   private solutionsFor: PuzzlePrompt | null = null;
   private solutionsLines: readonly GalleryLine[] = [];
+  /** A new request, screen or Explore tab makes an older gallery opening obsolete. */
+  private solutionRequest = 0;
   private readonly canvas = el("canvas", {
     class: "field",
     attrs: { role: "img", "aria-label": "Puzzle playfield" },
@@ -359,6 +361,7 @@ export class App {
     this.exploreTabs = createExploreTabs(
       { puzzles: this.explorer.element, alternates: this.alternates.element },
       (tab) => {
+        this.solutionRequest += 1;
         if (tab === "alternates") void this.loadAlternates();
       },
     );
@@ -718,43 +721,50 @@ export class App {
   }
 
   private async openSolutions(id: number): Promise<void> {
-    if (await this.loadSolutions(id)) this.showSolutionsMenu();
+    const request = ++this.solutionRequest;
+    const loaded = await this.loadSolutions(id, request);
+    if (!loaded || request !== this.solutionRequest) return;
+    this.solutionsFor = loaded.puzzle;
+    this.solutionsLines = loaded.solutions;
+    this.showSolutionsMenu();
   }
 
   /**
-   * Fetches a puzzle and its gallery into `solutionsFor`/`solutionsLines`,
-   * behind the gates the server enforces. True when they arrived; a refusal
-   * or failure has already been toasted.
+   * Fetches a puzzle and its gallery behind the gates the server enforces.
+   * Only a current caller may commit them or show an error: the player can
+   * leave or choose another line while either request is still on the wire.
+   * Null means refused, failed or superseded.
    *
    * Shared by the Solutions menu and the alternates tab, which both open a
    * puzzle's lines and must refuse the same puzzles for the same reasons.
    */
-  private async loadSolutions(id: number): Promise<boolean> {
-    if (id < 0) return false;
+  private async loadSolutions(
+    id: number,
+    request: number,
+  ): Promise<{ puzzle: PuzzlePrompt; solutions: readonly GalleryLine[] } | null> {
+    if (id < 0 || request !== this.solutionRequest) return null;
     if (this.lockedPuzzleIds().has(id)) {
       this.toast("That is one of today's — play it on the daily first");
-      return false;
+      return null;
     }
     // The gate the server enforces, asked here too so a player gets a sentence
     // instead of a 403. Reading how other people did it is a reward for having
     // done it; the server is what makes that true rather than merely displayed.
     if (!this.cleared.has(id)) {
       this.toast("Solve it yourself first — then you can read how others did");
-      return false;
+      return null;
     }
     try {
       const [{ puzzle }, { solutions }] = await Promise.all([
         this.connection.api.archivePuzzle(id),
         this.connection.api.puzzleSolutions(id),
       ]);
-      // Remembered so Back can put the player on the board they came from, and
-      // so an entry can be stepped without fetching the puzzle a second time.
-      this.solutionsFor = puzzle;
-      this.solutionsLines = solutions;
-      return true;
+      return request === this.solutionRequest ? { puzzle, solutions } : null;
     } catch (error) {
-      this.toast(error instanceof ApiError ? error.message : "Could not open that puzzle");
-      return false;
+      if (request === this.solutionRequest) {
+        this.toast(error instanceof ApiError ? error.message : "Could not open that puzzle");
+      }
+      return null;
     }
   }
 
@@ -772,13 +782,19 @@ export class App {
    * instead, which is the nearest thing to what was asked for.
    */
   private async openAlternate(puzzleId: number, solutionId: number): Promise<void> {
+    const request = ++this.solutionRequest;
     try {
       await this.loadArchive();
     } catch (error) {
-      this.toast(error instanceof ApiError ? error.message : "Could not load the archive");
+      if (request === this.solutionRequest) {
+        this.toast(error instanceof ApiError ? error.message : "Could not load the archive");
+      }
       return;
     }
-    if (!(await this.loadSolutions(puzzleId))) return;
+    const loaded = await this.loadSolutions(puzzleId, request);
+    if (!loaded || request !== this.solutionRequest) return;
+    this.solutionsFor = loaded.puzzle;
+    this.solutionsLines = loaded.solutions;
     const line = this.solutionsLines.find((one) => one.solutionId === solutionId);
     if (!line) {
       this.showSolutionsMenu();
@@ -1009,6 +1025,7 @@ export class App {
    * alone with the rails stacked below the fold.
    */
   private showColumns(left: HTMLElement, centre: HTMLElement, right: HTMLElement): void {
+    this.solutionRequest += 1;
     this.deck.classList.remove("deck--screen");
     // The builder mounts through here too; its rails are content, not the
     // game's chrome, and narrow.css keys the phone's board-plus-column shape
@@ -1069,6 +1086,7 @@ export class App {
     options: { wide?: boolean; full?: boolean; fill?: boolean },
     ...cards: HTMLElement[]
   ): void {
+    this.solutionRequest += 1;
     this.clearCredits();
     this.deck.classList.add("deck--screen");
     this.deck.classList.remove("deck--play");

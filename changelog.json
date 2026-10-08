@@ -2,6 +2,12 @@
   "$comment": "The project's version and its player-facing release notes. Newest first; order in this list IS the version order. Read by client/changelog.py for /puzzle changelog, requested privately. Adding a release means putting it at the top. Keep `changes` to things a player can see.",
   "releases": [
     {
+      "version": "beta 0.22",
+      "changes": [
+        "**Opening an alternate solution now follows your latest choice.** Leaving Explore to play another puzzle keeps you there even if the old solution takes a while to load, and choosing another line opens the one you picked last."
+      ]
+    },
+    {
       "version": "beta 0.20",
       "changes": [
         "**Explore has a new tab, Alternate solutions**: every other way players have solved the club's puzzles, in one list. Sort by date found, difficulty, puzzle name or number, attack or pieces, either way round, and open any line on the board. A line on a puzzle you have not solved yet is listed but stays locked — no board, no attack, no clears — until you solve it yourself.",
