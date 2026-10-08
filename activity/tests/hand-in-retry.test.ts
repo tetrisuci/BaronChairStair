@@ -30,6 +30,7 @@ import {
   isRetryableStatus,
   type RetryClock,
   type RetryNotice,
+  type SubmitResponse,
   withHandInRetries,
 } from "../client/src/api";
 import { BUILD_ID_HEADER } from "../shared/runtime-status";
@@ -214,6 +215,20 @@ const refused = () => {
   throw new TypeError("Failed to fetch");
 };
 
+/** Headers arrive, then the connection drops after only part of the JSON body. */
+const interruptedResponse = (status = 200, cause: unknown = new TypeError("Network connection lost")) => () =>
+  new Response(
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"solved":'));
+      },
+      pull(controller) {
+        controller.error(cause);
+      },
+    }),
+    { status, headers: { "Content-Type": "application/json" } },
+  );
+
 function quietly<T>(run: () => Promise<T>): Promise<T> {
   // `request` logs every refused connection to the console, which is right in a
   // browser and noise in a test that refuses on purpose.
@@ -232,6 +247,139 @@ const RUN_BODY = {
   resets: 0,
   totalMs: 1234,
 };
+
+const RUSH_BODY = {
+  ticket: "payload.signature",
+  handling: DEFAULT_HANDLING,
+  segments: [{ events: [] }],
+  timeToLastSolveMs: 1234,
+  skipsUsed: 0,
+};
+
+const CLEAR_BODY = { handling: DEFAULT_HANDLING, events: [] };
+
+const HAND_INS: readonly {
+  name: string;
+  path: string;
+  body: unknown;
+  send: (api: Api, options?: HandInOptions) => Promise<unknown>;
+}[] = [
+  {
+    name: "daily filing",
+    path: "/api/daily/run",
+    body: RUN_BODY,
+    send: (api: Api, options?: HandInOptions) => api.submitRun(RUN_BODY, options),
+  },
+  {
+    name: "rush hand-in",
+    path: "/api/rush/run",
+    body: RUSH_BODY,
+    send: (api: Api, options?: HandInOptions) => api.submitRush(RUSH_BODY, options),
+  },
+  {
+    name: "practice clear",
+    path: "/api/puzzles/92/clear",
+    body: CLEAR_BODY,
+    send: (api: Api, options?: HandInOptions) => api.clearPuzzle(92, CLEAR_BODY, options),
+  },
+];
+
+describe("a connection lost after the response headers", () => {
+  for (const handIn of HAND_INS) {
+    test(`${handIn.name} retries the identical hand-in after an interrupted successful body`, async () => {
+      const answer = { solved: true, solution: null };
+      const network = scriptedNetwork([interruptedResponse(), json(200, answer)]);
+      const clock = fakeClock();
+      const api = new Api("", { fetch: network.fetch, clock });
+      const notices: RetryNotice[] = [];
+
+      expect(await quietly(() => handIn.send(api, { onRetrying: (notice) => notices.push(notice) })))
+        .toEqual(answer);
+
+      expect(network.sent).toEqual(Array(2).fill({
+        url: handIn.path,
+        method: "POST",
+        body: JSON.stringify(handIn.body),
+      }));
+      expect(clock.waits).toEqual([HAND_IN_RETRY_DELAYS_MS[0]!]);
+      expect(notices).toEqual([{ attempt: 2, delayMs: 500, status: 0 }]);
+    });
+
+    test(`${handIn.name} does not retry a fully received malformed JSON body`, async () => {
+      const network = scriptedNetwork([
+        () => new Response('{"solved":', { status: 200 }),
+        json(200, { solved: true }),
+      ]);
+      const clock = fakeClock();
+      const api = new Api("", { fetch: network.fetch, clock });
+
+      await expect(handIn.send(api)).rejects.toBeInstanceOf(SyntaxError);
+
+      expect(network.sent).toHaveLength(1);
+      expect(clock.waits).toEqual([]);
+    });
+  }
+
+  test("an aborted response-body read is a retryable connection failure too", async () => {
+    const answer: SubmitResponse = {
+      tier: "easy",
+      run: {
+        day: RUN_BODY.day,
+        puzzleId: 92,
+        player: { id: "player", username: "Player", avatarUrl: null },
+        solved: true,
+        attack: 4,
+        targetAttack: 4,
+        durationMs: 1234,
+        totalMs: RUN_BODY.totalMs,
+        resets: RUN_BODY.resets,
+        piecesPlaced: 1,
+        clears: [],
+        createdAt: 1_000_000,
+      },
+      isFirst: true,
+      discovery: null,
+      streak: 1,
+      totalSolved: 1,
+      solution: null,
+      leaderboard: [],
+    };
+    const network = scriptedNetwork([
+      interruptedResponse(200, new DOMException("The connection was aborted", "AbortError")),
+      json(200, answer),
+    ]);
+    const api = new Api("", { fetch: network.fetch, clock: fakeClock() });
+
+    expect(await quietly(() => api.submitRun(RUN_BODY))).toEqual(answer);
+    expect(network.sent).toHaveLength(2);
+  });
+
+  test("repeated interrupted bodies exhaust the existing retry schedule", async () => {
+    const network = scriptedNetwork(Array(HAND_IN_RETRY_DELAYS_MS.length + 1).fill(interruptedResponse()));
+    const clock = fakeClock();
+    const api = new Api("", { fetch: network.fetch, clock });
+
+    const failure = await quietly(() => api.submitRun(RUN_BODY)).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(ApiError);
+    expect((failure as ApiError).status).toBe(0);
+    expect(network.sent).toHaveLength(HAND_IN_RETRY_DELAYS_MS.length + 1);
+    expect(clock.waits).toEqual([...HAND_IN_RETRY_DELAYS_MS]);
+  });
+
+  test.each([409, 500])("an interrupted %i error body keeps the server's nonretryable status", async (status) => {
+    const network = scriptedNetwork([interruptedResponse(status), json(200, { solved: true })]);
+    const clock = fakeClock();
+    const api = new Api("", { fetch: network.fetch, clock });
+
+    const failure = await api.submitRun(RUN_BODY).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(ApiError);
+    expect((failure as ApiError).status).toBe(status);
+    expect(network.sent).toHaveLength(1);
+    expect(clock.waits).toEqual([]);
+  });
+});
 
 describe("the daily filing", () => {
   test("is asked again through a proxy's 502 and a refused connection, with the same body", async () => {

@@ -2,6 +2,12 @@
   "$comment": "The project's version and its player-facing release notes. Newest first; order in this list IS the version order. Read by client/changelog.py for /puzzle changelog, requested privately. Adding a release means putting it at the top. Keep `changes` to things a player can see.",
   "releases": [
     {
+      "version": "beta 0.23",
+      "changes": [
+        "**A hand-in now retries when the connection drops partway through the server's reply**, as well as before the reply starts. Daily sheets, rushes and practice clears can recover from that interruption instead of failing at once."
+      ]
+    },
+    {
       "version": "beta 0.21",
       "changes": [
         "**Finishing a puzzle while the server restarts no longer loses it.** A daily sheet or a rush handed in at that moment says **Reconnecting…** and tries again for up to about fifteen seconds, instead of failing at once. A practice clear tries again the same way, without the message.",
