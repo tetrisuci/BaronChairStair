@@ -750,6 +750,71 @@
   white-space: nowrap;
 }
 
+/* ── Explore's tabs, and the alternate solutions list ─────────────────────── */
+
+/*
+ * The tabs sit between the screen and the card, so they have to pass the
+ * height on: Explore mounts with `screen--fill`, where the card owns the
+ * height and only its list scrolls. Without these the wrapper takes the card's
+ * natural height, the list grows with every row, and the card runs off the
+ * bottom of the frame — tabs and all, which is how you leave this screen.
+ */
+.screen--fill > .explore-tabs { min-height: 0; }
+
+.explore-tabs {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+}
+
+.explore-tabs__bar { flex: none; }
+
+.explore-tabs__pane {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.explore-tabs__pane > .panel { flex: 1 1 auto; min-height: 0; }
+
+/*
+ * Rows at their own height, packed at the top. The list is a grid with a
+ * height it was given, and a grid's rows otherwise share out that height — so
+ * a box with three alternates on file would draw three rows a third of a
+ * screen tall each.
+ */
+.alternates__list { align-content: start; }
+
+/*
+ * The explorer's row with a second line under the title: who found it, when,
+ * and what it did. Three columns rather than four — there is no solved tick
+ * here, because a row you may open is a row on a puzzle you have solved.
+ */
+.alternates__item {
+  grid-template-columns: 46px minmax(0, 1fr) auto;
+  row-gap: 2px;
+}
+
+.alternates__facts {
+  grid-column: 2 / -1;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-soft);
+  overflow-wrap: anywhere;
+}
+
+.alternates__who { font-weight: 600; color: var(--ink); }
+
+.alternates__clears::before { content: " · "; }
+
+/* Never the control that wraps away from the select it reverses. */
+.alternates__direction {
+  min-width: 4ch;
+  text-align: center;
+}
+
 /*
  * A row of two or three short labels that share the width they are given —
  * now the record book's scopes, and once the day's tiers difficulties.

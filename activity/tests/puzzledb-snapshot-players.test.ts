@@ -283,10 +283,11 @@ describe("the puzzles each player cleared", () => {
 });
 
 describe("the lines", () => {
-  test("publishes the live credited lines of finished days, by puzzle, with nothing about who or when", () => {
+  test("publishes the live credited lines of finished days, by puzzle, with the day found and nothing about who", () => {
     expect(players.lines.map((line) => line.puzzleId)).toEqual([LINES.hidden.puzzleId, LINES.visible.puzzleId]);
+    expect(players.lines.map((line) => line.day)).toEqual([LINES.hidden.day, LINES.visible.day]);
     for (const line of players.lines) {
-      expect(Object.keys(line).sort()).toEqual(["attack", "clears", "puzzleId", "steps"]);
+      expect(Object.keys(line).sort()).toEqual(["attack", "clears", "day", "puzzleId", "steps"]);
       expect(line.clears).toEqual(["tsd", "tsd"]);
       for (const step of line.steps) expect(Object.keys(step).sort()).toEqual(["attack", "cells", "clear", "piece"]);
     }
@@ -308,6 +309,29 @@ describe("the lines", () => {
     const lines = playersOf(game.databasePath).lines.filter((line) => line.puzzleId === LINES.hidden.puzzleId);
 
     expect(lines.map((line) => line.attack)).toEqual([13, LINES.hidden.attack]);
+  });
+
+  test("names the day a line was found in the game's zone, and never the time", () => {
+    const game = fixture();
+    // A minute before the game's midnight that starts yesterday: the day before, in Los Angeles.
+    const lateEvening = startOfDay(TODAY - 1, { timeZone: LA }) - 60_017;
+    edit(game, "UPDATE puzzle_solutions SET found_at = ?1 WHERE puzzle_id = ?2 AND source = 'player'", lateEvening, CORRECTED_ID);
+
+    const read = playersOf(game.databasePath);
+    const line = read.lines.find((one) => one.puzzleId === CORRECTED_ID);
+
+    expect(line?.day).toBe(TODAY - 2);
+    expect(JSON.stringify(read.lines)).not.toContain(String(lateEvening));
+  });
+
+  test("names the true day of a line found before the site's history starts", () => {
+    const game = fixture();
+    const longAgo = startOfDay(FIRST_TIERED_DAY - 40, { timeZone: LA }) + 3_600_017;
+    edit(game, "UPDATE puzzle_solutions SET found_at = ?1 WHERE puzzle_id = ?2 AND source = 'player'", longAgo, CORRECTED_ID);
+
+    const line = playersOf(game.databasePath).lines.find((one) => one.puzzleId === CORRECTED_ID);
+
+    expect(line?.day).toBe(FIRST_TIERED_DAY - 40);
   });
 
   test("drops a clear name the game does not know, from the line and from its steps", () => {
@@ -348,7 +372,7 @@ describe("the game's zone", () => {
       const starts = JSON.stringify(Array.from({ length: last - lo + 1 }, (_, at) => startOfDay(lo + at, { timeZone: LA })));
       const row = db
         .query<{ day: number }, Record<string, string | number>>(`SELECT ${LINE_DAY} AS day FROM (SELECT $found AS found_at) s`)
-        .get({ $found: foundAt, $starts: starts, $lo: lo });
+        .get({ $found: foundAt, $starts: starts, $startsFrom: lo });
       return row!.day;
     } finally {
       db.close();

@@ -95,6 +95,31 @@ export interface GalleryLine {
 }
 
 /**
+ * One alternate solution, as Explore's "Alternate solutions" tab lists it.
+ * Mirrors `AlternateRow` in `server/alternates.ts`, which says why each field
+ * is what it is.
+ *
+ * `locked` is "you have not solved this puzzle": the server then sends
+ * `attack`, `pieces` and `clears` as null, and the row must say "solve it
+ * first" rather than print them. A puzzle the reader may not see at all —
+ * today's unsolved tier — is simply not in the list.
+ */
+export interface AlternateRow {
+  readonly solutionId: number;
+  readonly puzzleId: number;
+  readonly title: string;
+  /** Null when the puzzle is unrated. */
+  readonly difficulty: number | null;
+  readonly set: string | null;
+  readonly finder: PlayerProfile | null;
+  readonly foundAt: number;
+  readonly locked: boolean;
+  readonly attack: number | null;
+  readonly pieces: number | null;
+  readonly clears: readonly ClearName[] | null;
+}
+
+/**
  * Where the player reading the board stands on it, or null if they have found
  * nothing yet.
  *
@@ -673,6 +698,15 @@ export class Api {
    */
   profile(id?: string): Promise<ProfileStats> {
     return this.request(id ? `/api/profile/${id}` : "/api/profile");
+  }
+
+  /**
+   * Every alternate solution across the archive, newest first. Lines on a
+   * puzzle this player has not solved come without their content; today's
+   * unsolved tiers are left out. See `AlternateRow`.
+   */
+  alternates(): Promise<{ alternates: readonly AlternateRow[] }> {
+    return this.request("/api/alternates");
   }
 
   /**

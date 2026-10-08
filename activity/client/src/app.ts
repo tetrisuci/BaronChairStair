@@ -44,6 +44,8 @@ import {
   createVerdictPanel,
 } from "./ui/results";
 import { createExplorer } from "./ui/explorer";
+import { createAlternates } from "./ui/alternates";
+import { createExploreTabs } from "./ui/explore-tabs";
 import { createBuilder, type Builder } from "./ui/builder";
 import type { SubmissionVerdict } from "./ui/builder-submit";
 import type { SubmissionBody } from "./ui/builder-state";
@@ -142,6 +144,8 @@ export class App {
   /** The puzzle whose solutions are being read, and its lines. */
   private solutionsFor: PuzzlePrompt | null = null;
   private solutionsLines: readonly GalleryLine[] = [];
+  /** A new request, screen or Explore tab makes an older gallery opening obsolete. */
+  private solutionRequest = 0;
   private readonly canvas = el("canvas", {
     class: "field",
     attrs: { role: "img", "aria-label": "Puzzle playfield" },
@@ -196,6 +200,16 @@ export class App {
   private readonly rushIntro;
   private readonly rushResult;
   private readonly explorer;
+  /** Explore's second tab: every alternate solution, across every puzzle. */
+  private readonly alternates = createAlternates({
+    onOpen: (row) => void this.openAlternate(row.puzzleId, row.solutionId),
+    onClose: () => this.leaveExplorer(),
+  });
+  /**
+   * Puzzles | Alternate solutions. Built in the constructor, after the
+   * explorer it holds; the open tab is remembered for as long as the page is.
+   */
+  private readonly exploreTabs;
   private readonly duelIntro;
   private readonly duelLobby;
   private readonly duelResult;
@@ -413,6 +427,13 @@ export class App {
       onRandom: () => void this.startPractice(),
       onClose: () => this.leaveExplorer(),
     });
+    this.exploreTabs = createExploreTabs(
+      { puzzles: this.explorer.element, alternates: this.alternates.element },
+      (tab) => {
+        this.solutionRequest += 1;
+        if (tab === "alternates") void this.loadAlternates();
+      },
+    );
 
     this.duelIntro = createDuelIntro({
       onOpen: (settings) => this.duel?.open(settings),
@@ -775,30 +796,102 @@ export class App {
   }
 
   private async openSolutions(id: number): Promise<void> {
-    if (id < 0) return;
+    const request = ++this.solutionRequest;
+    const loaded = await this.loadSolutions(id, request);
+    if (!loaded || request !== this.solutionRequest) return;
+    this.solutionsFor = loaded.puzzle;
+    this.solutionsLines = loaded.solutions;
+    this.showSolutionsMenu();
+  }
+
+  /**
+   * Fetches a puzzle and its gallery behind the gates the server enforces.
+   * Only a current caller may commit them or show an error: the player can
+   * leave or choose another line while either request is still on the wire.
+   * Null means refused, failed or superseded.
+   *
+   * Shared by the Solutions menu and the alternates tab, which both open a
+   * puzzle's lines and must refuse the same puzzles for the same reasons.
+   */
+  private async loadSolutions(
+    id: number,
+    request: number,
+  ): Promise<{ puzzle: PuzzlePrompt; solutions: readonly GalleryLine[] } | null> {
+    if (id < 0 || request !== this.solutionRequest) return null;
     if (this.lockedPuzzleIds().has(id)) {
       this.toast("That is one of today's — play it on the daily first");
-      return;
+      return null;
     }
     // The gate the server enforces, asked here too so a player gets a sentence
     // instead of a 403. Reading how other people did it is a reward for having
     // done it; the server is what makes that true rather than merely displayed.
     if (!this.cleared.has(id)) {
       this.toast("Solve it yourself first — then you can read how others did");
-      return;
+      return null;
     }
     try {
       const [{ puzzle }, { solutions }] = await Promise.all([
         this.connection.api.archivePuzzle(id),
         this.connection.api.puzzleSolutions(id),
       ]);
-      // Remembered so Back can put the player on the board they came from, and
-      // so an entry can be stepped without fetching the puzzle a second time.
-      this.solutionsFor = puzzle;
-      this.solutionsLines = solutions;
-      this.showSolutionsMenu();
+      return request === this.solutionRequest ? { puzzle, solutions } : null;
     } catch (error) {
-      this.toast(error instanceof ApiError ? error.message : "Could not open that puzzle");
+      if (request === this.solutionRequest) {
+        this.toast(error instanceof ApiError ? error.message : "Could not open that puzzle");
+      }
+      return null;
+    }
+  }
+
+  /**
+   * One line from the alternates tab, straight onto the board.
+   *
+   * Through the puzzle's own gallery rather than a route of its own: that is
+   * where the placements are, behind the gate that decides who may read them,
+   * and it leaves "← All solutions" in the rail meaning what it always meant.
+   * The archive is awaited first because the gate reads `cleared`, which it
+   * fills — a click that beat the first listing would otherwise be refused.
+   *
+   * A line can leave the gallery between the list being drawn and the click —
+   * an officer's edit voids it — so a miss shows the puzzle's Solutions menu
+   * instead, which is the nearest thing to what was asked for.
+   */
+  private async openAlternate(puzzleId: number, solutionId: number): Promise<void> {
+    const request = ++this.solutionRequest;
+    try {
+      await this.loadArchive();
+    } catch (error) {
+      if (request === this.solutionRequest) {
+        this.toast(error instanceof ApiError ? error.message : "Could not load the archive");
+      }
+      return;
+    }
+    const loaded = await this.loadSolutions(puzzleId, request);
+    if (!loaded || request !== this.solutionRequest) return;
+    this.solutionsFor = loaded.puzzle;
+    this.solutionsLines = loaded.solutions;
+    const line = this.solutionsLines.find((one) => one.solutionId === solutionId);
+    if (!line) {
+      this.showSolutionsMenu();
+      return;
+    }
+    // The prologue `showSolutionsMenu` runs before a line is picked from it.
+    this.leaveForScreen();
+    this.stepSolution(line);
+  }
+
+  /**
+   * Fetched on every open of the tab, like the boards: lines are found all
+   * day, and a list that missed the one just filed reads as broken. The rows
+   * already on screen stay while the new ones come.
+   */
+  private async loadAlternates(): Promise<void> {
+    try {
+      const { alternates } = await this.connection.api.alternates();
+      this.alternates.update(alternates, this.connection.player.id);
+    } catch (error) {
+      this.toast(error instanceof ApiError ? error.message : "Could not read the alternate solutions");
+      this.alternates.failed();
     }
   }
 
@@ -964,7 +1057,8 @@ export class App {
     this.badge.hide();
     this.input.setGameInputEnabled(false);
     this.paintExplorer();
-    this.showScreen({ wide: true, fill: true }, this.explorer.element);
+    this.showScreen({ wide: true, fill: true }, this.exploreTabs.element);
+    if (this.exploreTabs.active === "alternates") void this.loadAlternates();
     void this.loadArchive().then(() => this.paintExplorer()).catch((error) => {
       this.toast(error instanceof ApiError ? error.message : "Could not load the archive");
     });
@@ -1006,6 +1100,7 @@ export class App {
    * alone with the rails stacked below the fold.
    */
   private showColumns(left: HTMLElement, centre: HTMLElement, right: HTMLElement): void {
+    this.solutionRequest += 1;
     this.deck.classList.remove("deck--screen");
     // The builder mounts through here too; its rails are content, not the
     // game's chrome, and narrow.css keys the phone's board-plus-column shape
@@ -1066,6 +1161,7 @@ export class App {
     options: { wide?: boolean; full?: boolean; fill?: boolean },
     ...cards: HTMLElement[]
   ): void {
+    this.solutionRequest += 1;
     this.clearCredits();
     this.deck.classList.add("deck--screen");
     this.deck.classList.remove("deck--play");

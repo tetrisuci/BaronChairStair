@@ -44,6 +44,7 @@ import { config } from "./config";
 import { enforcingGoals, solvedUnderPolicy } from "./solve-verdict";
 import { trackedAnswers } from "./archive-solutions";
 import { profileLines, recordDiscovery, seedReferenceSolutions } from "./discoveries";
+import { alternateRows } from "./alternates";
 import { Store, type StoredRun } from "./db";
 import { DaySchedule, pastDaysOf } from "./schedule";
 import {
@@ -920,6 +921,33 @@ app.get("/api/archive", requireSession, (c) => {
     today,
     cleared: [...store.clearedPuzzleIds(session.player.id)],
   });
+});
+
+/**
+ * Every alternate solution on file, across every puzzle, for Explore's
+ * "Alternate solutions" tab.
+ *
+ * The rule for what each reader is told lives in `alternateRows`, with its
+ * reasons; this only hands it the three things it asks about. In short: a
+ * puzzle `maySeeSolution` refuses — today's unsolved tier, a duel round in
+ * play — is not listed at all; a puzzle this reader has not solved is listed
+ * with its finder and date but none of the line's content; and one they have
+ * solved comes with attack, length and clears. Never placements: opening a
+ * line goes through `/api/puzzles/:id/solutions`, behind its own gate.
+ *
+ * Sorting is the browser's, over the whole set, with the order both
+ * alternate browsers share (`shared/alternate-sort.ts`). No route-specific
+ * limit: like `/api/archive`, one read a visit, under the blanket game limit.
+ */
+app.get("/api/alternates", requireSession, (c) => {
+  const session = c.get("session");
+  const alternates = alternateRows(
+    store.liveAlternates(),
+    (puzzleId) => archive.get(puzzleId) ?? null,
+    (puzzleId) => maySeeSolution(session, puzzleId),
+    store.clearedPuzzleIds(session.player.id),
+  );
+  return c.json({ alternates });
 });
 
 /**

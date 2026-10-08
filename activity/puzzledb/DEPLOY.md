@@ -372,21 +372,34 @@ curl -s 127.0.0.1:3002/leaderboards | grep -o '<title>[^<]*</title>'            
 curl -s -o /dev/null -w '%{http_code}\n' 127.0.0.1:3002/data/leaderboards.json        # 200
 curl -s 127.0.0.1:3002/solves | grep -o '<title>[^<]*</title>'                       # <title>Recent solves — Puzzle archive</title>
 curl -s -o /dev/null -w '%{http_code}\n' 127.0.0.1:3002/solves/                        # 404: one spelling per page
-for b in players solves; do curl -s -o /dev/null -w "$b %{http_code} %{content_type}\n" "127.0.0.1:3002/data/$b.json"; done   # each 200 application/json; charset=utf-8
+curl -s 127.0.0.1:3002/alternates | grep -o '<title>[^<]*</title>'                   # <title>Alternate solutions — Puzzle archive</title>
+for b in players solves alternates; do curl -s -o /dev/null -w "$b %{http_code} %{content_type}\n" "127.0.0.1:3002/data/$b.json"; done   # each 200 application/json; charset=utf-8
 curl -s 127.0.0.1:3002/data/no-such-thing.json; echo                                   # {"error":"Not found"}
 curl -s 127.0.0.1:3002/puzzles.json | bun -e 'const d = await Bun.stdin.json(); console.log(`schema ${d.about.schema}: ${d.players.length} players listed, ${d.servers.length} servers (${d.servers.filter((s) => s.name === null).length} unnamed)`)'
 ```
 
-Expect `schema 2`. Servers the game knew before this deploy have no name until a
-player signs in from them, so on the first deploy most or all may be unnamed; that
-fills in as people play.
+Expect `schema 3` (3 since each line carries the day it was found; a site still
+printing `schema 2` is the old build). Servers the game knew before this deploy have
+no name until a player signs in from them, so on the first deploy most or all may be
+unnamed; that fills in as people play.
+
+**Each line has a day, and only a day.** Every published line carries the game's day
+it was found on, a number like the days in `/days`, and never anything finer:
+
+```sh
+curl -s 127.0.0.1:3002/data/alternates.json | bun -e 'const {lines} = await Bun.stdin.json(); const days = lines.map((l) => l.day); console.log(`${lines.length} lines, found on days ${Math.min(...days)}–${Math.max(...days)}; keys ${[...new Set(lines.flatMap(Object.keys))].sort().join(" ")}`)'
+```
+
+Expect the keys `attack clears day pieces position puzzleId` and nothing else, and
+the newest day before today. A key such as `foundAt` or `foundBy`, or a day of today
+or later, is a stop, as below.
 
 **Nothing shaped like a Discord id.** No run of seventeen digits may appear in the
 index or any body; each line must print `0`:
 
 ```sh
 curl -s 127.0.0.1:3002/puzzles.json | grep -cE '[0-9]{17}'
-for b in leaderboards players solves; do curl -s "127.0.0.1:3002/data/$b.json" | grep -cE '[0-9]{17}'; done
+for b in leaderboards players solves alternates; do curl -s "127.0.0.1:3002/data/$b.json" | grep -cE '[0-9]{17}'; done
 ```
 
 A `1` is a stop: `pm2 stop puzzle-db` (under systemd, `sudo systemctl stop puzzle-db`)
@@ -545,7 +558,7 @@ curl -sI https://db.tetrisatuci.org/ | grep -iE '^(HTTP|content-security-policy|
 curl -s https://db.tetrisatuci.org/puzzle/1 | grep -o '<title>[^<]*</title>'
 curl -s https://db.tetrisatuci.org/health; echo
 curl -s -o /dev/null -w '%{http_code}\n' https://db.tetrisatuci.org/solves/      # 404
-for b in players solves; do curl -s -o /dev/null -w "$b %{http_code} %{content_type}\n" "https://db.tetrisatuci.org/data/$b.json"; done   # each 200 application/json; charset=utf-8
+for b in players solves alternates; do curl -s -o /dev/null -w "$b %{http_code} %{content_type}\n" "https://db.tetrisatuci.org/data/$b.json"; done   # each 200 application/json; charset=utf-8
 ```
 
 Then, in a browser at <https://db.tetrisatuci.org/>, with the developer console open
@@ -560,6 +573,9 @@ the whole time:
   *Calendar* and *Puzzles cleared*;
 - open **Solves**: pick a tier and check the address gains `?tier=`, then press
   **Show older days** if it is offered;
+- open **Alternates**: press **Attack** and check the address gains `?sort=attack`,
+  press it again and check it gains `&dir=asc`; then press a row's puzzle, which must
+  open that puzzle with its answers already showing that line's chip;
 - the console must show **no Content-Security-Policy errors**, and no 404s: the
   page's icon is `/assets/favicon-<hash>.svg`, so nothing asks for `/favicon.ico`.
 

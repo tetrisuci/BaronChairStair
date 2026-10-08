@@ -316,7 +316,7 @@ function lineRows(lines: readonly SnapshotLine[], listed: ReadonlySet<number>): 
     .map((line): LineRow => {
       const position = (positions.get(line.puzzleId) ?? 0) + 1;
       positions.set(line.puzzleId, position);
-      return [line.puzzleId, position, line.attack, JSON.stringify(line.clears), JSON.stringify(line.steps)];
+      return [line.puzzleId, position, line.day, line.attack, JSON.stringify(line.clears), JSON.stringify(line.steps)];
     });
 }
 
