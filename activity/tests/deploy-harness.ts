@@ -10,14 +10,14 @@
  */
 
 import { createRequire } from "node:module";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BotStatus, GameStatus, RuntimeStatus } from "../shared/runtime-status";
 import { parseConfig, type DeployConfig } from "../tools/deploy/config";
 import type { Command, CommandResult, Context, Host, HttpReply, StatusReading } from "../tools/deploy/host";
 import { layoutFor, releaseDir, type Layout } from "../tools/deploy/layout";
-import { MARKER_FILE } from "../tools/deploy/release";
+import { markerPath } from "../tools/deploy/release";
 import type { DeployState } from "../tools/deploy/state";
 
 export const OLD = "1111111111111111111111111111111111111111";
@@ -156,13 +156,13 @@ export class FakeBox {
     return process;
   }
 
-  /** A release that has been through prepare: a directory and its marker. */
+  /** A release that has been through prepare: a directory and, beside it, its marker. */
   prepareRelease(sha: string, preparedAt = START): string {
     const dir = releaseDir(this.layout, sha);
     mkdirSync(join(dir, "activity", "data"), { recursive: true });
     mkdirSync(join(dir, "client"), { recursive: true });
     writeFileSync(
-      join(dir, MARKER_FILE),
+      markerPath(this.layout, sha),
       JSON.stringify({ sha, preparedAt: new Date(preparedAt).toISOString(), checks: [] }),
     );
     return dir;
@@ -265,6 +265,12 @@ export class FakeBox {
     if (verb === "worktree" && args[3] === "remove") {
       rmSync(args[5]!, { recursive: true, force: true });
       return ok();
+    }
+    if (verb === "worktree" && args[3] === "list") {
+      // Every release directory still there is a worktree, as it is on the box.
+      const releases = existsSync(this.layout.releases) ? readdirSync(this.layout.releases) : [];
+      const dirs = releases.map((name) => join(this.layout.releases, name)).filter((dir) => statSync(dir).isDirectory());
+      return ok([this.layout.repo, ...dirs].map((dir) => `worktree ${dir}\n`).join(""));
     }
     if (verb === "diff") return ok(this.diff.map((path) => `${path}\n`).join(""));
     return ok();

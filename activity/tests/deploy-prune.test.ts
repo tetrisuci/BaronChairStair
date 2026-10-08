@@ -2,14 +2,18 @@
  * `prune`: old releases go, through git so the worktree list stays true — but
  * never one that state.json still points at (current or previous, the way back),
  * one a pm2 app is still running from, or the one this tool is running from.
- * The links into shared/ are taken out first, so nothing can follow them.
+ * git takes the links into shared/ out with the rest of the release (it removes
+ * a link, never what it points at), and the marker beside it goes once git has.
+ * A removal git refuses leaves the release whole, links and marker: still one a
+ * switch can use.
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, readlinkSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { releaseDir } from "../tools/deploy/layout";
 import { prune } from "../tools/deploy/prune";
+import { isPrepared, markerPath } from "../tools/deploy/release";
 import { BLUE, BOT, FakeBox, NEW, OLD, START, cleanUpBoxes } from "./deploy-harness";
 
 afterEach(cleanUpBoxes);
@@ -69,23 +73,57 @@ describe("pruning", () => {
     expect(removed(box)).not.toContain(releaseDir(box.layout, sha("6")));
   });
 
-  test("unlinks the shared files before removing a release", async () => {
+  test("removes a release through git, links and all, then its marker; never what the links point at", async () => {
     const { box } = boxWithReleases();
     const doomed = releaseDir(box.layout, sha("4"));
     const sharedEnv = join(box.layout.shared, "activity.env");
     symlinkSync(sharedEnv, join(doomed, "activity", ".env"));
     symlinkSync(join(box.layout.shared, "bot.env"), join(doomed, ".env"));
-    const linksAtRemoval: boolean[] = [];
-    box.respond = (command) => {
-      if (command.argv.includes("remove") && command.argv.includes(doomed)) {
-        linksAtRemoval.push(existsSync(join(doomed, "activity", ".env")), existsSync(join(doomed, ".env")));
-      }
-      return undefined;
-    };
     await prune(box.context(), 3);
-    expect(linksAtRemoval).toEqual([false, false]);
+    expect(existsSync(doomed)).toBe(false);
+    expect(existsSync(markerPath(box.layout, sha("4")))).toBe(false);
     expect(existsSync(sharedEnv)).toBe(true);
     expect(existsSync(join(box.layout.shared, "bot.env"))).toBe(true);
+  });
+
+  /*
+   * A locked worktree is git's own way to keep one: `git worktree remove
+   * --force` refuses it ("cannot remove a locked working tree") and deletes
+   * nothing. prune used to take the release's links out first, so the release
+   * it left behind still had its marker, and a switch to it started the bot
+   * with no .env — no token — and left it down.
+   */
+  test("a removal git refuses leaves the release whole: its links, its marker, still prepared", async () => {
+    const { box } = boxWithReleases();
+    const kept = releaseDir(box.layout, sha("4"));
+    symlinkSync(join(box.layout.shared, "activity.env"), join(kept, "activity", ".env"));
+    symlinkSync(join(box.layout.shared, "bot.env"), join(kept, ".env"));
+    box.respond = (command) =>
+      command.argv.includes("remove") && command.argv.includes(kept)
+        ? { code: 128, stdout: "", stderr: "fatal: cannot remove a locked working tree;" }
+        : undefined;
+    await expect(prune(box.context(), 3)).rejects.toThrow(/could not remove[\s\S]*locked working tree[\s\S]*as it was/);
+    expect(readlinkSync(join(kept, ".env"))).toBe(join(box.layout.shared, "bot.env"));
+    expect(readlinkSync(join(kept, "activity", ".env"))).toBe(join(box.layout.shared, "activity.env"));
+    expect(isPrepared(box.layout, sha("4"))).toBe(true);
+    expect(existsSync(releaseDir(box.layout, sha("5")))).toBe(false);
+  });
+
+  test("a removal git gave up on part-way loses its marker, so nothing switches to what is left", async () => {
+    const { box } = boxWithReleases();
+    const broken = releaseDir(box.layout, sha("4"));
+    symlinkSync(join(box.layout.shared, "bot.env"), join(broken, ".env"));
+    box.respond = (command) => {
+      if (command.argv.includes("remove") && command.argv.includes(broken)) {
+        return { code: 255, stdout: "", stderr: `error: failed to delete '${broken}': Permission denied` };
+      }
+      // git deleted the worktree's own records anyway: it no longer lists it.
+      if (command.argv.includes("list")) return { code: 0, stdout: `worktree ${box.layout.repo}\n`, stderr: "" };
+      return undefined;
+    };
+    await expect(prune(box.context(), 3)).rejects.toThrow(/Permission denied[\s\S]*marker/);
+    expect(isPrepared(box.layout, sha("4"))).toBe(false);
+    expect(lstatSync(join(broken, ".env")).isSymbolicLink()).toBe(true);
   });
 
   test("a dry run removes nothing", async () => {

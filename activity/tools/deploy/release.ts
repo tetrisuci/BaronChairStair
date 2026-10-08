@@ -4,6 +4,11 @@
  * The marker is the only thing a switch trusts. A directory without one is a
  * release whose checks failed or never finished — its dependencies may be
  * half installed, its build half written — and nothing switches to it.
+ *
+ * It lives beside its release, `releases/<sha>.prepared`, never inside the
+ * checkout: a file there would be the one untracked thing in the release's
+ * `git status`, and the guides' checks require that clean. A marker whose
+ * directory is gone vouches for nothing.
  */
 
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
@@ -13,8 +18,8 @@ import { exec, execOk } from "./exec";
 import type { Context } from "./host";
 import { releaseDir, type Layout } from "./layout";
 
-/** Written in a release's root once every check passed. */
-export const MARKER_FILE = ".bcs-prepared";
+/** Appended to a release's directory name for its marker, written once every check passed. */
+const MARKER_SUFFIX = ".prepared";
 
 const FULL_SHA = /^[0-9a-f]{40}$/;
 const PARTIAL_SHA = /^[0-9a-f]{7,40}$/;
@@ -30,9 +35,14 @@ export function shortSha(sha: string | null): string {
   return sha === null ? "?" : sha.slice(0, SHORT_LENGTH);
 }
 
+/** `releases/<sha>.prepared`: beside the release, outside its checkout. */
+export function markerPath(layout: Layout, sha: string): string {
+  return `${releaseDir(layout, sha)}${MARKER_SUFFIX}`;
+}
+
 export function readMarker(layout: Layout, sha: string): Marker | null {
-  const path = join(releaseDir(layout, sha), MARKER_FILE);
-  if (!existsSync(path)) return null;
+  const path = markerPath(layout, sha);
+  if (!existsSync(path) || !existsSync(releaseDir(layout, sha))) return null;
   try {
     const marker = JSON.parse(readFileSync(path, "utf8")) as Marker;
     return marker.sha === sha ? marker : null;

@@ -6,12 +6,12 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, lstatSync, readFileSync, readlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readdirSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Command } from "../tools/deploy/host";
 import { releaseDir } from "../tools/deploy/layout";
 import { prepare } from "../tools/deploy/prepare";
-import { MARKER_FILE, isPrepared } from "../tools/deploy/release";
+import { isPrepared, listReleases, markerPath } from "../tools/deploy/release";
 import { FakeBox, NEW, cleanUpBoxes } from "./deploy-harness";
 
 afterEach(cleanUpBoxes);
@@ -53,7 +53,7 @@ describe("a release that passes every check", () => {
       `${PYTHON} -m py_compile client/changelog.py client/discord_bot.py`,
       `${PYTHON} -m unittest discover -p test_*.py`,
       `${BUN} x tsc --noEmit`,
-      `${BUN} test`,
+      `DATABASE_PATH=${join(activity, "data", "prepare-test.sqlite")} ${BUN} test`,
       `BUILD_ID=${NEW} ${BUN} run build`,
       `${BUN} run build:puzzledb`,
     ]);
@@ -92,10 +92,33 @@ describe("a release that passes every check", () => {
   test("the marker records when and what was checked", async () => {
     const box = buildingBox();
     await prepare(box.context(), NEW);
-    const marker = JSON.parse(readFileSync(join(releaseDir(box.layout, NEW), MARKER_FILE), "utf8"));
+    const marker = JSON.parse(readFileSync(markerPath(box.layout, NEW), "utf8"));
     expect(marker.sha).toBe(NEW);
     expect(marker.preparedAt).toBe(new Date(box.now).toISOString());
     expect(marker.checks).toContain("bun test");
+  });
+
+  /*
+   * The site's guide ends *Verify it publicly* with "`git status` from the
+   * repository root must be clean", run from the release. A marker inside the
+   * checkout was the one untracked file there, so that check was red on every
+   * release of a migrated box.
+   */
+  test("the marker is written beside the release, never inside its checkout", async () => {
+    const box = buildingBox();
+    await prepare(box.context(), NEW);
+    const dir = releaseDir(box.layout, NEW);
+    expect(markerPath(box.layout, NEW)).toBe(`${dir}.prepared`);
+    expect(readdirSync(dir).sort()).toEqual([".env", "activity", "client"]);
+    expect(listReleases(box.layout).map((release) => release.sha)).toEqual([NEW]);
+  });
+
+  test("a marker whose release directory is gone vouches for nothing", () => {
+    const box = new FakeBox();
+    const dir = box.prepareRelease(NEW);
+    rmSync(dir, { recursive: true });
+    expect(existsSync(markerPath(box.layout, NEW))).toBe(true);
+    expect(isPrepared(box.layout, NEW)).toBe(false);
   });
 
   test("an already prepared release is left alone", async () => {
@@ -105,7 +128,121 @@ describe("a release that passes every check", () => {
     expect(box.calls.map((call) => call.argv[3])).toEqual(["fetch", "rev-parse"]);
     expect(box.output()).toContain("already prepared");
   });
+
+  test("preparing it again runs nothing, keeps its links and its marker, and puts back a link that went missing", async () => {
+    const box = buildingBox();
+    await prepare(box.context(), NEW);
+    const dir = releaseDir(box.layout, NEW);
+    const marker = readFileSync(markerPath(box.layout, NEW), "utf8");
+    rmSync(join(dir, ".env"));
+    box.calls.length = 0;
+    box.now += 60_000;
+
+    await prepare(box.context(), NEW);
+
+    expect(box.calls.map((call) => call.argv[3])).toEqual(["fetch", "rev-parse"]);
+    expect(readlinkSync(join(dir, ".env"))).toBe(join(box.layout.shared, "bot.env"));
+    expect(readlinkSync(join(dir, "activity", ".env"))).toBe(join(box.layout.shared, "activity.env"));
+    expect(readFileSync(markerPath(box.layout, NEW), "utf8")).toBe(marker);
+  });
 });
+
+/*
+ * prepare's `bun test` runs in the release, beside links into shared/. Bun
+ * loads the `.env` of its working directory, and shared/activity.env names the
+ * live database as DATABASE_PATH: a test file that loaded the server's config
+ * before any test set its own scratch path would have fixed the live file for
+ * the whole run, and every later route test would have written players, runs
+ * and submissions into it — on whichever box orders its test files that way.
+ */
+describe("the checks never reach a live database or a secret", () => {
+  /** Whether either env link existed, at each command that is not git: every install, check and build. */
+  function envLinksAtEachCommand(box: FakeBox): boolean[] {
+    const dir = releaseDir(box.layout, NEW);
+    const seen: boolean[] = [];
+    const respond = box.respond;
+    box.respond = (command) => {
+      if (command.argv[0] !== "git") seen.push([join(dir, ".env"), join(dir, "activity", ".env")].some(isLink));
+      return respond(command);
+    };
+    return seen;
+  }
+
+  test("bun test gets DATABASE_PATH set to a scratch file in the release, which beats any .env", async () => {
+    const box = buildingBox();
+    await prepare(box.context(), NEW);
+    const test = box.calls.find((call) => call.argv.join(" ") === `${BUN} test`)!;
+    const scratch = join(releaseDir(box.layout, NEW), "activity", "data", "prepare-test.sqlite");
+    expect(test.env).toEqual({ DATABASE_PATH: scratch });
+    expect(test.env!.DATABASE_PATH).not.toBe(join(box.layout.shared, "daily.sqlite"));
+  });
+
+  test("the env files are linked only once every install, check, test and build has passed", async () => {
+    const box = buildingBox();
+    const seen = envLinksAtEachCommand(box);
+    await prepare(box.context(), NEW);
+    expect(seen).toEqual([false, false, false, false, false, false, false, false]);
+    const dir = releaseDir(box.layout, NEW);
+    expect(readlinkSync(join(dir, ".env"))).toBe(join(box.layout.shared, "bot.env"));
+    expect(readlinkSync(join(dir, "activity", ".env"))).toBe(join(box.layout.shared, "activity.env"));
+  });
+
+  test("the answer keys are linked before the checks: the tests only read them", async () => {
+    const box = buildingBox();
+    writeFileSync(join(box.layout.shared, "solutions.json"), "[]");
+    const link = join(releaseDir(box.layout, NEW), "activity", "data", "solutions.json");
+    let linkedAtTest = false;
+    const respond = box.respond;
+    box.respond = (command) => {
+      if (command.argv.join(" ") === `${BUN} test`) linkedAtTest = isLink(link);
+      return respond(command);
+    };
+    await prepare(box.context(), NEW);
+    expect(linkedAtTest).toBe(true);
+  });
+
+  test("a failed check leaves no link into shared/ at all", async () => {
+    const box = buildingBox();
+    writeFileSync(join(box.layout.shared, "solutions.json"), "[]");
+    const respond = box.respond;
+    box.respond = (command) =>
+      command.argv.join(" ") === `${BUN} test` ? { code: 1, stdout: "", stderr: " 2 fail\n" } : respond(command);
+    await expect(prepare(box.context(), NEW)).rejects.toThrow(/bun test failed/);
+    const dir = releaseDir(box.layout, NEW);
+    for (const link of [".env", "activity/.env", "activity/data/solutions.json"]) expect(isLink(join(dir, link))).toBe(false);
+    expect(isPrepared(box.layout, NEW)).toBe(false);
+  });
+
+  test("a release rechecked in place loses env links an earlier run left before its checks run", async () => {
+    const box = buildingBox();
+    const dir = box.prepareRelease(NEW);
+    rmSync(markerPath(box.layout, NEW));
+    symlinkSync(join(box.layout.shared, "activity.env"), join(dir, "activity", ".env"));
+    symlinkSync(join(box.layout.shared, "bot.env"), join(dir, ".env"));
+    const seen = envLinksAtEachCommand(box);
+    await prepare(box.context(), NEW);
+    expect(seen).toHaveLength(8);
+    expect(seen.every((there) => !there)).toBe(true);
+    expect(isPrepared(box.layout, NEW)).toBe(true);
+  });
+
+  test("a real .env in a release being rechecked is refused before any check: the tests would load it", async () => {
+    const box = buildingBox();
+    const dir = box.prepareRelease(NEW);
+    rmSync(markerPath(box.layout, NEW));
+    writeFileSync(join(dir, "activity", ".env"), "DATABASE_PATH=/srv/live/daily.sqlite\n");
+    await expect(prepare(box.context(), NEW)).rejects.toThrow(/activity\/\.env is not a link/);
+    expect(box.calls.some((call) => call.argv[0] === BUN)).toBe(false);
+  });
+});
+
+function isLink(path: string): boolean {
+  try {
+    return lstatSync(path).isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
 
 describe("a release that fails", () => {
   test("stops at the failing check, runs nothing after it, and writes no marker", async () => {

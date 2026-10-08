@@ -17,9 +17,11 @@ end of this file; until then the guides' manual steps apply unchanged.
 ## How it works
 
 - **One directory per release.** `prepare` checks out `releases/<sha>/`,
-  links the shared env files into it, installs, runs every check and both
-  builds there. Nothing running is touched. A marker file is written only
-  when everything passed; nothing switches to a release without one.
+  installs, runs every check and both builds there, and only then links the
+  shared env files into it, so no check can load a secret or reach the live
+  database. Nothing running is touched. A marker beside the release is
+  written only when everything passed; nothing switches to a release without
+  one.
 - **The game hands over on one port.** Both game slots bind the port with
   `reusePort`. The idle slot starts on the new release; once its status file
   says it serves that exact build, the live slot gets `SIGHUP`: it stops
@@ -55,10 +57,10 @@ it).
 <home>/                        e.g. ~/bcs
   repo/                        a clone, used only to fetch and add worktrees
   releases/<sha>/              one detached worktree per release
-    .env -> shared/bot.env
-    activity/.env -> shared/activity.env
+    .env -> shared/bot.env                    linked once every check passed
+    activity/.env -> shared/activity.env      linked once every check passed
     activity/data/solutions.json -> shared/solutions.json   (only if the box has one)
-    .bcs-prepared              the marker: written only when every check passed
+  releases/<sha>.prepared      the marker, beside its release: written only when every check passed
   shared/
     activity.env  bot.env  puzzledb.env
     daily.sqlite  stats.db  solutions.json
@@ -107,7 +109,7 @@ bun run deploy <command>
 
 | Command | What it does |
 |---|---|
-| `prepare <ref>` | `git fetch`; resolve `<ref>` (a branch means `origin/<branch>`); add the worktree; link shared files; `bun install --frozen-lockfile` at the root and in `activity/`; `py_compile` of `client/*.py` and the bot's `unittest`; `bun x tsc --noEmit`; `bun test` (must report `0 fail`); `BUILD_ID=<sha> bun run build` (must record the sha in `dist/build.json`); `bun run build:puzzledb`; the marker. Stops at the first failure and shows its output. Re-running rechecks a failed release in place. |
+| `prepare <ref>` | `git fetch`; resolve `<ref>` (a branch means `origin/<branch>`); add the worktree; link `solutions.json`, if the box has one; `bun install --frozen-lockfile` at the root and in `activity/`; `py_compile` of `client/*.py` and the bot's `unittest`; `bun x tsc --noEmit`; `DATABASE_PATH=<release>/activity/data/prepare-test.sqlite bun test` (must report `0 fail`); `BUILD_ID=<sha> bun run build` (must record the sha in `dist/build.json`); `bun run build:puzzledb`; only then link `activity.env` and `bot.env`; the marker. Stops at the first failure, shows its output, and leaves the release no link into `shared/`. Re-running rechecks a failed release in place, its env links taken out first. Preparing a prepared release runs nothing, and puts back a link that went missing. |
 | `backup [<ref>]` | `VACUUM INTO shared/backups/<daily\|stats>-<UTC time>-<sha>.sqlite` from a read-only connection. Refuses to overwrite a file, and refuses if either database is not in `shared/`. |
 | `switch game <ref> [--allow-cold] [--force]` | The handover above. Timeouts: 90 s for the new slot to serve, `drainLimitMinutes` for the drain (progress every 30 s, saying "status stale" when the old slot has stopped writing). At the limit the old slot is stopped anyway, which ends its remaining matches with a "restarted" notice. If its process exits, or pm2 restarts it, mid-drain, it is stopped at once. |
 | `switch site <ref> [--force]` | Delete; refuse, with nothing started, if anything still answers the site's port after 10 s; start; wait up to 60 s for `/health` to answer `ok: true`; then confirm through pm2 that the new app is `online` on a live pid and on the same pid 5 s later. A failed check leaves the new app in pm2 for its logs, runs no `pm2 save`, keeps `rollback site` recorded, and says how to find what holds the port (`ss -ltnp`, `lsof`). |
@@ -116,7 +118,7 @@ bun run deploy <command>
 | `rollback game [--allow-cold]`, `rollback site`, `rollback bot [--now]` | Switches the app to the release `state.json` recorded as its previous one, with the same checks. Code goes back; data does not — that is what the backups are for. |
 | `status [--wait-quiet [--timeout <minutes>]]` | One line per app. `--wait-quiet` waits (`--timeout`, default `botQuietLimitMinutes`) until no duel is in a match, no rush can still be handed in, and the bot is quiet; exit 1 if the time runs out. |
 | `ecosystem` | Rewrite `shared/ecosystem.config.cjs` from `state.json`. |
-| `prune [--keep <n>]` | Remove release worktrees beyond the newest `n` (default `keepReleases`), never one `state.json` names (current or previous), one a pm2 app runs from, or the one the tool runs from. |
+| `prune [--keep <n>]` | Remove release worktrees beyond the newest `n` (default `keepReleases`), never one `state.json` names (current or previous), one a pm2 app runs from, or the one the tool runs from. `git worktree remove` takes each with its links (a link, never what it points at), then its marker goes. One git refuses — a locked worktree — is left whole, still prepared; one git gave up on part-way loses its marker, so nothing switches to what is left. |
 
 Flags:
 
@@ -287,8 +289,12 @@ What the rehearsal showed that is easy to misread:
   aim a fast external check at it from one address.
 - **A stopped slot's status file stays** in `shared/run/` until that slot
   starts again. `status` asks pm2 first, so it misleads nothing.
-- **`.bcs-prepared` is untracked** in each release's `git status`: it is the
-  marker. `prune` removes worktrees with `--force`, so it never blocks one.
+- **A release's `git status` is clean.** The marker used to sit in the
+  release's root, the one untracked file there, which made the site guide's
+  last check (*Verify it publicly*: "`git status` from the repository root
+  must be clean") red on every release. It is now `releases/<sha>.prepared`,
+  beside the checkout; the links, `node_modules`, both builds and the test
+  run's scratch database are all ignored.
 - **Not rehearsed:** pm2 restarting a crashed app, and a reboot
   (`pm2 resurrect`); the stand-in pm2 did neither. Watch both the first time
   they happen on the box.
@@ -539,10 +545,11 @@ client — `beta 0.21` or later in `changelog.json`, and this tool in
    - `prepare` took about 33 s on a Mac, `bun test` about 21 s of it; expect
      longer here, and about 100 skips if no `solutions.json` was copied
      (`0 fail` is the check). A red step is a stop (`CLAUDE.md`): report it.
-   - The last line must say `absent`. `bun test` ran with `activity.env`,
-     whose `DATABASE_PATH` names `shared/daily.sqlite`, and the rehearsal saw
-     no test touch that file; if one has made it, step 9 would move the live
-     database onto it. Remove nothing, and report it.
+   - The last line must say `absent`. `bun test` ran with `DATABASE_PATH`
+     set to a scratch file in the release, and `activity.env`, which names
+     `shared/daily.sqlite`, was linked only after it, so no test can have
+     made that file; if one is there all the same, step 9 would move the
+     live database onto it. Remove nothing, and report it.
 
    The switches cannot be dry-run yet: each refuses until the databases are
    in `shared/`, which is step 9.

@@ -7,21 +7,28 @@
  * release without restarting it; and the release this tool is running from.
  *
  * Removed through `git worktree remove` so the repository's list stays true,
- * oldest first, after the links into shared/ are taken out — so nothing that
- * walks the tree can reach the env files or the solutions through them.
+ * oldest first. git takes the links into shared/ out with the rest of the
+ * tree, and removes a link, never what it points at (checked);
+ * the marker beside the release goes only once git has removed it.
+ *
+ * A removal git refuses — a locked worktree, git's own way of keeping one —
+ * deletes nothing, so the release is left whole: links, marker and all, still
+ * one a switch can use. Taking the links out first, as this once did, left a
+ * marker vouching for a release with no `.env`, and a bot switched to it
+ * started with no token. A removal git gives up on part-way is different: git
+ * deletes the worktree's records whatever happened to its files, so it no
+ * longer lists it, and what is left is no release. Its marker goes, so
+ * nothing switches to it.
  */
 
-import { join } from "node:path";
-import { unlinkIfLink } from "./effects";
+import { existsSync, realpathSync } from "node:fs";
+import { removeFile } from "./effects";
 import { DeployError } from "./errors";
 import { exec, outputTail } from "./exec";
 import type { Context } from "./host";
 import { pm2List } from "./pm2";
-import { listReleases, shortSha, type ReleaseEntry } from "./release";
+import { listReleases, markerPath, shortSha, type ReleaseEntry } from "./release";
 import { loadState, type DeployState } from "./state";
-
-/** The links prepare made into shared/, relative to a release. */
-const SHARED_LINKS = [".env", "activity/.env", "activity/data/solutions.json"];
 
 function within(path: string | null, dir: string): boolean {
   return path !== null && (path === dir || path.startsWith(`${dir}/`));
@@ -32,15 +39,35 @@ function namedByState(state: DeployState): ReadonlySet<string> {
   return new Set(shas.filter((sha): sha is string => sha !== null));
 }
 
+/** Whether git still lists `dir` as one of the repository's worktrees. */
+async function listedByGit(ctx: Context, dir: string): Promise<boolean> {
+  const result = await exec(ctx, { argv: ["git", "-C", ctx.layout.repo, "worktree", "list", "--porcelain"], mutates: false });
+  if (result.code !== 0) return false;
+  const names = new Set([dir, existsSync(dir) ? realpathSync(dir) : dir].map((path) => `worktree ${path}`));
+  return result.stdout.split("\n").some((line) => names.has(line.trim()));
+}
+
 async function removeRelease(ctx: Context, release: ReleaseEntry): Promise<string | null> {
-  for (const link of SHARED_LINKS) unlinkIfLink(ctx, join(release.dir, link));
+  const marker = markerPath(ctx.layout, release.sha);
   const result = await exec(ctx, {
     argv: ["git", "-C", ctx.layout.repo, "worktree", "remove", "--force", release.dir],
     mutates: true,
   });
-  if (result.code !== 0) return `${release.dir}: ${outputTail(result)}`;
-  if (!ctx.dryRun) ctx.host.out(`removed ${shortSha(release.sha)} (${release.dir})`);
-  return null;
+  if (result.code === 0) {
+    removeFile(ctx, marker);
+    if (!ctx.dryRun) ctx.host.out(`removed ${shortSha(release.sha)} (${release.dir})`);
+    return null;
+  }
+  const failure = `${release.dir}: ${outputTail(result)}`;
+  if (await listedByGit(ctx, release.dir)) {
+    return `${failure}\n  git deleted nothing: the release is as it was, links and marker, and can still be switched to.`;
+  }
+  removeFile(ctx, marker);
+  return (
+    `${failure}\n  git gave up part-way and no longer lists it, so what is left is not a release: its marker is ` +
+    "removed, and nothing switches to it. Look at why, then remove the directory by hand (its links into " +
+    "shared/ are links: removing them leaves shared/ as it is)."
+  );
 }
 
 export async function prune(ctx: Context, keep: number): Promise<void> {
