@@ -98,7 +98,7 @@ export const PLAYER_COLUMNS = Object.freeze({
     "median_ms",
     "fastest_player_key",
   ] as const),
-  lines: Object.freeze(["puzzle_id", "position", "attack", "clears", "steps"] as const),
+  lines: Object.freeze(["puzzle_id", "position", "day", "attack", "clears", "steps"] as const),
 });
 
 export type PlayerTable = keyof typeof PLAYER_COLUMNS;
@@ -213,9 +213,10 @@ CREATE TABLE puzzle_stats (
 );
 CREATE TABLE lines (
   -- Players' own ways through a puzzle besides the maker's: lines that solved it or sent more
-  -- than it asked, found on a finished day. Never who found a line, or when.
+  -- than it asked, found on a finished day. Never who found a line; the day, never the time.
   puzzle_id INTEGER NOT NULL,
   position  INTEGER NOT NULL,      -- 1 is the earliest day's first
+  day       INTEGER NOT NULL,      -- the game's day it was found on (schema 3)
   attack    INTEGER NOT NULL,
   clears    TEXT    NOT NULL,      -- JSON: the named clears it made
   steps     TEXT    NOT NULL,      -- JSON [{piece,cells,clear,attack}]
@@ -284,7 +285,14 @@ export type PuzzleStatsRow = readonly [
   medianMs: number | null,
   fastestPlayerKey: Key,
 ];
-export type LineRow = readonly [puzzleId: number, position: number, attack: number, clears: string, steps: string];
+export type LineRow = readonly [
+  puzzleId: number,
+  position: number,
+  day: number,
+  attack: number,
+  clears: string,
+  steps: string,
+];
 
 /** Every row of every table here, in each table's own order. */
 export interface PlayerRows {
@@ -578,6 +586,7 @@ function readStats(db: Database, refOf: (key: Key) => PlayerRef): Map<number, Si
 interface LineCells {
   puzzle_id: number;
   position: number;
+  day: number;
   attack: number;
   clears: string;
   steps: string;
@@ -590,6 +599,7 @@ function readLines(db: Database): PlayerData["lines"] {
     .map((row) => ({
       puzzleId: row.puzzle_id,
       position: row.position,
+      day: row.day,
       attack: row.attack,
       clears: JSON.parse(row.clears) as ClearName[],
       steps: JSON.parse(row.steps) as SolutionStep[],

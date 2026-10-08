@@ -7,7 +7,8 @@
  * every list drawn, from this index without a request, and every lookup a view
  * makes is a map read rather than a scan. What a page shows beyond the index —
  * a day's boards, a player's runs, a puzzle's lines, the all-time boards, the
- * players table's numbers, the solves feed's steering — is one body from
+ * players table's numbers, the solves feed's steering, every line for the
+ * alternates table — is one body from
  * `/data/…`, fetched as the page opens and checked here at the door the same
  * shallow way the index is ({@link readBody}).
  *
@@ -30,6 +31,7 @@ import type {
   SitePuzzleBody,
   SiteServer,
 } from "../wire";
+import type { SiteAlternatesBody } from "../wire-alternates";
 import type { SitePlayersBody, SiteSolvesBody } from "../wire-profiles";
 
 /** One finished day a puzzle was dealt on, and the tier that day dealt it as. */
@@ -118,6 +120,7 @@ const BODY_FIELDS = {
   leaderboards: { boards: "{}" },
   players: { rows: "[]" },
   solves: { days: "[]" },
+  alternates: { lines: "[]" },
 } as const;
 
 type BodyKind = keyof typeof BODY_FIELDS;
@@ -130,6 +133,7 @@ interface BodyOf {
   leaderboards: SiteLeaderboardsBody;
   players: SitePlayersBody;
   solves: SiteSolvesBody;
+  alternates: SiteAlternatesBody;
 }
 
 /**

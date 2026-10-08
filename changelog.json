@@ -8,6 +8,12 @@
       ]
     },
     {
+      "version": "beta 0.22",
+      "changes": [
+        "**Opening an alternate solution now follows your latest choice.** Leaving Explore to play another puzzle keeps you there even if the old solution takes a while to load, and choosing another line opens the one you picked last."
+      ]
+    },
+    {
       "version": "beta 0.21",
       "changes": [
         "**Finishing a puzzle while the server restarts no longer loses it.** A daily sheet or a rush handed in at that moment says **Reconnecting…** and tries again for up to about fifteen seconds, instead of failing at once. A practice clear tries again the same way, without the message.",
@@ -15,6 +21,13 @@
         "**An \"Update ready\" chip appears in the header when a new version of the activity is out.** Reload when you're done: it never shows in the middle of a run, a rush or a duel, and it never reloads by itself.",
         "**A sheet you finish after the daily reset is no longer judged against the new day's puzzle.** The activity says that day is over and loads today's puzzles.",
         "**A bot command sent while the bot is finishing others before a restart** now gets \"Restarting — try again in a few seconds.\" instead of no answer. While the bot is fully down, between the old one closing and the new one connecting, Discord still says the application did not respond."
+      ]
+    },
+    {
+      "version": "beta 0.20",
+      "changes": [
+        "**Explore has a new tab, Alternate solutions**: every other way players have solved the club's puzzles, in one list. Sort by date found, difficulty, puzzle name or number, attack or pieces, either way round, and open any line on the board. A line on a puzzle you have not solved yet is listed but stays locked — no board, no attack, no clears — until you solve it yourself.",
+        "**db.tetrisatuci.org has an Alternates page** with the same list and sorts, and a link from each line straight to it on its puzzle's page. Each line now shows the day it was found, never the time and never who found it. On a day only one player solved a puzzle, that day can point at them."
       ]
     },
     {

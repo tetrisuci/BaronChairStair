@@ -39,6 +39,7 @@ import {
   pageText,
   parsePage,
   type SiteLookup,
+  type SitePuzzleBody,
   UNAVAILABLE_TEXT,
 } from "../puzzledb/wire";
 import {
@@ -50,6 +51,7 @@ import {
   fixtureSources,
   gameFixture,
   type GameFixture,
+  LINES,
   MAY_PUBLISH,
   NOW,
   PLANTED,
@@ -223,6 +225,8 @@ function listedPages(): string[] {
     "/days",
     "/leaderboards",
     "/players",
+    "/solves",
+    "/alternates",
     ...dataset.data.puzzles.map((puzzle) => `/puzzle/${puzzle.id}`),
     ...dataset.data.days.map((day) => `/day/${day.day}`),
     ...dataset.data.players.map((player) => `/player/${player.key}`),
@@ -347,8 +351,8 @@ describe("the data", () => {
   test("serves every body the build made, byte for byte, as JSON revalidated by its own tag", async () => {
     const app = siteApp();
     const paths = bodyPaths();
-    // One per finished day, listed puzzle and shown player, the all-time boards, the players table and the feed's.
-    const expected = dataset.data.days.length + dataset.data.puzzles.length + dataset.data.players.length + 3;
+    // One per finished day, listed puzzle and shown player, the all-time boards, the players table, the feed's and the alternates table's.
+    const expected = dataset.data.days.length + dataset.data.puzzles.length + dataset.data.players.length + 4;
     expect(paths).toHaveLength(expected);
     expect(paths).toContain(bodyPathFor({ kind: "leaderboards" })!);
 
@@ -610,6 +614,7 @@ describe("what else answers", () => {
         "GET /players",
         "GET /player/:key",
         "GET /solves",
+        "GET /alternates",
         "GET /data/*",
         "GET /assets/*",
         "GET /fonts/*",
@@ -734,6 +739,12 @@ describe("privacy over HTTP", () => {
     // The positive control: the walk reached the player data it was meant to scan.
     const everything = (await Promise.all(paths.map(async (path) => (await bytesOf(await app.request(path))).toString("latin1")))).join("\n");
     expect(MAY_PUBLISH.filter((value) => !everything.includes(value))).toEqual([]);
+    // And the lines it scanned for an exact `found_at` were there, each on its
+    // puzzle's page with its day: a day number alone would also match a day's body.
+    for (const line of [LINES.visible, LINES.hidden]) {
+      const page = (await (await app.request(`/data/puzzle/${line.puzzleId}.json`)).json()) as SitePuzzleBody;
+      expect(page.lines.map(({ day }) => day)).toEqual([line.day]);
+    }
   });
 });
 

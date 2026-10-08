@@ -42,13 +42,15 @@ import type { ClearName, ClearRequirement, Mino, RowCode, SolutionStep } from ".
  * The public database's schema: `PRAGMA user_version` in the download and
  * `about.schema`. 1 was the puzzles and days alone; 2 adds the boards, the
  * standings, each puzzle's stats and the players' alternate lines, and which
- * listed puzzles each shown player has cleared.
+ * listed puzzles each shown player has cleared; 3 gives each line the day it
+ * was found (`lines.day`).
  *
  * **The cleared list joined 2 rather than making 3 because no schema-2 file
- * had been served when it did.** If 2 has been served by the time a table is
- * next added, that table is 3.
+ * had been served when it did. The line's day made 3 because one had.** A
+ * downloader who wrote a query against 2 is owed the number change that says
+ * the shape moved. The next change to a table or a column is 4.
  */
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 /** The site's name, as `og:site_name` gives it to an unfurl. */
 export const SITE_NAME = "Tetris at UCI puzzle archive";
@@ -363,12 +365,24 @@ export interface SitePuzzleStats {
 
 /**
  * A player's own way through a puzzle besides the maker's: one that solved it
- * or sent more than it asked, found on a finished day. Never who found it, or
- * when — `position` is publication order and nothing more.
+ * or sent more than it asked, found on a finished day.
+ *
+ * **The day it was found, never the time, and never who.** Until schema 3 a
+ * line carried no date at all. The owner chose to publish the day so lines
+ * can be sorted by when they were found (`/alternates`): a day number, the
+ * game's calendar, and nothing finer — the millisecond the game stores would
+ * pick one finder out of a day's players. The finder is still never published.
+ * The owner accepted what a day can do that no date could: on a day only one
+ * player solved a puzzle, a line found on it that day points at them.
  */
 export interface SiteLine {
   /** 1 is the earliest day's first line. */
   readonly position: number;
+  /**
+   * The game's day it was found on: a day number, as `SiteDay.day`. A line
+   * found before the site's history starts keeps its true day.
+   */
+  readonly day: number;
   readonly attack: number;
   readonly clears: readonly ClearName[];
   readonly steps: readonly SolutionStep[];
@@ -420,7 +434,8 @@ export interface SiteLeaderboardsBody extends SiteBody {
 
 /**
  * A page of the site. The browse filter, the server chip, the players table's
- * sort and the feed's filters live in the query string, not here.
+ * sort, the feed's filters and the alternates table's sort live in the query
+ * string, not here.
  */
 export type PageRoute =
   | { readonly kind: "browse" }
@@ -430,7 +445,8 @@ export type PageRoute =
   | { readonly kind: "leaderboards" }
   | { readonly kind: "players" }
   | { readonly kind: "player"; readonly key: string }
-  | { readonly kind: "solves" };
+  | { readonly kind: "solves" }
+  | { readonly kind: "alternates" };
 
 /** How a page finds what it names. The server builds one from its dataset, the page from its index. */
 export interface SiteLookup {
@@ -451,6 +467,7 @@ const DAYS: PageRoute = Object.freeze({ kind: "days" });
 const LEADERBOARDS: PageRoute = Object.freeze({ kind: "leaderboards" });
 const PLAYERS: PageRoute = Object.freeze({ kind: "players" });
 const SOLVES: PageRoute = Object.freeze({ kind: "solves" });
+const ALTERNATES: PageRoute = Object.freeze({ kind: "alternates" });
 
 /**
  * One spelling per page: no leading zero, no trailing slash, no case variant.
@@ -481,6 +498,7 @@ export function parsePage(pathname: string): PageRoute | null {
   if (pathname === "/leaderboards") return LEADERBOARDS;
   if (pathname === "/players") return PLAYERS;
   if (pathname === "/solves") return SOLVES;
+  if (pathname === "/alternates") return ALTERNATES;
   const player = PLAYER_PATH.exec(pathname);
   if (player) return Object.freeze({ kind: "player", key: player[1]! });
   const puzzle = PUZZLE_PATH.exec(pathname);
@@ -509,6 +527,8 @@ export function pathOf(route: PageRoute): string {
       return `/player/${route.key}`;
     case "solves":
       return "/solves";
+    case "alternates":
+      return "/alternates";
   }
 }
 
@@ -525,6 +545,8 @@ export function pathOf(route: PageRoute): string {
  * **The solves feed's body only steers it**: which finished days had a solve,
  * in which tiers and servers. The rows themselves are the day bodies, fetched
  * a few days at a time, so no body grows with history by more than a line a day.
+ * **The alternates table's body is every line at once**, without its steps —
+ * a sort needs every row — so it grows by one short row per line found.
  */
 export function bodyPathFor(route: PageRoute): string | null {
   switch (route.kind) {
@@ -534,6 +556,7 @@ export function bodyPathFor(route: PageRoute): string | null {
     case "leaderboards":
     case "players":
     case "solves":
+    case "alternates":
       return `/data${pathOf(route)}.json`;
     case "browse":
     case "days":
@@ -581,6 +604,14 @@ export const SOLVES_TEXT: PageText = Object.freeze({
     "by tier, server and puzzle.",
 });
 
+/** The alternates page's text, exported for the server's test as {@link SOLVES_TEXT} is. */
+export const ALTERNATES_TEXT: PageText = Object.freeze({
+  title: `Alternate solutions${SUFFIX}`,
+  description:
+    "Every other way through a club puzzle that players of the Tetris at UCI daily found, " +
+    "across all puzzles, by the day it was found, difficulty, name, number, attack or length.",
+});
+
 /** The 404 page's text: one text for every missing thing, so a miss says nothing about why. */
 export const NOT_FOUND_TEXT: PageText = Object.freeze({
   title: `Not found${SUFFIX}`,
@@ -626,6 +657,8 @@ export function pageText(route: PageRoute, lookup: SiteLookup): PageText | null 
     }
     case "solves":
       return SOLVES_TEXT;
+    case "alternates":
+      return ALTERNATES_TEXT;
   }
 }
 

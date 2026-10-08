@@ -114,11 +114,14 @@ export interface SnapshotClear extends SnapshotPlayer {
 
 /**
  * A credited, live line filed on a finished day, already re-projected.
- * Nothing in it says who filed it or when; rows arrive in publication order —
- * by puzzle, then by the day it was filed, then as filed within the day.
+ * Nothing in it says who filed it, and of when only the game's day — never
+ * the time (`SiteLine` says why). Rows arrive in publication order — by
+ * puzzle, then by the day it was filed, then as filed within the day.
  */
 export interface SnapshotLine {
   readonly puzzleId: number;
+  /** The game's day it was filed on, worked out in SQL from a time that never leaves it. */
+  readonly day: number;
   readonly attack: number;
   /** Filtered to names the game knows. */
   readonly clears: readonly ClearName[];

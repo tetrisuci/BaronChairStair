@@ -44,6 +44,7 @@ import {
   UNAVAILABLE_TEXT,
 } from "../puzzledb/wire";
 import type { SitePlayersBody, SiteSolvesBody } from "../puzzledb/wire-profiles";
+import type { SiteAlternatesBody } from "../puzzledb/wire-alternates";
 import { loadBody, loadSiteData } from "../puzzledb/client/api";
 import { BoardStage } from "../puzzledb/client/board-stage";
 import { createBrowseView } from "../puzzledb/client/browse";
@@ -258,7 +259,13 @@ const SOLVES_BODY: SiteSolvesBody = {
 const NOTCH_BODY: SitePuzzleBody = {
   builtAt: BUILT,
   stats: { handIns: 4, solves: 1, fastestMs: 61_000, medianMs: 61_000, fastest: ADA },
-  lines: [{ position: 1, attack: 4, clears: ["tsd"], steps: NOTCH.solution! }],
+  lines: [{ position: 1, day: 273, attack: 4, clears: ["tsd"], steps: NOTCH.solution! }],
+};
+
+/** Every line on the site: Notch's one. */
+const ALTERNATES_BODY: SiteAlternatesBody = {
+  builtAt: BUILT,
+  lines: [{ puzzleId: 4, position: 1, day: 273, attack: 4, pieces: 1, clears: ["tsd"] }],
 };
 
 /** Every body the server would have built for this data, by path: one per day, puzzle and player, and the boards. */
@@ -270,6 +277,7 @@ const BODIES: ReadonlyMap<string, unknown> = new Map<string, unknown>([
   [`/data/player/${ADA.key}.json`, ADA_BODY],
   ["/data/players.json", PLAYERS_BODY],
   ["/data/solves.json", SOLVES_BODY],
+  ["/data/alternates.json", ALTERNATES_BODY],
 ]);
 
 /** The server, as far as bodies go: what it built, and its 404 for anything else. */
@@ -1008,6 +1016,13 @@ describe("the page", () => {
     expect(nav("Solves").getAttribute("href")).toBe("/solves");
     expect(nav("Solves").getAttribute("aria-current")).toBe("page");
     expect(nav("Players").hasAttribute("aria-current")).toBe(false);
+
+    // Alternates after the feed, likewise.
+    click(nav("Alternates"));
+    expect(document.title).toBe("Alternate solutions — Puzzle archive");
+    expect(nav("Alternates").getAttribute("href")).toBe("/alternates");
+    expect(nav("Alternates").getAttribute("aria-current")).toBe("page");
+    expect(nav("Solves").hasAttribute("aria-current")).toBe(false);
   });
 
   test("carries the downloads, and how fresh the data is, on every page", async () => {
@@ -1277,6 +1292,58 @@ describe("the bodies", () => {
     } finally {
       scroll.mockRestore();
     }
+  });
+
+  test("opens the answers on the line #line-N names, once the lines have come, and scrolls to them", async () => {
+    const scrolled: string[] = [];
+    const scroll = spyOn(window.HTMLElement.prototype, "scrollIntoView").mockImplementation(function (this: HTMLElement) {
+      scrolled.push(this.id);
+    });
+    try {
+      const held = heldBodies();
+      const { root } = await openPage(`${ORIGIN}/puzzle/4#line-1`, undefined, undefined, held.loader);
+      // The panel is there before its lines, shut, so the page goes to it as #lines would.
+      expect(scrolled).toEqual(["lines"]);
+      expect(root.querySelector(".replay")).toBeNull();
+
+      held.answer("/data/puzzle/4.json", NOTCH_BODY);
+      await settle();
+
+      expect(root.querySelectorAll(".replay")).toHaveLength(1);
+      expect(find(root, '.pdb-answer__chips [aria-pressed="true"]').textContent).toBe("Line 1 · 4 atk · 1p");
+      expect(scrolled).toEqual(["lines", "lines"]);
+    } finally {
+      scroll.mockRestore();
+    }
+  });
+
+  test("treats #line-N for a line the puzzle does not have as #lines: scrolled to, and shut", async () => {
+    const scrolled: string[] = [];
+    const scroll = spyOn(window.HTMLElement.prototype, "scrollIntoView").mockImplementation(function (this: HTMLElement) {
+      scrolled.push(this.id);
+    });
+    try {
+      const { root } = await openPage(`${ORIGIN}/puzzle/4#line-9`);
+      expect(scrolled).toEqual(["lines"]);
+      expect(root.querySelector(".replay")).toBeNull();
+      expect(buttonSaying(root, "Show the answers")).toBeDefined();
+    } finally {
+      scroll.mockRestore();
+    }
+  });
+
+  test("lists every line on the alternates page, each a link to its own chip", async () => {
+    const { root } = await openPage(`${ORIGIN}/alternates?sort=attack`);
+
+    expect(document.title).toBe("Alternate solutions — Puzzle archive");
+    const link = find<HTMLAnchorElement>(root, "table.pdb-alternates tbody a");
+    expect(link.getAttribute("href")).toBe("/puzzle/4#line-1");
+    expect(find(root, "th[aria-sort]").textContent).toBe("Attack");
+
+    click(link);
+    await settle();
+    expect(window.location.pathname).toBe("/puzzle/4");
+    expect(find(root, '.pdb-answer__chips [aria-pressed="true"]').textContent).toBe("Line 1 · 4 atk · 1p");
   });
 
   test("lands a profile's Lines found on the Discoveries board, once the boards have come", async () => {

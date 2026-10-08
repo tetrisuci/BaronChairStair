@@ -47,7 +47,8 @@ export interface Explorer {
   ): void;
 }
 
-function labelled(label: string, ...controls: (HTMLElement | string)[]): HTMLElement {
+/** A labelled row of controls. Exported for the alternates tab, which sits beside this one. */
+export function labelled(label: string, ...controls: (HTMLElement | string)[]): HTMLElement {
   return el(
     "div",
     { class: "explore__row" },
@@ -69,7 +70,8 @@ function numberBox(min: number, max: number, onInput: (value: number) => void): 
   return input;
 }
 
-function choice(
+/** A select styled as this screen's. Exported with {@link labelled}, for the same reason. */
+export function choice(
   options: readonly { value: string; label: string }[],
   onPick: (value: string) => void,
 ): HTMLSelectElement {
