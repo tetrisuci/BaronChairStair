@@ -113,7 +113,7 @@ bun run deploy <command>
 | `backup [<ref>]` | `VACUUM INTO shared/backups/<daily\|stats>-<UTC time>-<sha>.sqlite` from a read-only connection. Refuses to overwrite a file, and refuses if either database is not in `shared/`. |
 | `switch game <ref> [--allow-cold] [--force]` | The handover above. Timeouts: 90 s for the new slot to serve, `drainLimitMinutes` for the drain (progress every 30 s, saying "status stale" when the old slot has stopped writing). At the limit the old slot is stopped anyway, which ends its remaining matches with a "restarted" notice. If its process exits, or pm2 restarts it, mid-drain, it is stopped at once. |
 | `switch site <ref> [--force]` | Delete; refuse, with nothing started, if anything still answers the site's port after 10 s; start; wait up to 60 s for `/health` to answer `ok: true`; then confirm through pm2 that the new app is `online` on a live pid and on the same pid 5 s later. A failed check leaves the new app in pm2 for its logs, runs no `pm2 save`, keeps `rollback site` recorded, and says how to find what holds the port (`ss -ltnp`, `lsof`). |
-| `switch bot <ref> [--now] [--force]` | If no `botFiles` file differs from the bot's release, records the new release without restarting. Otherwise waits up to `botQuietLimitMinutes` for quiet, deletes the old bot, checks its pid is gone, starts the new one and waits up to 120 s for `ready` on the new build. |
+| `switch bot <ref> [--now] [--force]` | If no `botFiles` file differs from the bot's release, records the new release without restarting. Otherwise waits up to `botQuietLimitMinutes` for quiet, deletes the old bot, checks its pid is gone, starts the new one and waits up to 120 s for `ready` on the new build. A bot pm2 does not run — stopped, errored or gone — is started, even on the release `state.json` already records. Refuses, changing nothing, when pm2 lists no bot but a fresh `shared/run/bot.json` names a live pid: a bot running out of this pm2's sight. |
 | `deploy <ref> [--allow-cold] [--now] [--force]` | `prepare`, `backup`, then switch the game, the site and the bot. Stops at the first failure, saying what already moved and the `rollback` commands that move it back. It does not pause for the guides' checks between switches: see *A deploy, in the guides' order*. |
 | `rollback game [--allow-cold]`, `rollback site`, `rollback bot [--now]` | Switches the app to the release `state.json` recorded as its previous one, with the same checks. Code goes back; data does not — that is what the backups are for. |
 | `status [--wait-quiet [--timeout <minutes>]]` | One line per app. `--wait-quiet` waits (`--timeout`, default `botQuietLimitMinutes`) until no duel is in a match, no rush can still be handed in, and the bot is quiet; exit 1 if the time runs out. |
@@ -240,7 +240,11 @@ All with `interpreter: "none"`, `exec_mode: "fork"`, `watch: false`.
 - Only `SIGHUP` is sent. `SIGUSR1`/`SIGUSR2` are refused: Bun 1.3.13 dies on
   them before a handler runs.
 - Never two bots: the old one is deleted and its pid confirmed gone before the
-  new one starts.
+  new one starts. When pm2 lists no bot at all but a fresh status file names
+  a live pid — `pm2.bot` renamed or mistyped, another user or `PM2_HOME`, or
+  an old bot that outlived an earlier switch's `pm2 delete` — the switch
+  refuses, naming the pid, before anything changes, and again on every run
+  until that bot is gone.
 - A switch refuses if the shared database the app would open is missing (the
   game and the bot would quietly create an empty one), and a release without
   its marker.

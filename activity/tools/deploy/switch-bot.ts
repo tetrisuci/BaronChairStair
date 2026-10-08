@@ -12,7 +12,11 @@
  * - **Only when quiet**: ready, nothing in flight, no `/archive sync` running,
  *   and nothing handled for `botQuietSeconds`. `--now` skips the wait.
  * - **Never two copies.** pm2 deletes the old process, the deploy checks its
- *   pid is gone, and only then starts the new one.
+ *   pid is gone, and only then starts the new one. A bot pm2 does not list
+ *   at all, but whose fresh status names a live pid, is running out of this
+ *   pm2's sight — `pm2.bot` renamed or mistyped, another user or
+ *   `PM2_HOME`, or an old bot that outlived an earlier switch's
+ *   `pm2 delete` — and the switch refuses before anything changes.
  *
  * State is written once the old bot is gone and before the new one starts, so
  * a start that fails or a bot that never reports ready still leaves the way
@@ -26,7 +30,7 @@
  * environment the ecosystem gives it.
  */
 
-import { isFresh } from "../../shared/runtime-status";
+import { isFresh, type BotStatus } from "../../shared/runtime-status";
 import { requireBotEnvLeavesDeployVariables } from "./bot-env";
 import { ensureDirectory, removeFile } from "./effects";
 import { assignmentsOf, writeEcosystem } from "./ecosystem";
@@ -39,7 +43,7 @@ import { botOf, botQuiet, botReady, describeBotActivity, unusableReason } from "
 import { changedFiles, requirePrepared, shortSha } from "./release";
 import { requireSharedFiles } from "./shared-files";
 import { loadState, moved, saveState, type DeployState } from "./state";
-import { waitUntil } from "./wait";
+import { describeDuration, waitUntil } from "./wait";
 
 export interface BotSwitchOptions {
   /** Restart even if no bot file changed, or the release is already recorded. */
@@ -98,13 +102,35 @@ async function waitForQuiet(ctx: Context): Promise<boolean> {
   });
 }
 
-/** Delete the old bot and make sure it is gone: a second copy must never start beside it. */
+/** The refusal when pm2 lists no bot but a live one is writing the status file. */
+function outOfSight(ctx: Context, status: BotStatus): DeployError {
+  const name = ctx.config.pm2.bot;
+  const written = describeDuration(ctx.host.clock.now() - status.updatedAt);
+  return new DeployError(
+    `pm2 lists no ${name}, but ${botStatusFile(ctx.layout)} was written ${written} ago by pid ${status.pid}, ` +
+      "which is alive: a bot is running out of this pm2's sight. Not starting a second copy beside it: two bots " +
+      "on one token answer every command twice. It may run under another pm2 name (compare pm2.bot in " +
+      "deploy.json with `pm2 ls`), as another user or with another PM2_HOME, or be an old bot an earlier switch " +
+      `could not end. \`ps -o pid,user,args -p ${status.pid}\` shows what it is. Stop it through the pm2 that ` +
+      "runs it, by name, or end it by that exact pid, then run this again. Nothing was changed.",
+  );
+}
+
+/**
+ * Delete the old bot and make sure it is gone: a second copy must never start
+ * beside it. With no pm2 entry to delete, a fresh status from a live pid is a
+ * bot this pm2 cannot see, and is refused.
+ */
 async function removeOldBot(ctx: Context, current: Pm2Process | undefined): Promise<void> {
-  if (!current) return;
   const { host } = ctx;
   // A stale status's pid may belong to some other process by now: only a fresh one is the bot's.
   const status = botOf(host.readStatus(botStatusFile(ctx.layout)));
-  const statusPid = status !== null && isFresh(status, host.clock.now()) ? status.pid : undefined;
+  const fresh = status !== null && isFresh(status, host.clock.now()) ? status : null;
+  if (!current) {
+    if (fresh !== null && fresh.pid > 0 && host.pidAlive(fresh.pid)) throw outOfSight(ctx, fresh);
+    return;
+  }
+  const statusPid = fresh?.pid;
   const pids = [current.pid, statusPid].filter((pid): pid is number => pid !== undefined && pid > 0);
   await pm2Delete(ctx, current.name);
   if (ctx.dryRun) return;

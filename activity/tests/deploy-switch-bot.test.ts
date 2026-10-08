@@ -11,6 +11,7 @@ import { join } from "node:path";
 import type { BotStatus } from "../shared/runtime-status";
 import { assignedNames } from "../tools/deploy/bot-env";
 import { botStatusFile } from "../tools/deploy/layout";
+import { botQuiet } from "../tools/deploy/readiness";
 import { switchBot } from "../tools/deploy/switch-bot";
 import { BOT, FakeBox, NEW, OLD, START, botStatus, cleanUpBoxes } from "./deploy-harness";
 
@@ -92,6 +93,21 @@ describe("a bot whose files changed", () => {
     expect(box.output()).toContain("sync running");
   });
 
+  /*
+   * The test above cannot tell whether "nothing in flight" is checked at all:
+   * its sync and its recent interaction both outlast the command. Here the
+   * command is all there is — one long /highlights, say, begun more than
+   * botQuietSeconds after the last interaction was recorded — and nothing
+   * else would hold the restart.
+   */
+  test("a command in flight alone holds the restart, however long ago the last interaction was", async () => {
+    const box = botBox({ idleForMs: 10 * 60_000, inflightUntil: START + 5 * 60_000 });
+    const deleted = watchDelete(box);
+    await switchBot(box.context(), NEW, OPTIONS);
+    expect(deleted.at).toBeGreaterThanOrEqual(START + 5 * 60_000);
+    expect(box.output()).toContain("1 in flight");
+  });
+
   test("a recent interaction alone holds the restart until botQuietSeconds have passed", async () => {
     const box = botBox({ idleForMs: 20_000 });
     const deleted = watchDelete(box);
@@ -113,10 +129,12 @@ describe("a bot whose files changed", () => {
     expect(box.readState().bot).toEqual({ release: OLD, previous: null });
   });
 
-  test("a running bot that writes no status file needs --now", async () => {
+  test("a running bot that writes no status file is refused at once: it needs --now", async () => {
     const box = botBox();
     box.statuses.delete(botStatusFile(box.layout));
-    await expect(switchBot(box.context(), NEW, OPTIONS)).rejects.toThrow(/--now/);
+    // Not the quiet wait's own refusal after botQuietLimitMinutes, which also names --now.
+    await expect(switchBot(box.context(), NEW, OPTIONS)).rejects.toThrow(/writes no status file[\s\S]*--now/);
+    expect(box.now).toBe(START);
     expect(box.pm2Mutations()).toEqual([]);
   });
 
@@ -206,6 +224,126 @@ describe("what the bot's restart depends on", () => {
     );
     await switchBot(box.context(), NEW, { force: false, now: true });
     expect(box.pm2Mutations()[1]).toEqual(["start", box.layout.ecosystem, "--only", BOT]);
+  });
+});
+
+/*
+ * pm2 may list no app under pm2.bot while a bot runs all the same: deploy.json
+ * renamed or mistyped, the tool run as another user or with another
+ * PM2_HOME — or the tool's own "still alive after pm2 delete" refusal, which
+ * has already deleted the entry by the time the operator runs it again. A
+ * fresh status from a live pid says so, and the switch must not start a
+ * second copy beside it.
+ */
+describe("a bot running out of pm2's sight", () => {
+  /** The bot runs, writing a fresh status, but pm2 lists no app by its name. */
+  function unlistedBox(): { box: FakeBox; pid: number } {
+    const box = botBox();
+    const pid = box.processes.get(BOT)!.pid;
+    box.processes.delete(BOT);
+    return { box, pid };
+  }
+
+  test("is refused, with its pid, before anything changes", async () => {
+    const { box, pid } = unlistedBox();
+    const error = (await switchBot(box.context(), NEW, OPTIONS).catch((caught: unknown) => caught)) as Error;
+    expect(error.message).toMatch(/pm2 lists no bcs-bot/);
+    expect(error.message).toContain(`pid ${pid}`);
+    expect(error.message).toMatch(/second copy/);
+    expect(box.pm2Mutations()).toEqual([]);
+    expect(box.readState().bot).toEqual({ release: OLD, previous: null });
+  });
+
+  test("is refused with --now and --force too", async () => {
+    const { box } = unlistedBox();
+    await expect(switchBot(box.context(), NEW, { force: true, now: true })).rejects.toThrow(/pm2 lists no bcs-bot/);
+    expect(box.pm2Mutations()).toEqual([]);
+  });
+
+  test("is refused again on the run after an old bot outlived pm2 delete", async () => {
+    const box = botBox();
+    const oldPid = box.processes.get(BOT)!.pid;
+    const run = box.run.bind(box);
+    box.run = async (command) => {
+      const result = await run(command);
+      if (command.argv[1] === "delete") box.alive.add(oldPid);
+      return result;
+    };
+    await expect(switchBot(box.context(), NEW, OPTIONS)).rejects.toThrow(/still alive after pm2 delete/);
+    expect(box.processes.has(BOT)).toBe(false);
+
+    await expect(switchBot(box.context(), NEW, OPTIONS)).rejects.toThrow(/pm2 lists no bcs-bot/);
+    expect(box.pm2Mutations()).toEqual([["delete", BOT]]);
+    expect(box.alive.has(oldPid)).toBe(true);
+  });
+
+  test("a status whose pid is dead, or that went stale, is no bot: it is started", async () => {
+    for (const status of ["dead", "stale"] as const) {
+      const { box, pid } = unlistedBox();
+      if (status === "dead") box.alive.delete(pid);
+      else box.setStatus(botStatusFile(box.layout), () => botStatus({ pid, buildId: OLD, updatedAt: START - 10 * 60_000 }));
+      await switchBot(box.context(), NEW, OPTIONS);
+      expect(box.pm2Mutations()).toEqual([["start", box.layout.ecosystem, "--only", BOT], ["save"]]);
+    }
+  });
+});
+
+/*
+ * The operator's way back after a crash or a hand-stopped bot is to run the
+ * same switch again: state.json already names the release, but pm2 does not
+ * run it, and "already runs" would leave the bot down.
+ */
+describe("a bot whose release state.json already records, but that pm2 does not run", () => {
+  function recordedBox(): FakeBox {
+    const box = botBox();
+    box.writeState({ bot: { release: NEW, previous: OLD } });
+    box.alive.delete(box.processes.get(BOT)!.pid);
+    box.statuses.delete(botStatusFile(box.layout));
+    return box;
+  }
+
+  test("stopped in pm2: it is started again", async () => {
+    const box = recordedBox();
+    Object.assign(box.processes.get(BOT)!, { status: "stopped", pid: 0 });
+    await switchBot(box.context(), NEW, OPTIONS);
+    expect(box.pm2Mutations()).toEqual([["delete", BOT], ["start", box.layout.ecosystem, "--only", BOT], ["save"]]);
+    expect(box.output()).not.toContain("already runs");
+    expect(box.readState().bot).toEqual({ release: NEW, previous: OLD });
+  });
+
+  test("errored in pm2: it is started again", async () => {
+    const box = recordedBox();
+    Object.assign(box.processes.get(BOT)!, { status: "errored", pid: 0 });
+    await switchBot(box.context(), NEW, OPTIONS);
+    expect(box.pm2Mutations()).toEqual([["delete", BOT], ["start", box.layout.ecosystem, "--only", BOT], ["save"]]);
+  });
+
+  test("gone from pm2: it is started", async () => {
+    const box = recordedBox();
+    box.processes.delete(BOT);
+    await switchBot(box.context(), NEW, OPTIONS);
+    expect(box.pm2Mutations()).toEqual([["start", box.layout.ecosystem, "--only", BOT], ["save"]]);
+  });
+});
+
+describe("botQuiet", () => {
+  const quiet = (fields: Partial<BotStatus>) =>
+    botQuiet(botStatus({ pid: 1, buildId: OLD, updatedAt: START, lastInteractionAt: START - 10 * 60_000, ...fields }), START, 60);
+
+  test("a ready bot with nothing going on is quiet", () => {
+    expect(quiet({})).toBe(true);
+  });
+
+  test("a command in flight is never quiet, however long ago the last interaction", () => {
+    expect(quiet({ inflight: 1 })).toBe(false);
+  });
+
+  test("a stale status is never quiet: the bot may be stuck mid-command", () => {
+    expect(quiet({ updatedAt: START - 10 * 60_000 })).toBe(false);
+  });
+
+  test("a running sync is never quiet", () => {
+    expect(quiet({ syncRunning: true })).toBe(false);
   });
 });
 
