@@ -661,6 +661,11 @@ client — `beta 0.21` or later in `changelog.json`, and this tool in
    and moving onto it would lose one of the two.
 
 10. **Switch, in the guides' order, checking as you go**, from the release:
+    each app only once the one before it has passed its own guide's checks,
+    and the bot last of all. A check that fails is a stop (`CLAUDE.md`): go
+    to *If the migration fails part-way* rather than retrying blind.
+
+    The game first:
 
     ```sh
     cd <the directory step 6's last line named>/activity    # ~/bcs/releases/<the full sha>/activity
@@ -670,26 +675,42 @@ client — `beta 0.21` or later in `changelog.json`, and this tool in
 
     With nothing running, a switch simply starts its app: the stopped entry
     of the same name is deleted and replaced, and a stopped bot is not waited
-    on for quiet. Then `activity/DEPLOY.md`'s *Verification*, from this
-    release's `activity/` (its `.env` is `shared/activity.env`), steps 1, 2
-    and 6 at least: the backfill's `runs:` line must match the history this
-    box has, or the database did not move with its data. Then the site and
-    its loopback checks (`activity/puzzledb/DEPLOY.md`, *Check it on
-    loopback*, on `sitePort`), then the bot and *Verifying the bot*
-    (`DEPLOY.md`):
+    on for quiet. Then all of `activity/DEPLOY.md`'s *Verification*, from
+    this release's `activity/` (its `.env` is `shared/activity.env`): "Run all
+    of these. Each fails in a way the others do not catch." In step 2 the
+    backfill's `runs:` line must also match the history this box has, or the
+    database did not move with its data.
+
+    Only once that has passed, the site:
 
     ```sh
     bun run deploy --dry-run switch site <sha>
     bun run deploy switch site <sha>
+    ```
+
+    Then `activity/puzzledb/DEPLOY.md`'s *Check it on loopback* and *Verify
+    it publicly*, on `sitePort`, from this release's `activity/`, all the
+    way to its last check, that `git status` from the repository root is
+    clean.
+
+    Only once *Verify it publicly* has passed, the bot (rule 2 of the site's
+    guide: its start is what makes the new release notes readable, and a
+    note should not describe a site that is not up yet). The guides restart
+    the bot only if its own code changed; here it did by construction — the
+    release carries the status contract the old bot's code lacks — and step 7
+    stopped it, so it is switched whatever `git diff` says. Then
+    `DEPLOY.md`'s *Verifying the bot*:
+
+    ```sh
     bun run deploy --dry-run switch bot <sha>
     bun run deploy switch bot <sha>
     bun run deploy status    # the game serving, the bot ready, the site online, all on <sha>
     ```
 
-    The bot and the site stay down while the game is checked: at a quiet hour
-    that is the price of the guides' order. If a switch fails, it says what
-    it stopped; go on to *If the migration fails part-way* rather than
-    retrying blind.
+    The site stays down while the game is verified, and the bot until the
+    site has been verified publicly: at a quiet hour that is the price of the
+    guides' order. If a switch fails, it says what it stopped; go on to *If
+    the migration fails part-way*.
 
 11. **Finish.**
 
