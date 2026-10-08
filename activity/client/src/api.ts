@@ -524,7 +524,18 @@ export class Api {
         .catch(() => null);
       throw new ApiError(detail ?? `Request failed (${response.status})`, response.status);
     }
-    return (await response.json()) as T;
+    // Fetch resolves once the headers arrive. The connection can still fail
+    // while reading a successful response, so that read belongs to the same
+    // retryable transport failure as fetch itself. Parse only after it has
+    // finished: malformed JSON is a server fault, not a connection to retry.
+    let text: string;
+    try {
+      text = await response.text();
+    } catch (cause) {
+      console.error(`[puzzle] response from ${path} failed`, cause);
+      throw new ApiError("Could not reach the server. Check your connection.", 0);
+    }
+    return JSON.parse(text) as T;
   }
 
   config(): Promise<{ clientId: string; allowGuestPlay: boolean }> {
