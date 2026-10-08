@@ -114,9 +114,12 @@ describe("switching the site", () => {
     const box = siteBox();
     box.writeState({ site: { release: NEW, previous: OLD } });
     await switchSite(box.context(), NEW, OPTIONS);
-    expect(box.pm2Mutations()).toEqual([]);
+    // Saved all the same: a switch interrupted between its start and its save
+    // left pm2's list naming the release before, and a reboot would bring
+    // that one back while state.json names this one.
+    expect(box.pm2Mutations()).toEqual([["save"]]);
     await switchSite(box.context(), NEW, { force: true });
-    expect(box.pm2Mutations()).toHaveLength(3);
+    expect(box.pm2Mutations()).toHaveLength(4);
   });
 
   /*

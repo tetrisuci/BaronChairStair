@@ -189,7 +189,12 @@ export async function switchBot(ctx: Context, sha: string, options: BotSwitchOpt
   const state = loadState(ctx);
   const current = findProcess(await pm2List(ctx), name);
   const running = isOnline(current);
-  if (await unchanged(ctx, state, sha, running, options.force)) return;
+  if (await unchanged(ctx, state, sha, running, options.force)) {
+    // Saved anyway, as the game's re-run does: a switch interrupted between its
+    // start and its save left pm2's list on the release before.
+    await pm2Save(ctx);
+    return;
+  }
 
   if (running && !options.now && !(await waitForQuiet(ctx))) {
     throw new DeployError(

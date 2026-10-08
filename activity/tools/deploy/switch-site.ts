@@ -161,6 +161,9 @@ export async function switchSite(ctx: Context, sha: string, options: SiteSwitchO
   const current = findProcess(await pm2List(ctx), name);
   if (!options.force && state.site.release === sha && isOnline(current)) {
     host.out(`site: ${name} already runs ${shortSha(sha)}; nothing to do (--force restarts it anyway)`);
+    // Saved anyway, as the game's re-run does: a switch interrupted between its
+    // start and its save left pm2's list on the release before.
+    await pm2Save(ctx);
     return;
   }
 

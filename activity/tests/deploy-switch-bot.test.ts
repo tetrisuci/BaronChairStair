@@ -62,7 +62,7 @@ describe("a bot whose files did not change", () => {
     const box = botBox();
     box.diff = ["activity/server/index.ts", "activity/client/src/app.ts"];
     await switchBot(box.context(), NEW, OPTIONS);
-    expect(box.pm2Mutations()).toEqual([]);
+    expect(box.pm2Mutations()).toEqual([["save"]]);
     expect(box.readState().bot).toEqual({ release: NEW, previous: OLD });
     expect(box.output()).toContain("without restarting");
     expect(box.calls.map((call) => call.argv.slice(3, 5))).toContainEqual(["diff", "--name-only"]);
