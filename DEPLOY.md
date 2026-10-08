@@ -61,10 +61,51 @@ git diff --stat <the commit the running bot started on> HEAD -- client changelog
 If you have neither, or are unsure, restart it: since `beta 0.17` a restart announces
 nothing and costs players only the moment it is down. *Restarting* below has the steps.
 
+On a box migrated to releases the deploy tool makes this check itself and does the restart:
+*On a box migrated to releases*, below.
+
 **One exception: a bot that would start on code from before `beta 0.17`.** That code
 posts, at each server's next `/puzzle`, every release note the server has not been told
 about, in the channel, and a post cannot be withdrawn. Only a rollback can bring that
 about; *Rolling the bot back*, below, has the check.
+
+---
+
+## On a box migrated to releases
+
+On a box moved to the release layout — pm2 runs the bot from `~/bcs/releases/<sha>/`
+(`pm2 describe <its name> | grep 'exec cwd'`), and `~/bcs/state.json` exists — the bot
+goes through the deploy tool, [`activity/tools/deploy/`](activity/tools/deploy/README.md),
+not through *Restarting* below. Its README has the detail; what it means for the bot:
+
+| This guide | On a migrated box |
+|---|---|
+| The `git diff` above, deciding whether the bot restarts | `switch bot <ref>` decides: it restarts the bot only if a `botFiles` file changed (by default `client/**`, `server/**`, `package.json`, `bun.lock`, `changelog.json`), and otherwise records the release and leaves the bot running once its actual build is ready steadily and its bot files match the target |
+| *Restarting*: `py_compile`, a quiet moment, the old one stopped before the new, `kill_timeout` | `prepare` compiles and tests the bot with the venv in `deploy.json`. The switch waits for quiet from the bot's status file (`--now` skips the wait), deletes the old bot and confirms its pid is gone before starting the new one, and waits for `ready` on the new build from the live, online pm2 pid, then the same ready pid 5 seconds later. A same-release rerun repeats readiness and pid checks before success. The ecosystem gives it a 30-second `kill_timeout` |
+| *Rolling the bot back* | `rollback bot [--now]`, to the release `state.json` recorded. Every release the tool prepared carries `beta 0.17`, so that check matters only for going back past the migration, to the old checkout |
+| The root `.env` | `shared/bot.env`, linked into each release. It must not set `DATABASE_PATH`, `BUILD_ID`, `STATUS_FILE`, `STATS_DB`, `PATH` or `PUZZLE_ACTIVITY_DIR`: the deploy sets them, and the bot loads `.env` over them. `prepare` and `switch bot` refuse a file that does |
+| `stats.db` at the repository root | `shared/stats.db`, which the deploy names in `STATS_DB` |
+
+**This guide's order is the switches one at a time, with the checks between them:**
+`prepare`, `backup`, `switch game` and the activity's *Verification*, `switch site` and
+the site's *Verify it publicly*, and only then `switch bot`, from the current release's
+`activity/`, `--dry-run` first each time (the tool's README, *A deploy, in the guides'
+order*, has the commands). `bun run deploy deploy <ref>` runs the same switches back to
+back, with only the tool's own checks between them, so it restarts the bot, and makes
+the new release notes readable, before anyone has verified the game or the site. Do the
+stricter thing and switch one at a time. Either way, *Verifying the bot* below still
+applies, and the pm2 name is the one in `shared/deploy.json`, never DIAYN's.
+
+**`/archive sync` runs the activity's `sync-archive` from the bot's own release**, which
+moves only when the bot is switched. A release that changes `activity/tools/sync-archive.ts`,
+or what it imports, reaches `/archive sync` with `switch bot <ref> --force`, or by adding
+those paths to `botFiles` in `shared/deploy.json`, after which a plain `switch bot`
+restarts the bot for them (the tool's README, *Known limits*).
+
+A box not yet migrated follows this guide as it stands, and moves by the tool's
+*First-time migration*. The manual steps below stay the path for a box not yet
+migrated, and the fallback for one whose migration was rolled back — never for a bot
+running from `releases/`, where a fix is a new release.
 
 ---
 
@@ -226,7 +267,9 @@ python3 -m unittest discover -s client     # 293 run, 0 fail; a bare python3 wit
 ### Restarting, and making a new command appear
 
 *Last in a deploy, once the game and the site are verified, and only when `client/` or
-`changelog.json` changed — the top of this file says why and how to tell.*
+`changelog.json` changed — the top of this file says why and how to tell. This is the
+path for a box not yet migrated to releases, and the fallback; on a migrated box it is
+`switch bot`, above.*
 
 Find how the bot actually runs on this box. Look, do not guess:
 
@@ -415,7 +458,8 @@ guild immediately, and tidy up afterwards, see [README.md](README.md#standalone-
 
 ### Rolling the bot back
 
-The bot's code is the checkout's, so moving it back is the activity's rollback —
+On a box migrated to releases, `bun run deploy rollback bot` (above). On one that is
+not, the bot's code is the checkout's, so moving it back is the activity's rollback —
 [`activity/DEPLOY.md`](activity/DEPLOY.md), *Rolling back* — followed by a bot restart
 as above, if the bot had been restarted onto the commit you are leaving. Before that
 restart, ask the checkout you are going back to, from the repository root:

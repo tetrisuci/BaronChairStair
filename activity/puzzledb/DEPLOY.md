@@ -34,6 +34,48 @@ both for the hostname, and each says so where it comes.
 
 ---
 
+## On a box migrated to releases
+
+On a box moved to the release layout — pm2 runs the site from
+`~/bcs/releases/<sha>/activity` (`pm2 describe <its name> | grep 'exec cwd'`), and
+`~/bcs/state.json` exists — the site goes through the deploy tool,
+[`../tools/deploy/`](../tools/deploy/README.md). Its README has the detail; what it
+changes in the table above and the steps below:
+
+| This guide | On a migrated box |
+|---|---|
+| *Checks, then the build*, and *After every activity deploy* | `prepare <ref>` runs the checks and `bun run build:puzzledb` in the new release. `switch site <ref>` replaces the process — delete, a check that nothing else answers the port, start, `/health`, then pm2 must show it in the target release's directory, online on one pid 5 seconds later. A same-release rerun skips replacement only when pm2 runs that release, and repeats `/health` and the stable pid checks before success or `pm2 save`. The `pm2 restart` step goes away |
+| *Start it under pm2*, `puzzledb/ecosystem.config.cjs` | `shared/ecosystem.config.cjs`, written by the tool and never edited by hand, with `interpreter: "none"` and `--env-file` in the arguments, for the reasons given there |
+| `puzzledb/.env` | `shared/puzzledb.env`, with the absolute `DATABASE_PATH=<home>/shared/daily.sqlite`. The commands below that read `puzzledb/.env` read that file instead |
+| `data/solutions.json` beside the code | `shared/solutions.json`, linked into each release |
+| The name `puzzle-db`, port 3002 | `pm2.site` and `sitePort` in `shared/deploy.json` |
+| *Rolling back* a later deploy | `rollback site`: code only, with the same checks |
+
+Both rules hold as switches, one at a time, from the current release's `activity/`:
+`switch site` only once `switch game` and the activity's *Verification* have passed
+(rule 1), and `switch bot` only once *Verify it publicly* has (rule 2). The tool's
+README, *A deploy, in the guides' order*, has the commands. `bun run deploy deploy <ref>`
+runs the same switches back to back, with only the tool's own checks between them, so
+it switches the site before the game is verified and restarts the bot before the site
+is: do the stricter thing and switch one at a time. *Check it on loopback*, *Verify it
+publicly* and the rest stay as they are, on `sitePort`, run from the release's
+`activity/`. The switch's gap is from the delete until the new process has built its
+first dataset and bound the port, during which db.tetrisatuci.org answers 502.
+
+**Taking the site down is still `pm2 stop <its name>`, but it stays down only while
+nothing switches the site.** `switch site` starts it whatever pm2 shows, a stopped
+entry or none, even after `pm2 delete` and `pm2 save`, and `deploy <ref>` and
+`rollback site` both run it. While the site must stay down, deploy with `prepare`,
+`backup`, `switch game` and `switch bot` alone, and never run `switch site`,
+`rollback site` or `deploy <ref>` until whoever took it down says it may come back.
+
+A box not yet migrated follows this guide as it stands; the site moves with the game
+and the bot in the tool's *First-time migration*. The manual steps stay the path for a
+box not yet migrated, and the fallback for one whose migration was rolled back; nothing
+here is run inside `releases/`, where a fix is a new release.
+
+---
+
 ## Two ordering rules
 
 **1. The activity's deploy comes first, because the pull is the game's.** The site
@@ -115,6 +157,9 @@ then cannot write.
 ---
 
 ## Checks, then the build
+
+*The path for a box not yet migrated to releases, and the fallback. On a migrated box,
+`prepare` and `switch site` (above).*
 
 First, what a pull would bring the activity besides the site (rule 1):
 
@@ -207,6 +252,9 @@ before going on.
 ---
 
 ## Start it under pm2, as the game's user
+
+*The path for a box not yet migrated to releases, and the fallback. On a migrated box
+the tool writes the ecosystem file and starts the site from it (above).*
 
 Two things about pm2 decide the shape of this step, and both fail quietly:
 
@@ -569,6 +617,9 @@ makes the new release notes readable through `/puzzle changelog`, to whoever ask
 
 ## After every activity deploy
 
+*On a box migrated to releases, the site's switch, `switch site <ref>`, does this
+(above). What follows is the path for a box not yet migrated, and the fallback.*
+
 The site is built from the activity's own code. The page compiles `client/src` and
 `shared/`, and the server runs `server/puzzles.ts` and the game's other readers, so
 whenever the activity is deployed the site needs the same code. `puzzledb/dist/` is
@@ -618,21 +669,39 @@ chip is picked on the site, or the `public_key` beside its name here:
 bun -e 'import {Database} from "bun:sqlite"; const db = new Database(process.argv[1], {readonly: true}); console.log(db.query("SELECT public_key AS key, name FROM guilds WHERE name IS NOT NULL ORDER BY name").all())' "$(grep -E '^DATABASE_PATH=' puzzledb/.env | cut -d= -f2-)"
 ```
 
-The edit is a reviewed commit to the site alone: on the box it is the *Nothing listed*
-path of *Checks, then the build*, then `pm2 restart puzzle-db` (under systemd,
-`sudo systemctl restart puzzle-db`). The list is read when the site starts, so the
-restart is what applies it; the game is not touched. The listed server keeps its
-boards and shows as "Unnamed server".
+The edit is a reviewed commit to the site alone. The list is read when the site starts,
+so starting the site on that commit is what applies it; the game is not touched. The
+listed server keeps its boards and shows as "Unnamed server".
+
+**On a box migrated to releases**, the commit goes out as a release, from the current
+release's `activity/`, with `--dry-run` before each switch:
+
+```sh
+bun run deploy prepare <ref>     # ends "prepared <sha> in <its directory>"
+bun run deploy status            # "game (<its pm2 name>, <the game's release>): …"
+git diff --stat <the game's release> <sha> -- . ':!puzzledb' ':!tests/puzzledb-*'
+```
+
+Nothing listed: `bun run deploy switch site <sha>` applies it, then *Check it on
+loopback* and *Verify it publicly*. Anything listed means the release brings the game
+something too, so it goes out in the order *On a box migrated to releases* gives, game
+first. **Never `pm2 restart` the site here**: it restarts the old release's process, on
+the old code, so the edit is not applied and nothing says so.
+
+*On a box not yet migrated*, it is the *Nothing listed* path of *Checks, then the
+build*, then `pm2 restart puzzle-db` (under systemd, `sudo systemctl restart puzzle-db`).
 
 ---
 
 ## Rolling back, or taking it down
 
 **Taking it down** is `pm2 stop puzzle-db` (under systemd,
-`sudo systemctl stop puzzle-db`), and that step never affects the game. With nothing
-listening on 3002, db.tetrisatuci.org answers only `502`, so the hostname does no
-harm left in place while the site is down. Remove it when you want it gone, at a
-quiet hour wherever that touches the game:
+`sudo systemctl stop puzzle-db`), and that step never affects the game. On a box
+migrated to releases it stays down only while nothing switches the site, however it
+was taken down: *On a box migrated to releases*, above, says which commands to leave
+out. With nothing listening on 3002, db.tetrisatuci.org answers only `502`, so the
+hostname does no harm left in place while the site is down. Remove it when you want it
+gone, at a quiet hour wherever that touches the game:
 
 - **(a) the dashboard route**: at any time. Nothing restarts.
 - **(b) the ingress rule**: cloudflared reads its rules only when it starts, and
@@ -687,9 +756,12 @@ If the bot had been restarted onto the commit you are leaving, the root
 [`DEPLOY.md`](../../DEPLOY.md), *Rolling the bot back*, has the one check to make before
 restarting it again.
 
-**A later deploy broke the site.** Rolling the checkout back moves the game's code
-too, so it is the activity's rollback (`activity/DEPLOY.md`, *Rolling back*), never
-the site's. Once the activity is back on a commit that has the site in it:
+**A later deploy broke the site.** On a box migrated to releases this is
+`bun run deploy rollback site`, which moves the site alone back to the release
+`state.json` recorded, with the same checks as any switch; what follows is for a box
+not yet migrated. Rolling the checkout back moves the game's code too, so it is the
+activity's rollback (`activity/DEPLOY.md`, *Rolling back*), never the site's. Once the
+activity is back on a commit that has the site in it:
 
 ```sh
 bun install && bun run build:puzzledb
