@@ -5,7 +5,7 @@
  * sent into that gap used to be lost: the daily said "Request failed (502)"
  * and kept nothing, the rush threw its ticket away, and a practice clear
  * vanished without a word. Every one of those routes is safe to send twice
- * (the daily upserts, the rush is first-write-wins, a clear only counts up),
+ * (the daily upserts, the rush remembers its ticket, a clear remembers its receipt),
  * so the client now asks again for about fifteen seconds — but only when
  * nobody answered, or a proxy answered for a server that was not there.
  *
@@ -296,10 +296,19 @@ describe("a connection lost after the response headers", () => {
       expect(await quietly(() => handIn.send(api, { onRetrying: (notice) => notices.push(notice) })))
         .toEqual(answer);
 
+      const sentBody = network.sent[0]!.body!;
+      const parsed = JSON.parse(sentBody);
+      if (handIn.path.endsWith("/clear")) {
+        expect(typeof parsed.attemptId).toBe("string");
+        const { attemptId, ...solve } = parsed;
+        expect(solve).toEqual(handIn.body);
+      } else {
+        expect(parsed).toEqual(handIn.body);
+      }
       expect(network.sent).toEqual(Array(2).fill({
         url: handIn.path,
         method: "POST",
-        body: JSON.stringify(handIn.body),
+        body: sentBody,
       }));
       expect(clock.waits).toEqual([HAND_IN_RETRY_DELAYS_MS[0]!]);
       expect(notices).toEqual([{ attempt: 2, delayMs: 500, status: 0 }]);

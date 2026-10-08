@@ -291,6 +291,8 @@ export interface RushTicket {
   /** Ranked rushes go on the leaderboard; practice ones are never recorded. */
   readonly ranked: boolean;
   readonly startedAt: number;
+  /** Distinguishes starts from two devices in the same millisecond. Absent on old tickets. */
+  readonly attemptId?: string;
 }
 
 export async function mintRushTicket(ticket: RushTicket): Promise<string> {
@@ -331,7 +333,9 @@ export async function readRushTicket(token: unknown): Promise<RushTicket> {
     !Number.isInteger(ticket.day) ||
     !Number.isInteger(ticket.seed) ||
     typeof ticket.ranked !== "boolean" ||
-    !Number.isFinite(ticket.startedAt)
+    !Number.isFinite(ticket.startedAt) ||
+    (ticket.attemptId !== undefined &&
+      (typeof ticket.attemptId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(ticket.attemptId)))
   ) {
     throw new AuthError("Incomplete rush ticket", 400);
   }

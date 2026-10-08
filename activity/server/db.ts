@@ -441,6 +441,8 @@ CREATE TABLE IF NOT EXISTS rush_runs (
   time_to_last_ms INTEGER NOT NULL,
   elapsed_ms      INTEGER NOT NULL,
   created_at      INTEGER NOT NULL,
+  -- The signed ticket that owns the day's first filing. NULL for legacy rows.
+  ticket_id       TEXT,
   PRIMARY KEY (day, player_id)
 );
 
@@ -469,6 +471,16 @@ CREATE TABLE IF NOT EXISTS puzzle_clears (
   times     INTEGER NOT NULL,
   best_ms   INTEGER NOT NULL,
   PRIMARY KEY (player_id, puzzle_id)
+);
+
+-- One receipt per counted attempt, scoped to its player and puzzle. Written
+-- in the same transaction as puzzle_clears: a lost reply can then be retried
+-- without counting twice, and a failed write never consumes the receipt.
+CREATE TABLE IF NOT EXISTS puzzle_clear_attempts (
+  player_id TEXT    NOT NULL REFERENCES players(id),
+  puzzle_id INTEGER NOT NULL,
+  attempt_id TEXT   NOT NULL,
+  PRIMARY KEY (player_id, puzzle_id, attempt_id)
 );
 
 -- Every read is "everything this player has cleared", for the Explore ticks and
@@ -1007,6 +1019,13 @@ export class Store {
       // the honest answer: nothing was decided.
     );
     this.addMissingColumn(
+      "rush_runs",
+      "ticket_id",
+      "TEXT",
+      // No backfill: the old row did not remember which signed ticket filed
+      // it, and a guessed identity could credit a different device's rush.
+    );
+    this.addMissingColumn(
       "day_rush",
       "bands",
       "TEXT",
@@ -1502,11 +1521,12 @@ export class Store {
   }
 
   /**
-   * Records that a player solved a puzzle. Idempotent by design, not by luck.
+   * Records a solve once per attempt when its caller supplies a receipt.
    *
    * Called from all three places a solve can happen — the daily submit, each
-   * puzzle a rush solved, and a practice run — so it is written far more often
-   * than it changes anything. `first_at` survives every re-solve, because "when
+   * puzzle a rush solved, and a practice run. Separate solves still increase
+   * `times`; a retry of the same receipt changes nothing. Callers without a
+   * receipt retain the legacy behaviour. `first_at` survives every re-solve, because "when
    * did you first crack this" is the fact worth keeping and the upsert would
    * otherwise quietly move it every time somebody replayed a favourite.
    *
@@ -1519,28 +1539,40 @@ export class Store {
     puzzleId: number;
     durationMs: number;
     player?: PlayerProfile;
+    /** Namespaced by the route: practice UUID, daily slot, or signed rush ticket. */
+    attemptId?: string;
   }): void {
     // `puzzle_clears.player_id` is `NOT NULL REFERENCES players(id)` and foreign
     // keys are on, so a player this box has never written throws. Every route
     // that files a clear — the daily, the rush and the practice route — passes
     // `player` for that reason, and every other write path here upserts first;
     // `recordSubmission` documents the same hazard three methods up.
-    if (entry.player) this.upsertPlayer(entry.player);
-    const now = Date.now();
-    const ms = entry.durationMs > 0 ? entry.durationMs : 0;
-    this.db.run(
-      `INSERT INTO puzzle_clears (player_id, puzzle_id, first_at, last_at, times, best_ms)
-       VALUES (?1, ?2, ?3, ?3, 1, ?4)
-       ON CONFLICT (player_id, puzzle_id) DO UPDATE SET
-         last_at = excluded.last_at,
-         times   = puzzle_clears.times + 1,
-         best_ms = CASE
-           WHEN puzzle_clears.best_ms = 0 THEN excluded.best_ms
-           WHEN excluded.best_ms = 0      THEN puzzle_clears.best_ms
-           ELSE MIN(puzzle_clears.best_ms, excluded.best_ms)
-         END`,
-      [entry.playerId, entry.puzzleId, now, ms],
-    );
+    this.db.transaction(() => {
+      if (entry.player) this.upsertPlayer(entry.player);
+      if (entry.attemptId !== undefined) {
+        const receipt = this.db.run(
+          `INSERT INTO puzzle_clear_attempts (player_id, puzzle_id, attempt_id)
+           VALUES (?1, ?2, ?3) ON CONFLICT DO NOTHING`,
+          [entry.playerId, entry.puzzleId, entry.attemptId],
+        );
+        if (receipt.changes === 0) return;
+      }
+      const now = Date.now();
+      const ms = entry.durationMs > 0 ? entry.durationMs : 0;
+      this.db.run(
+        `INSERT INTO puzzle_clears (player_id, puzzle_id, first_at, last_at, times, best_ms)
+         VALUES (?1, ?2, ?3, ?3, 1, ?4)
+         ON CONFLICT (player_id, puzzle_id) DO UPDATE SET
+           last_at = excluded.last_at,
+           times   = puzzle_clears.times + 1,
+           best_ms = CASE
+             WHEN puzzle_clears.best_ms = 0 THEN excluded.best_ms
+             WHEN excluded.best_ms = 0      THEN puzzle_clears.best_ms
+             ELSE MIN(puzzle_clears.best_ms, excluded.best_ms)
+           END`,
+        [entry.playerId, entry.puzzleId, now, ms],
+      );
+    })();
   }
 
   /**
@@ -1848,7 +1880,16 @@ export class Store {
     definition: string,
     backfill?: string,
   ): void {
-    const columns = this.db.query<{ name: string }, []>(`PRAGMA table_info(${table})`).all();
+    // This metadata is read only at boot. Filling Bun's twenty-statement
+    // query cache with migrations makes later .get() readers uncached, so a
+    // reader can outlive close() and keep another connection from leaving WAL.
+    const metadata = this.db.prepare<{ name: string }, []>(`PRAGMA table_info(${table})`);
+    let columns: { name: string }[];
+    try {
+      columns = metadata.all();
+    } finally {
+      metadata.finalize();
+    }
     if (columns.some((c) => c.name === column)) return;
     this.db.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
     if (backfill) this.db.run(backfill);
@@ -2324,21 +2365,24 @@ export class Store {
    * opening rush after rush and keeping the best. Practice runs never reach
    * here at all.
    *
-   * @returns the rush now on file, which may be an earlier one.
+   * @returns the rush now on file, which may be an earlier one. `isFirst` is
+   * true for the accepted ticket on every retry; a different ticket is false.
+   * Without a ticket id, legacy callers retain insert-only `isFirst`.
    */
   recordRushRun(
     day: number,
     player: PlayerProfile,
     guildId: string | null,
     result: RushResult,
+    ticketId?: string,
   ): { run: StoredRushRun; isFirst: boolean } {
     this.upsertPlayer(player);
     this.identity.ensureGuild(guildId);
     const changes = this.db
       .query(
         `INSERT INTO rush_runs (day, player_id, guild_id, solved, attempted,
-                                skips_used, time_to_last_ms, elapsed_ms, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                                skips_used, time_to_last_ms, elapsed_ms, created_at, ticket_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
          ON CONFLICT(day, player_id) DO NOTHING`,
       )
       .run(
@@ -2351,11 +2395,25 @@ export class Store {
         result.timeToLastSolveMs,
         result.elapsedMs,
         Date.now(),
+        ticketId ?? null,
       );
 
     const run = this.rushRunFor(day, player.id);
     if (!run) throw new Error("Rush run vanished immediately after being written");
-    return { run, isFirst: changes.changes > 0 };
+    let isFirst = changes.changes > 0;
+    if (ticketId !== undefined) {
+      // Explicitly finalized even if Bun's query cache is full: the ticket
+      // lookup must not leave a read cursor behind the next write or close.
+      const receipt = this.db.prepare<{ ticket_id: string | null }, [number, string]>(
+        "SELECT ticket_id FROM rush_runs WHERE day = ?1 AND player_id = ?2",
+      );
+      try {
+        isFirst ||= receipt.get(day, player.id)?.ticket_id === ticketId;
+      } finally {
+        receipt.finalize();
+      }
+    }
+    return { run, isFirst };
   }
 
   rushRunFor(day: number, playerId: string): StoredRushRun | null {

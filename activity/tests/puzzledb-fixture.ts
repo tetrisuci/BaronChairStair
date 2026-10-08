@@ -256,6 +256,8 @@ const MARK = Object.freeze({
   acceptanceNote: "planted-acceptance-note",
   overrideWas: "planted-override-was",
   unpublishedTitle: "planted-unpublished-title",
+  clearAttempt: "planted-clear-attempt",
+  rushTicket: "planted-rush-ticket",
 });
 
 /**
@@ -498,7 +500,8 @@ function plantPlayers(store: Store, cast: Cast): void {
   plantDailies(store, cast);
   plantRushes(store, cast);
   for (const clear of CLEARS) {
-    store.recordClear({ playerId: cast[clear.player].id, puzzleId: clear.puzzleId, durationMs: 41_000 });
+    store.recordClear({ playerId: cast[clear.player].id, puzzleId: clear.puzzleId, durationMs: 41_000,
+      attemptId: MARK.clearAttempt });
   }
   store.savePreferences(cast.visible, { planted: MARK.preference });
   plantLines(store, cast);
@@ -565,7 +568,7 @@ function plantRushes(store: Store, cast: Cast): void {
   const rush = (day: number, role: PlayerRole, server: ServerRole, solved: number, ms: number) =>
     store.recordRushRun(day, cast[role], SERVERS[server].id, {
       solved, attempted: solved + 2, skipsUsed: 1, timeToLastSolveMs: ms, elapsedMs: 180_000,
-    });
+    }, MARK.rushTicket);
   rush(TODAY - 1, "visible", "club", 7, 170_000);
   rush(TODAY - 1, "unchosen", "unnamed", 5, 141_200);
   rush(TODAY - 1, "hidden", "club", 6, 155_550);

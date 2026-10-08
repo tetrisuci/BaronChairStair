@@ -25,7 +25,7 @@ On a box moved to the release layout — pm2 runs the game from
 | This guide | On a migrated box |
 |---|---|
 | *Before you start*: note the commit, back up with `VACUUM INTO` | `state.json` keeps the release each app runs and the one before it. `bun run deploy backup` writes both databases to `shared/backups/`, and `deploy` takes one before any switch |
-| *The upgrade*: pull, install, `tsc`, `bun test`, build, restart | `prepare <ref>` does the checks and both builds in a new `releases/<sha>/` while the old release serves. `switch game <ref>` is the restart, done as *The handover* below: no duel is cut; the old slot finishes its matches, for up to `drainLimitMinutes` (20) |
+| *The upgrade*: pull, install, `tsc`, `bun test`, build, restart | `prepare <ref>` does the checks and both builds in a new `releases/<sha>/` while the old release serves. `switch game <ref>` is the restart, done as *The handover* below: the old slot finishes connected matches, for up to `drainLimitMinutes` (20); a dropped connection ends its match as no contest |
 | *Restarts and handovers* | True of every slot. The tool sends only SIGHUP, to drain, and pm2's stop; each slot gets its own `STATUS_FILE` and `BUILD_ID`, and a 15-second `kill_timeout` |
 | *Verification* | Unchanged, run from the release's `activity/`: its `.env` is `shared/activity.env`, whose `DATABASE_PATH` names `<home>/shared/daily.sqlite`. `bun run deploy status` adds what each slot reports |
 | *Rolling back* | `rollback game`: code only, no rebuild, by the same handover. Data goes back only from `shared/backups/` |
@@ -173,9 +173,9 @@ fail` is the thing to check. A number of skips that is suddenly zero means the
 answers are on this box; a *failure* is what stops a deploy.
 
 Then restart the service the way this box already starts it, **straight after the
-build**. The server reads `dist/build.json` once, when it starts, and names that build on
-every response; until the restart, pages loaded from the new bundle are told the old
-build is serving, offer *Update ready* for nothing, and a reload does not clear it.
+build**. The server notices a replacement `dist/build.json` within two seconds and
+names the new client bundle before the restart. Server code still comes from the
+running process until that restart.
 *Restarts and handovers*, below, says what a restart costs players now, and what to set
 before the first restart onto this code.
 
@@ -403,7 +403,7 @@ migration*).
 | Signal | What the game does |
 |---|---|
 | `SIGINT`, `SIGTERM` | Stops, as above: up to 8 seconds for the requests in flight, then exit 0 |
-| `SIGHUP` | **Drains**, for a handover: stops listening, keeps every match to its end, and never exits by itself |
+| `SIGHUP` | **Drains**, for a handover: stops listening, keeps connected matches to their end, and never exits by itself |
 | `SIGUSR1`, `SIGUSR2` | **Never send these.** On Bun 1.3.13 one crashes the process and the other ends it before any handler runs |
 
 Send any of them by exact PID — `pm2 pid <its name>`, or the `ps` line in
@@ -437,7 +437,7 @@ outline, what a handover does:
    restarted by its manager under a new pid;
 3. send the old process SIGHUP, by exact PID. It stops listening, after which every new
    connection reaches the new one; sends each lobby away with "The server is updating —
-   open the lobby again"; keeps each match to its end, with no rematch; answers what
+   open the lobby again"; keeps each connected match to its end, with no rematch; answers what
    still arrives on an old connection with `Connection: close`; and reports `draining`;
 4. wait for its file to say `"state":"draining"` with `"duelsInMatch":0` and
    `"inflight":0`, or for 20 minutes at most, since it never exits by itself;
@@ -453,6 +453,14 @@ the new release built where the new process serves it from. The deploy tool does
 it — two pm2 slots, a release directory each, the wait, the drain and the stop — as
 `bun run deploy switch game <ref>` ([`tools/deploy/README.md`](tools/deploy/README.md)).
 On a box not yet migrated to it, a deploy restarts the game as above.
+
+**A dropped connection during a drain ends that match as no contest.** The old
+process has stopped listening, so a reconnect reaches the new one, which cannot
+restore the old process's match. The remaining player is sent away with 1012
+"handover" and can open Duel again; no result or forfeit win is awarded. This
+applies to puzzle and rush matches, including the pause between rounds. A player's
+explicit Leave command still forfeits, and a match with both connections intact
+continues normally.
 
 **Never end a managed copy with a bare SIGTERM.** The game exits 0 after a stop, and pm2
 restarts an app that exits, 0 or not, unless its `autorestart` is off; systemd does the
@@ -506,10 +514,15 @@ so `bun test`, which loads `activity/.env` too, never touches the live one.
 
 `bun run build` names the build: the id is `BUILD_ID` if that is set, else the
 checkout's short commit (`git rev-parse --short HEAD`), else `dev`. It is compiled into
-the page and written to `dist/build.json`, which the server reads once, at start-up —
-falling back to `BUILD_ID`, then `dev`, when there is no file — and sends back as
-`X-Build-Id` on every response, and in `/api/health`. A `BUILD_ID` that is not 1–64
-letters, digits, dots, dashes or underscores fails the build, on purpose.
+the page and written to `dist/build.json`. The server checks that file at most once
+every two seconds and rereads it when it changes, falling back to `BUILD_ID`, then
+`dev`, when there is no usable file. `X-Build-Id`, `/api/config` and `/api/health`
+name the client bundle being served. A `BUILD_ID` that is not 1–64 letters, digits,
+dots, dashes, underscores or pluses fails the build, on purpose.
+
+The status file keeps the id from process startup: rebuilding the client in place
+does not claim new server code is running. After the restart it agrees with the
+bundle again.
 
 - **On a git checkout, set nothing**: the commit is the right id.
 - **A `dev` build is never offered an update, and never offers one.** A box that builds
@@ -519,8 +532,9 @@ letters, digits, dots, dashes or underscores fails the build, on purpose.
 - **The site's build takes no part**: `build:puzzledb` writes no `build.json`, and the
   site's pages never offer an update.
 - **`bun run dev:client` compiles in no id**, so a dev page never shows *Update ready*.
-  To see the chip locally, build, then restart the server on a build with another
-  `BUILD_ID`.
+  To see the chip locally, build with one `BUILD_ID`, open the page, then build with
+  another. Responses name the replacement bundle within two seconds. Restart the
+  server too when its code changed.
 
 `GET /api/health` answers `{"ok":true,"buildId":"…","state":"serving"}` without touching
 the database. It counts against the game's rate limit of 240 requests a minute, like
@@ -654,11 +668,13 @@ curl -s -D - -o /dev/null https://your-host/api/health | grep -i x-build-id  # t
 curl -s https://your-host/api/health; echo                                    # {"ok":true,"buildId":"<the same>","state":"serving"}
 ```
 
-The ids must match. Another one means the server started before the build finished,
-or the process answering is not the one you restarted: restart it, and check that one
-process listens (`ss -ltnp | grep ':3001\b'`). `dev` means the build found neither
+The ids must match. Immediately after a build, poll again after two seconds for the
+cached id to refresh. A persistent mismatch means the wrong process or build path
+is answering; check that one process listens (`ss -ltnp | grep ':3001\b'`).
+`dev` means the build found neither
 `BUILD_ID` nor git, and no page will ever be offered the update. With `STATUS_FILE`
-set, `cat` it too: `"state":"serving"`, the same `buildId`, and a fresh `updatedAt`.
+set, `cat` it too: `"state":"serving"`, the same `buildId` after the completed
+restart, and a fresh `updatedAt`. Before that restart it still names the startup build.
 
 Once, from inside the Discord activity if you can open its developer tools, check that
 a response from `/api/…` carries `X-Build-Id`. If Discord's proxy or the tunnel strips
@@ -827,8 +843,9 @@ Accept nothing until you are confident in the upgrade, and rollback stays free.
   `systemctl stop <its unit>`), by its exact PID only if it was started by hand — a
   managed copy ended by PID is started straight back.
 - **Every page shows *Update ready* right after a build, and reloading does not clear
-  it.** The server was not restarted after the build, and still names the old one.
-  Restart it.
+  it.** The served id can lag the replacement bundle by up to two seconds. If the
+  offer persists, check the served build path and whether a second listener is
+  answering. A restart is still required to update the server code.
 - **The service will not boot, and the error names an accepted puzzle** (an id
   of 100000 or more). It failed validation at load. The message gives its id. Undo that
   acceptance and restart:

@@ -178,6 +178,19 @@ describe("the environment a command runs with", () => {
 });
 
 describe("one deploy at a time", () => {
+  test("normal completion and a failed work promise restore the signal handlers", async () => {
+    const box = new FakeBox();
+    const signals = ["SIGINT", "SIGTERM"] as const;
+    const before = signals.map((signal) => process.listenerCount(signal));
+    await withLock(box.context(), async () => {
+      expect(signals.map((signal) => process.listenerCount(signal))).toEqual(before.map((count) => count + 1));
+    });
+    expect(signals.map((signal) => process.listenerCount(signal))).toEqual(before);
+    await expect(withLock(box.context(), async () => { throw new Error("stopped work"); })).rejects.toThrow("stopped work");
+    expect(signals.map((signal) => process.listenerCount(signal))).toEqual(before);
+    expect(existsSync(box.layout.lock)).toBe(false);
+  });
+
   test("a second run is refused while the first holds the lock, and the lock goes when it ends", async () => {
     const box = new FakeBox();
     const ctx = box.context();

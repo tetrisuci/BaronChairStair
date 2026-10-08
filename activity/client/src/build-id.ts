@@ -6,40 +6,24 @@
  * deploy a player goes on running the old page against the new server for as
  * long as they keep it open. The two halves are each built knowing their id:
  * this page has it compiled in (`__BUILD_ID__`, defined by `vite.config.ts`),
- * and the server reads the same build's `build.json` at boot and names it on
+ * and the server reads the served build's `build.json` and names it on
  * every response (`X-Build-Id`, read in `api.ts`). When they differ, the page
  * offers a reload; see `ui/update-chip.ts` for how quietly.
  *
- * Pure and importing nothing, so `vite.config.ts` can share {@link isBuildId}
- * with the page, and the site's bundle — which pulls `api.ts` in for its
+ * The name's validation lives in `shared/build-id.ts` so the server, Vite and
+ * the page agree. The site's bundle — which pulls `api.ts` in for its
  * `ApiError` — can load it without the define: the `typeof` guard below reads
  * a missing `__BUILD_ID__` as dev rather than throwing.
  */
+
+import { DEV_BUILD_ID, isBuildId } from "../../shared/build-id";
+export { DEV_BUILD_ID, isBuildId } from "../../shared/build-id";
 
 /**
  * Replaced with a string literal at build time; absent under `bun test`, the
  * site's build and anything else that does not define it.
  */
 declare const __BUILD_ID__: string | undefined;
-
-/**
- * What a build calls itself when it cannot say which it is: a dev server, a
- * test run, or a box with neither `BUILD_ID` set nor git to ask. It never
- * offers an update and is never offered one — a build that does not know what
- * it is cannot be out of date.
- */
-export const DEV_BUILD_ID = "dev";
-
-/**
- * A short commit hash, a tag, a release name. Narrow on purpose: the id is
- * written into a response header and compared with what comes back, so a
- * space, a newline or anything a proxy might rewrite is refused at both ends.
- */
-const BUILD_ID_SHAPE = /^[A-Za-z0-9._-]{1,64}$/;
-
-export function isBuildId(value: unknown): value is string {
-  return typeof value === "string" && BUILD_ID_SHAPE.test(value);
-}
 
 function compiledBuildId(): string {
   const compiled: unknown = typeof __BUILD_ID__ === "undefined" ? undefined : __BUILD_ID__;

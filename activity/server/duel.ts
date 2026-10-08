@@ -434,6 +434,18 @@ function discard(duel: Duel): void {
   }
 }
 
+/** Cancels a match without declaring a result, and releases every timer. */
+function cancel(duel: Duel): void {
+  if (duel.round?.timer) clearTimeout(duel.round.timer);
+  if (duel.rush?.timer) clearTimeout(duel.rush.timer);
+  if (duel.intermission) clearTimeout(duel.intermission);
+  duel.round = null;
+  duel.rush = null;
+  duel.intermission = null;
+  duel.phase = "over";
+  discard(duel);
+}
+
 /**
  * Takes the offer off the table and drops the duel.
  *
@@ -895,8 +907,8 @@ function releaseFinished(socket: ServerWebSocket<SocketData>, duel: Duel | undef
   socket.data.duelId = null;
 }
 
-/** A player left, on purpose or otherwise. */
-function depart(duel: Duel, playerId: string): void {
+/** A player left, by command or because their socket closed. */
+function depart(duel: Duel, playerId: string, cause: "leave" | "disconnect" = "leave"): void {
   if (duel.phase === "lobby") {
     duel.seats = duel.seats.filter((seat) => seat.player.id !== playerId);
     if (duel.seats.length === 0 || duel.hostId === playerId) {
@@ -914,6 +926,17 @@ function depart(duel: Duel, playerId: string): void {
     // player who left, so the one still here is never sat waiting on somebody
     // who is already gone.
     dropRematch(duel);
+    return;
+  }
+  if (cause === "disconnect" && goingAway === "handover") {
+    // The new listener cannot restore this process's match. A dropped socket
+    // during a drain is therefore a no contest, not a forfeit: send the other
+    // player to the new process without a result. An explicit leave still
+    // concedes the match, even while draining.
+    cancel(duel);
+    for (const remaining of duel.seats) {
+      if (remaining.socket) sendAway(remaining.socket, "handover");
+    }
     return;
   }
   // Mid-match, leaving hands the match to whoever stayed. A grace period for a
@@ -1002,7 +1025,7 @@ export const duelSocket = {
     const playerId = socket.data.session.player.id;
     if (socketsByPlayer.get(playerId) === socket) socketsByPlayer.delete(playerId);
     const duel = socket.data.duelId ? duels.get(socket.data.duelId) : undefined;
-    if (duel) depart(duel, playerId);
+    if (duel) depart(duel, playerId, "disconnect");
   },
 };
 
@@ -1104,8 +1127,10 @@ export function duelCounts(): { duelsInMatch: number; lobbies: number } {
 
 /**
  * The handover: every socket not in a match is closed with 1012 "handover",
- * every match is kept to its end, and none is played again here. A socket
- * that opens from now on is closed the same way as soon as it opens.
+ * every connected match is kept to its end, and none is played again here.
+ * A match whose socket drops is cancelled without a result, because a
+ * reconnect cannot return to this process. A socket that opens from now on
+ * is closed the same way as soon as it opens.
  *
  * Lobbies and finished matches are dropped from the registry *before* their
  * sockets close, quietly. Closing a host's socket with its lobby still
@@ -1135,12 +1160,7 @@ export function drainDuels(): void {
 export function closeEveryDuel(): void {
   goingAway = "restart";
   const sockets = [...socketsByPlayer.values()];
-  for (const duel of [...duels.values()]) {
-    if (duel.round?.timer) clearTimeout(duel.round.timer);
-    if (duel.rush?.timer) clearTimeout(duel.rush.timer);
-    if (duel.intermission) clearTimeout(duel.intermission);
-    discard(duel);
-  }
+  for (const duel of [...duels.values()]) cancel(duel);
   for (const socket of sockets) sendAway(socket, "restart");
 }
 

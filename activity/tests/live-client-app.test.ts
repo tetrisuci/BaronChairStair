@@ -145,14 +145,13 @@ describe("the rush hand-in", () => {
   });
 
   test("a retry that finds its own first attempt filed says it was filed", async () => {
-    // A ranked ticket is minted only while no rush is filed for the day, so a
-    // retry told `isFirst: false` is hearing about the attempt the restart
-    // swallowed — this player's run, filed once.
+    // The server knows the accepted ticket. Its retry still gets `isFirst:
+    // true`, so the page can show the exact receipt it got back.
     let attempts = 0;
     const booted = await boot((request) => {
       if (request.path !== "/api/rush/run") return reply(404, {});
       attempts += 1;
-      return attempts === 1 ? proxyDown() : reply(200, rushFiled(false));
+      return attempts === 1 ? proxyDown() : reply(200, rushFiled(true));
     });
     const inner = await startRush(booted);
 
@@ -161,6 +160,23 @@ describe("the rush hand-in", () => {
 
     expect(attempts).toBe(2);
     expect(rushNote(booted.root)).toBe("Filed for today.");
+  });
+
+  test("a retry whose first request never arrived respects another device's filed ticket", async () => {
+    let attempts = 0;
+    const booted = await boot((request) => {
+      if (request.path !== "/api/rush/run") return reply(404, {});
+      attempts += 1;
+      // The first request failed at the proxy. Another device files its ticket
+      // before this request is retried; this ticket is correctly not first.
+      return attempts === 1 ? proxyDown() : reply(200, rushFiled(false));
+    });
+    const inner = await startRush(booted);
+    inner.rush!.giveUp();
+    await settle();
+
+    expect(attempts).toBe(2);
+    expect(rushNote(booted.root)).toBe("Today's rush was already on the board, so this one was not filed.");
   });
 
   test("a first attempt told the rush was already filed still says so", async () => {

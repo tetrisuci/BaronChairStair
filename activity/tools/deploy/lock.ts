@@ -4,8 +4,9 @@
  * just started. The lock is a file created exclusively, holding the pid that
  * took it. An existing lock is never replaced automatically: two contenders
  * checking a dead holder could otherwise each remove the other's new lock.
- * After a run dies, the operator confirms that no deploy runs and removes its
- * lock by hand. Empty and malformed locks fail closed too.
+ * SIGINT and SIGTERM release this run's own lock before exiting, and report
+ * the saved switch state so the operator can finish it. An unhandled exit
+ * still needs manual recovery. Empty and malformed locks fail closed too.
  *
  * A dry run changes nothing, so it takes no lock.
  */
@@ -14,6 +15,7 @@ import { closeSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, unl
 import { dirname } from "node:path";
 import { DeployError } from "./errors";
 import type { Context } from "./host";
+import { loadState } from "./state";
 
 function holder(path: string): number | null {
   try {
@@ -65,10 +67,56 @@ export async function withLock<T>(ctx: Context, work: () => Promise<T>): Promise
     if ((error as NodeJS.ErrnoException).code === "EEXIST") throw existingLock(ctx, path);
     throw error;
   }
+  let released = false;
+  const cleanup = () => {
+    process.off("SIGINT", onInterrupt);
+    process.off("SIGTERM", onTerminate);
+    if (!released) {
+      released = true;
+      releaseLock(ctx, path, fd);
+    }
+  };
+  let interrupting = false;
+  const interrupted = async (signal: "SIGINT" | "SIGTERM") => {
+    if (interrupting) return;
+    interrupting = true;
+    try {
+      // A pm2, git or build command may already be changing something. Keep
+      // the lock until it finishes; the host holds its caller and accepts no
+      // more commands, so the switch cannot resume beneath this handler.
+      if (ctx.host.interrupt) {
+        ctx.host.out(`deploy: ${signal} requested; waiting for any active command before releasing the lock`);
+        await ctx.host.interrupt();
+      }
+      ctx.host.out(`deploy: interrupted by ${signal}. Last saved switch state: ${ctx.layout.state}`);
+      try {
+        const state = loadState(ctx);
+        ctx.host.out(
+          `game: ${state.game.release ?? "not switched"} (slot ${state.game.activeSlot ?? "none"}); ` +
+          `site: ${state.site.release ?? "not switched"}; bot: ${state.bot.release ?? "not switched"}`,
+        );
+      } catch {
+        ctx.host.out("The saved state could not be read; keep it and check it before continuing.");
+      }
+      ctx.host.out(
+        "Run bun run deploy status, then the same command to finish the interrupted switch. " +
+        "Keep state.json; tools/deploy/README.md, If a switch is interrupted, explains recovery.",
+      );
+    } finally {
+      // Releasing and returning to the pending work would allow two deploys
+      // to mutate the same apps. Exit synchronously: the old work never resumes.
+      cleanup();
+      process.exit(signal === "SIGINT" ? 130 : 143);
+    }
+  };
+  const onInterrupt = () => { void interrupted("SIGINT"); };
+  const onTerminate = () => { void interrupted("SIGTERM"); };
   try {
     writeSync(fd, String(process.pid));
+    process.on("SIGINT", onInterrupt);
+    process.on("SIGTERM", onTerminate);
     return await work();
   } finally {
-    releaseLock(ctx, path, fd);
+    cleanup();
   }
 }

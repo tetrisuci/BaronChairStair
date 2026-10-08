@@ -15,7 +15,11 @@
  */
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Window } from "happy-dom";
+import { Api } from "../client/src/api";
 import {
   CLIENT_BUILD_ID,
   DEV_BUILD_ID,
@@ -25,6 +29,9 @@ import {
   shouldOfferUpdate,
 } from "../client/src/build-id";
 import { createUpdateChip, createUpdateNotice, UPDATE_CHIP_TEXT } from "../client/src/ui/update-chip";
+import { BUILD_ID_REFRESH_MS, createBuildIdReader } from "../server/build-id";
+import { Lifecycle } from "../server/lifecycle";
+import { BUILD_ID_FILE, BUILD_ID_HEADER } from "../shared/runtime-status";
 
 describe("shouldOfferUpdate", () => {
   test("two known builds that differ are an update", () => {
@@ -54,7 +61,7 @@ describe("shouldOfferUpdate", () => {
 });
 
 describe("isBuildId", () => {
-  test.each(["a1b2c3d", "0fcedc3", "v1.2.3", "release_2026-10-07", "dev"])("%s is one", (value) => {
+  test.each(["a1b2c3d", "0fcedc3", "v1.2.3", "release_2026-10-07", "release+hotfix", "dev"])("%s is one", (value) => {
     expect(isBuildId(value)).toBe(true);
   });
 
@@ -154,6 +161,69 @@ describe("the chip", () => {
 });
 
 describe("the notice behind the chip", () => {
+  test("a manual rebuild offers the old page an update and leaves the new page current", async () => {
+    const build = mkdtempSync(join(tmpdir(), "update-offer-"));
+    const record = (buildId: string) => writeFileSync(join(build, BUILD_ID_FILE), JSON.stringify({ buildId }));
+    record("build-old");
+    let now = 0;
+    const servedBuildId = createBuildIdReader(build, "process-old", { now: () => now });
+    const lifecycle = new Lifecycle({
+      buildId: servedBuildId(),
+      servedBuildId,
+      port: 3001,
+      statusFile: null,
+      duels: { counts: () => ({ duelsInMatch: 0, lobbies: 0 }), drain() {}, closeAll() {} },
+      exit() {},
+      log: { log() {}, warn() {} },
+      flushMs: 0,
+    });
+    const replies: Response[] = [];
+    const fetch = async (): Promise<Response> => {
+      const reply = await lifecycle.handle(new Request("http://localhost/api/health"), undefined, () =>
+        Response.json(lifecycle.health()),
+      );
+      replies.push(reply.clone());
+      return reply;
+    };
+    const oldPage = new Api("", { fetch });
+    const oldNotice = createUpdateNotice({ clientBuild: "build-old", api: oldPage, playState: () => idle, reload() {} });
+    try {
+      await oldPage.daily();
+      expect(oldNotice.element.hidden).toBe(true);
+
+      // The same process now serves new files; no restart has happened.
+      record("build-new");
+      now += BUILD_ID_REFRESH_MS;
+      await oldPage.daily();
+      expect(oldNotice.element.hidden).toBe(false);
+
+      const newPage = new Api("", { fetch });
+      const newNotice = createUpdateNotice({ clientBuild: "build-new", api: newPage, playState: () => idle, reload() {} });
+      await newPage.daily();
+      expect(newNotice.element.hidden).toBe(true);
+      for (const reply of replies.slice(1)) {
+        expect(reply.headers.get(BUILD_ID_HEADER)).toBe("build-new");
+        expect(((await reply.json()) as { buildId: string }).buildId).toBe("build-new");
+      }
+      // A bundle rebuilt in place is not new server code. The deploy still
+      // needs the process's original identity in its status file.
+      expect(lifecycle.status().buildId).toBe("build-old");
+    } finally {
+      await lifecycle.stop();
+      rmSync(build, { recursive: true, force: true });
+    }
+  });
+
+  test("a plus in a build id reaches the client and offers an update", async () => {
+    const api = new Api("", {
+      fetch: async () => Response.json({}, { headers: { [BUILD_ID_HEADER]: "release+hotfix" } }),
+    });
+    const notice = createUpdateNotice({ clientBuild: "release", api, playState: () => idle, reload() {} });
+    await api.daily();
+    expect(api.serverBuild).toBe("release+hotfix");
+    expect(notice.element.hidden).toBe(false);
+  });
+
   /** An api that names builds when told to, the way responses arriving would. */
   function serverNaming(): { api: { onServerBuild(listener: (id: string) => void): () => void }; name(id: string): void } {
     const listeners = new Set<(id: string) => void>();

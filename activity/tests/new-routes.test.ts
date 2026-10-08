@@ -137,6 +137,13 @@ describe("the maker's own answer is gated too", () => {
 });
 
 describe("filing a practice clear", () => {
+  test.each([null, 42, {}, [], "", "with spaces", "a".repeat(129)].map((value) => [value]))("a malformed retry receipt %p is refused before replay", async (attemptId) => {
+    const id = await anArchivePuzzle();
+    const response = await post(`/api/puzzles/${id}/clear`, { attemptId, handling: DEFAULT_HANDLING, events: [] });
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toBe("Invalid clear attempt id");
+  });
+
   test("an empty log solves nothing and unlocks nothing", async () => {
     // The whole reason the route replays rather than believes: a client that
     // could name a puzzle id would fill its own record with puzzles it never

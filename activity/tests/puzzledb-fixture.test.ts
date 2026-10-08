@@ -87,6 +87,8 @@ const ALSO_NEVER_PUBLIC: Readonly<Record<string, readonly string[]>> = {
   submissions: ["reviewer_note", "events"],
   puzzle_override_log: ["was"],
   puzzle_solutions: ["canonical_key", "events", "found_at"],
+  puzzle_clear_attempts: ["attempt_id"],
+  rush_runs: ["ticket_id"],
 };
 
 /**

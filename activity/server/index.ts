@@ -8,6 +8,7 @@
  */
 
 import { Hono } from "hono";
+import { createHash } from "node:crypto";
 import type { Context } from "hono";
 import { HTTPException } from "hono/http-exception";
 import {
@@ -84,7 +85,7 @@ import {
   useArchive,
 } from "./duel";
 import { countSessions } from "./activity";
-import { readBuildId } from "./build-id";
+import { createBuildIdReader } from "./build-id";
 import { requireHandInDay } from "./hand-in-day";
 import { Lifecycle, serveWithLifecycle } from "./lifecycle";
 
@@ -122,8 +123,10 @@ const MAX_TOTAL_MS = 24 * 60 * MINUTE;
  * migrates and the archive loads — the part of a boot that takes time — rather
  * than nothing at all. Only the entrypoint writes one: see `config.statusFile`.
  */
+const servedBuildId = createBuildIdReader(config.paths.clientBuild, config.buildId);
 const lifecycle = new Lifecycle({
-  buildId: readBuildId(config.paths.clientBuild, config.buildId),
+  buildId: servedBuildId(),
+  servedBuildId,
   port: config.port,
   statusFile: import.meta.main ? config.statusFile : null,
   duels: { counts: duelCounts, drain: drainDuels, closeAll: closeEveryDuel },
@@ -286,7 +289,7 @@ app.get("/api/config", (c) =>
     clientId: config.discord.clientId,
     allowGuestPlay: config.allowGuestPlay,
     // The build this server hands out, for an open page to compare with its own.
-    buildId: lifecycle.buildId,
+    buildId: lifecycle.servedBuildId,
   }),
 );
 
@@ -431,6 +434,7 @@ app.post("/api/daily/run", requireSession, async (c) => {
       playerId: session.player.id,
       puzzleId: puzzle.id,
       durationMs: run.totalMs,
+      attemptId: `daily:${day}:${tier}`,
     });
   }
 
@@ -1012,6 +1016,14 @@ app.post("/api/puzzles/:id/clear", requireSession, async (c) => {
   }
 
   const body = await readJsonBody(c);
+  // Older bundles send no receipt and retain their separate-solve behaviour.
+  // A malformed receipt must fail loudly, rather than collapse unrelated
+  // solves into the same coerced string such as "[object Object]".
+  const attemptId = body.attemptId;
+  if (attemptId !== undefined &&
+      (typeof attemptId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(attemptId))) {
+    throw new HTTPException(400, { message: "Invalid clear attempt id" });
+  }
   const handling = sanitizeHandling(body.handling);
   const events = parseInputLog(body.events);
   const verified = verifyRun(
@@ -1029,6 +1041,7 @@ app.post("/api/puzzles/:id/clear", requireSession, async (c) => {
       playerId: session.player.id,
       puzzleId: puzzle.id,
       durationMs: verified.durationMs,
+      ...(attemptId === undefined ? {} : { attemptId: `practice:${attemptId}` }),
     });
   }
   // The line goes on record exactly as a daily run's does, and after the clear
@@ -1271,6 +1284,7 @@ app.post("/api/rush/start", requireSession, async (c) => {
     seed,
     ranked,
     startedAt: Date.now(),
+    attemptId: crypto.randomUUID(),
   };
   // A rush that may come back to be handed in for the next five minutes, which
   // a deploy has to wait for: the ticket is the only record that it exists.
@@ -1291,6 +1305,9 @@ app.post("/api/rush/run", requireSession, async (c) => {
   const body = await readJsonBody(c);
 
   const ticket = await readRushTicket(body.ticket);
+  // The exact signed ticket, including a nonce on new tickets. Hashing also
+  // keeps receipts bounded for an in-flight ticket from the previous build.
+  const ticketId = createHash("sha256").update(body.ticket as string).digest("hex");
   // A ticket is bound to whoever it was minted for; presenting somebody else's
   // would otherwise file a run under this session with that clock.
   if (ticket.playerId !== session.player.id) {
@@ -1371,6 +1388,7 @@ app.post("/api/rush/run", requireSession, async (c) => {
         playerId: session.player.id,
         puzzleId: puzzle.id,
         durationMs: segment.durationMs,
+        attemptId: `rush:${ticketId}`,
       });
     }
   });
@@ -1414,7 +1432,7 @@ app.post("/api/rush/run", requireSession, async (c) => {
 
   // Scored against the day the rush began, not the day it was handed in: a run
   // started at 23:59 belongs to the day the player started it.
-  const { run, isFirst } = store.recordRushRun(ticket.day, session.player, ticket.guildId, result);
+  const { run, isFirst } = store.recordRushRun(ticket.day, session.player, ticket.guildId, result, ticketId);
   return c.json({
     ranked: true,
     played,

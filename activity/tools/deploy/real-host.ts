@@ -100,8 +100,33 @@ export function readStatusFile(path: string): StatusReading {
 
 /** The box's host; every command it runs gets `path` ({@link searchPath}) as its PATH. */
 export function realHost(path: string): Host {
+  const pending = new Set<Promise<CommandResult>>();
+  let interrupted = false;
+  // The signal handler owns the exit. Holding a command's caller prevents
+  // the interrupted deploy from saving state or sending another command
+  // after its pending subprocess finishes.
+  const hold = () => new Promise<never>(() => {});
   return {
-    run: (command) => runCommand(command.argv, command.cwd, commandEnvironment(process.env, path, command.env)),
+    run: async (command) => {
+      if (interrupted) return hold();
+      const running = runCommand(command.argv, command.cwd, commandEnvironment(process.env, path, command.env));
+      pending.add(running);
+      let result: CommandResult;
+      try {
+        result = await running;
+      } finally {
+        pending.delete(running);
+      }
+      if (interrupted) return hold();
+      return result;
+    },
+    interrupt: async () => {
+      interrupted = true;
+      // Wait for the actual subprocess promises, not their held callers.
+      // No process is killed: pm2/git/build commands can finish their work
+      // while the interrupt handler still holds the deploy lock.
+      await Promise.allSettled([...pending]);
+    },
     clock: {
       now: () => Date.now(),
       sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),

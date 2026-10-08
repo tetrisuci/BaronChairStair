@@ -11,7 +11,8 @@ of the commands being handled, which `runtime_status.py` writes out for the
 deploy to read. And it owns the stop: on SIGTERM or SIGINT the bot refuses
 new commands with a one-line "restarting", lets the ones already running
 finish for up to `BOT_SHUTDOWN_GRACE_S`, closes its Discord connection, and
-exits 0. A second signal stops waiting.
+exits 0. A second signal at least two seconds later stops waiting; an immediate
+repeat is the same stop delivered twice.
 
 Not SIGUSR1 or SIGUSR2, which `activity/shared/runtime-status.ts` rules out
 for the whole repository, and not SIGHUP, which means "hand over" to the game
@@ -69,6 +70,10 @@ ABANDONED_AFTER_S = 15 * 60
 #: pm2's own stop sends SIGINT; systemd and `kill` send SIGTERM. Both mean
 #: "stop politely", as they do for the game (`SIGNALS.stop` in the contract).
 STOP_SIGNALS = (signal.SIGTERM, signal.SIGINT)
+
+#: A wrapper or process-group stop can deliver its signal twice. Like the
+#: game's STOP_REPEAT_WINDOW_MS, repeats within two seconds preserve the grace.
+STOP_REPEAT_WINDOW_S = 2.0
 
 
 def _now_ms() -> int:
@@ -249,15 +254,17 @@ async def stop_gracefully(
 
 
 class SignalStop:
-    """The first stop signal stops gracefully; the second stops waiting."""
+    """Stop gracefully; a repeat after two seconds stops waiting."""
 
     def __init__(self, lifecycle: Lifecycle, close: Callable[[], Awaitable[object]],
-                 grace_s: float):
+                 grace_s: float, *, monotonic: Callable[[], float] = time.monotonic):
         self._lifecycle = lifecycle
         self._close = close
         self._grace_s = grace_s
         self._hurry = asyncio.Event()
         self._task: asyncio.Task | None = None
+        self._monotonic = monotonic
+        self._stop_at: float | None = None
 
     @property
     def requested(self) -> bool:
@@ -266,11 +273,18 @@ class SignalStop:
     def handle(self, signame: str) -> None:
         """Called on the event loop, from `loop.add_signal_handler`."""
         if self._task is None:
+            self._stop_at = self._monotonic()
             print(f"{signame}: stopping; new commands are told to try again",
                   file=sys.stderr)
             self._task = asyncio.get_running_loop().create_task(
                 stop_gracefully(self._lifecycle, self._close, self._grace_s, self._hurry),
                 name="graceful-stop")
+            return
+        assert self._stop_at is not None
+        since = self._monotonic() - self._stop_at
+        if since < STOP_REPEAT_WINDOW_S:
+            print(f"{signame}: the same stop again after {since:g}s; still waiting",
+                  file=sys.stderr)
             return
         print(f"{signame} again: closing now", file=sys.stderr)
         self._hurry.set()
