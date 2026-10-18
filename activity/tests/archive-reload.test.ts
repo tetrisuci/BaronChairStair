@@ -17,10 +17,10 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { publishArchive, upsertArchive } from "../server/archive-rows";
+import { contentHash, publishArchive, upsertArchive } from "../server/archive-rows";
 import { reloadInPlace } from "../server/archive-reload";
 import { Store } from "../server/db";
-import { PuzzleArchive } from "../server/puzzles";
+import { PuzzleArchive, shapeKey } from "../server/puzzles";
 import { DaySchedule, pastDaysOf } from "../server/schedule";
 import { DAILY_TIERS, dailyTierOf, type DailyTier } from "../shared/daily";
 import type { Puzzle } from "../shared/puzzle";
@@ -148,6 +148,29 @@ describe("a published puzzle", () => {
     reload();
 
     expect(archive.get(5003)).toBeUndefined();
+  });
+
+  test("does not duplicate a held maker answer in previous-version history", () => {
+    const original = fresh(5006, "medium", {
+      solution: [
+        { piece: "T", cells: [[0, 0], [1, 0], [2, 0], [1, 1]], clear: "tsd", attack: 4 },
+      ],
+    });
+    publish(original);
+    reload();
+
+    const oldHash = contentHash(original);
+    const oldShape = shapeKey(original);
+    expect(store.solutionGallery(original.id, oldShape)).toHaveLength(1);
+
+    // The reload keeps the old board in memory until restart, while the sync
+    // has already voided rows for the newly written archive content.
+    publish({ ...original, queue: ["I"] });
+    const result = reload();
+
+    expect(result.held).toEqual([original.id]);
+    expect(store.historicalGallery(original.id, oldHash)).toHaveLength(1);
+    expect(store.solutionGallery(original.id, oldShape)).toHaveLength(1);
   });
 });
 

@@ -846,6 +846,7 @@ export interface AlternateLine {
 /** The columns selected by both current and historical gallery queries. */
 interface GalleryRow {
   readonly solution_id: number;
+  readonly canonical_key: string;
   readonly placements: string;
   readonly attack: number;
   readonly clears: string;
@@ -1859,7 +1860,7 @@ export class Store {
   solutionGallery(puzzleId: number, currentShape?: string): GalleryLine[] {
     const versioned = currentShape !== undefined;
     const sql =
-      `SELECT s.solution_id, s.placements, s.attack, s.clears, s.source, s.found_at,
+      `SELECT s.solution_id, s.canonical_key, s.placements, s.attack, s.clears, s.source, s.found_at,
               s.solved_strict, s.found_by AS finder_id, p.username, p.avatar_url
          FROM puzzle_solutions s
          LEFT JOIN players p ON p.id = s.found_by
@@ -1893,15 +1894,28 @@ export class Store {
   }
 
   historicalGallery(puzzleId: number, versionHash: string): GalleryLine[] {
-    return this.db
+    const rows = this.db
       .query<GalleryRow, [number, string]>(
-        `SELECT s.solution_id, s.placements, s.attack, s.clears, s.source, s.found_at,
+        `SELECT s.solution_id, s.canonical_key, s.placements, s.attack, s.clears, s.source, s.found_at,
                 s.solved_strict, s.found_by AS finder_id, p.username, p.avatar_url
            FROM puzzle_solutions s LEFT JOIN players p ON p.id = s.found_by
           WHERE s.puzzle_id = ?1 AND s.content_hash = ?2 AND s.source IN ('reference', 'player')
           ORDER BY s.source = 'reference' DESC, s.found_at ASC, s.solution_id ASC`,
       )
-      .all(puzzleId, versionHash)
+      .all(puzzleId, versionHash);
+
+    // A live reload can void a row for an edit and immediately reseed the
+    // same reference line while the old puzzle is still being served. Keep
+    // the oldest row for each source/fingerprint in a historical version so
+    // that transition bookkeeping cannot show one solution twice.
+    const seen = new Set<string>();
+    return rows
+      .filter((row) => {
+        const identity = `${row.source}\u0000${row.canonical_key}`;
+        if (seen.has(identity)) return false;
+        seen.add(identity);
+        return true;
+      })
       .map((row) => ({
         solutionId: row.solution_id,
         placements: JSON.parse(row.placements) as SolutionStep[],
