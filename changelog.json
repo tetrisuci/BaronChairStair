@@ -2,6 +2,12 @@
   "$comment": "The project's version and its player-facing release notes. Newest first; order in this list IS the version order. Read by client/changelog.py for /puzzle changelog, requested privately. Adding a release means putting it at the top. Keep `changes` to things a player can see.",
   "releases": [
     {
+      "version": "beta 0.25",
+      "changes": [
+        "**Updated puzzles now keep their old solutions in a Previous versions menu.** Current galleries show only lines for the active board, while archived versions remain readable with their original queue and maker answer."
+      ]
+    },
+    {
       "version": "beta 0.24",
       "changes": [
         "**A dropped duel connection during a server handover now ends the match without a winner.** The other player is told the server is updating. Using the Leave command still forfeits the match.",
