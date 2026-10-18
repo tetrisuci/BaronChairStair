@@ -332,6 +332,8 @@ describe("the sheet-level selection model", () => {
 describe("the gesture marker's lifecycle", () => {
   /** The slice of App these transitions touch; everything else faked. */
   interface LifecycleApp {
+    solutionRequest: number;
+    pointerPlay: { reset(): void; dispose(): void };
     deck: HTMLElement;
     stage: HTMLElement;
     credits: { update: (entry: unknown) => void };
@@ -367,6 +369,8 @@ describe("the gesture marker's lifecycle", () => {
 
   function lifecycleApp(): LifecycleApp {
     const app = Object.create(App.prototype) as unknown as LifecycleApp;
+    app.solutionRequest = 0;
+    app.pointerPlay = { reset() {}, dispose() {} };
     app.deck = document.createElement("div");
     app.stage = document.createElement("div");
     app.credits = { update: () => {} };
