@@ -10,9 +10,10 @@
  * **What is kept.** A board row survives only on a day the site shows, and in
  * a tier that day was dealt (`tiersShownOn`); a day board marks a tier it was
  * not dealt as NULL. A puzzle a player wrote keeps its row and loses its id
- * while such puzzles are withheld, as the day itself does. Stats, lines and a
- * shown player's cleared list are kept only for a puzzle the site lists, so a
- * list can be shorter than its count. Discovery counts are kept whole, as
+ * while such puzzles are withheld, as the day itself does. Stats and a shown
+ * player's cleared list are kept only for a puzzle the site lists, while lines
+ * also have to match that puzzle's current shape. A list can be shorter than
+ * its count. Discovery counts are kept whole, as
  * the game counts them — any puzzle, voided lines included — so the site's
  * Discoveries board agrees with the game's, and can add up to more lines than
  * the site shows.
@@ -78,6 +79,8 @@ export interface PlayerScope {
   readonly days: ReadonlySet<number>;
   /** The puzzles the site lists. */
   readonly listed: ReadonlySet<number>;
+  /** Current board shape by puzzle id, so stale lines cannot be published. */
+  readonly shapes?: ReadonlyMap<number, string>;
 }
 
 /** Every player table's rows for one snapshot. Throws when a guard finds what SQL should have stopped. */
@@ -100,7 +103,7 @@ export function playerRows(snapshot: PlayerSnapshot, scope: PlayerScope): Player
     rushBoards,
     standings,
     puzzleStats: statsRows(runs, scope.listed),
-    lines: lineRows(snapshot.lines, scope.listed),
+    lines: lineRows(snapshot.lines, scope.listed, scope.shapes),
   };
 }
 
@@ -309,10 +312,19 @@ export function medianOf(sorted: readonly number[]): number | null {
 }
 
 /** Each listed puzzle's lines, numbered in the order the snapshot read them. */
-function lineRows(lines: readonly SnapshotLine[], listed: ReadonlySet<number>): LineRow[] {
+function lineRows(
+  lines: readonly SnapshotLine[],
+  listed: ReadonlySet<number>,
+  shapes?: ReadonlyMap<number, string>,
+): LineRow[] {
   const positions = new Map<number, number>();
   return lines
-    .filter((line) => listed.has(line.puzzleId))
+    .filter(
+      (line) =>
+        listed.has(line.puzzleId) &&
+        (line.puzzleShape === undefined ||
+          (line.puzzleShape !== null && shapes !== undefined && line.puzzleShape === shapes.get(line.puzzleId))),
+    )
     .map((line): LineRow => {
       const position = (positions.get(line.puzzleId) ?? 0) + 1;
       positions.set(line.puzzleId, position);

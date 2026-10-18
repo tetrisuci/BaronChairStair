@@ -528,10 +528,12 @@ app.get("/api/profile/:id?", requireSession, (c) => {
   // themselves — the same gate `/api/puzzles/:id/solutions` enforces, asked
   // here so the row can say so instead of failing when it is clicked.
   const mine = store.clearedPuzzleIds(session.player.id);
+  const currentShapes = new Map(archive.puzzles.map((puzzle) => [puzzle.id, shapeKey(puzzle)]));
   const found = profileLines(
     store.discoveriesBy(id),
     (puzzleId) => archive.get(puzzleId)?.title ?? null,
     mine,
+    (puzzleId) => currentShapes.get(puzzleId),
   );
 
   return c.json({
@@ -946,7 +948,7 @@ app.get("/api/archive", requireSession, (c) => {
 app.get("/api/alternates", requireSession, (c) => {
   const session = c.get("session");
   const alternates = alternateRows(
-    store.liveAlternates(),
+    store.liveAlternates(new Map(archive.puzzles.map((puzzle) => [puzzle.id, shapeKey(puzzle)]))),
     (puzzleId) => archive.get(puzzleId) ?? null,
     (puzzleId) => maySeeSolution(session, puzzleId),
     store.clearedPuzzleIds(session.player.id),

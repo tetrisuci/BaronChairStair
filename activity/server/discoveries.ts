@@ -271,6 +271,7 @@ export interface ProfileLine {
 export function profileLines(
   rows: readonly {
     puzzleId: number;
+    puzzleShape?: string | null;
     attack: number;
     clears: ClearName[];
     foundAt: number;
@@ -278,10 +279,14 @@ export function profileLines(
   }[],
   titleOf: (puzzleId: number) => string | null,
   cleared: ReadonlySet<number>,
+  activeShapeOf?: (puzzleId: number) => string | undefined,
 ): ProfileLine[] {
   return rows.map((row) => {
     const title = titleOf(row.puzzleId);
-    const openable = !row.voided && title !== null && cleared.has(row.puzzleId);
+    const shapeMatches =
+      activeShapeOf === undefined ||
+      (row.puzzleShape !== undefined && row.puzzleShape !== null && row.puzzleShape === activeShapeOf(row.puzzleId));
+    const openable = !row.voided && title !== null && cleared.has(row.puzzleId) && shapeMatches;
     return {
       puzzleId: row.puzzleId,
       title: title ?? "",

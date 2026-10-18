@@ -26,6 +26,7 @@ import {
   upsertArchive,
 } from "../server/archive-rows";
 import { Store } from "../server/db";
+import { seedReferenceSolutions } from "../server/discoveries";
 import { shapeKey } from "../server/puzzles";
 import { COMMUNITY_ID_BASE, type ClearRequirement, type Puzzle } from "../shared/puzzle";
 
@@ -228,6 +229,43 @@ describe("discovered solutions, when content is edited", () => {
       voided_at: NOW + 1,
     });
     expect(store.historicalGallery(1, contentHash(puzzle()))).toHaveLength(2);
+  });
+
+  test("keeps a published maker answer for the previous-version gallery", () => {
+    const original = puzzle();
+    store.recordSolution({
+      puzzleId: original.id,
+      canonicalKey: "reference-old",
+      keyVersion: 1,
+      placements: original.solution!,
+      events: null,
+      handling: null,
+      attack: 4,
+      targetAttack: original.targetAttack,
+      clears: ["tsd"],
+      solvedStrict: true,
+      source: "reference",
+      foundBy: null,
+      guildId: null,
+      contentHash: contentHash(original),
+      puzzleShape: shapeKey(original),
+    });
+
+    upsertArchive(db, puzzle({ queue: ["S", "Z", "L"] }), NOW + 1);
+
+    // The new answer is what the next boot seeds. The old row was voided by
+    // the published edit and must remain available to the history route.
+    const edited = puzzle({ queue: ["S", "Z", "L"] });
+    seedReferenceSolutions(store, [edited]);
+
+    const references = db
+      .query<{ content_hash: string; voided_at: number | null }, []>(
+        "SELECT content_hash, voided_at FROM puzzle_solutions WHERE source = 'reference' ORDER BY solution_id",
+      )
+      .all();
+    expect(references).toHaveLength(2);
+    expect(references[0]).toEqual({ content_hash: contentHash(original), voided_at: NOW + 1 });
+    expect(store.historicalGallery(1, contentHash(original))).toHaveLength(3);
   });
 
   test("the next player to find one of those lines is credited for it", () => {

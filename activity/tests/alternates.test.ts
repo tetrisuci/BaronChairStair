@@ -97,6 +97,14 @@ describe("which lines are alternates", () => {
     expect(store.liveAlternates()).toEqual([]);
   });
 
+  test("the cross-puzzle list excludes rows from another or unknown shape", () => {
+    store.recordSolution(line({ canonicalKey: "legacy" }));
+    store.recordSolution(line({ canonicalKey: "old", contentHash: "old", puzzleShape: "old" }));
+    store.recordSolution(line({ canonicalKey: "current", contentHash: "current", puzzleShape: "current" }));
+
+    expect(store.liveAlternates(new Map([[93, "current"]])).map((row) => row.solutionId)).toEqual([3]);
+  });
+
   test("every puzzle's lines, newest first", () => {
     store.recordSolution(line({ canonicalKey: "a", puzzleId: 93 }));
     store.recordSolution(line({ canonicalKey: "b", puzzleId: 94, foundBy: "bo" }));

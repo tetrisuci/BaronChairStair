@@ -510,6 +510,24 @@ describe("the alternates body", () => {
   test("is an empty list, not a missing body, before anybody has found a line", () => {
     expect(body<SiteAlternatesBody>(build({}), "/data/alternates.json").lines).toEqual([]);
   });
+
+  test("keeps only lines filed against the puzzle's current shape", () => {
+    const line = (puzzleShape: string | null) => ({
+      puzzleId: 6,
+      puzzleShape,
+      day: YESTERDAY,
+      attack: 4,
+      clears: ["tsd"] as ClearName[],
+      steps: [step],
+    });
+    const rows = playerRows(
+      { ...EMPTY, lines: [line("old-shape"), line(null), line("current-shape")] },
+      { policy: POLICY, days: new Set(), listed: new Set([6]), shapes: new Map([[6, "current-shape"]]) },
+    );
+
+    expect(rows.lines.map((row) => row[0])).toEqual([6]);
+    expect(rows.lines[0]?.[1]).toBe(1);
+  });
 });
 
 describe("the puzzles each player cleared", () => {

@@ -222,6 +222,17 @@ describe("what a profile may say about a line", () => {
     expect(line!.attack).toBeNull();
   });
 
+  test("a line from an older shape is shut even when the reader solved the puzzle", () => {
+    const [line] = profileLines(
+      [row({ puzzleShape: "old-shape" })],
+      titles,
+      new Set([92]),
+      () => "current-shape",
+    );
+    expect(line!.openable).toBe(false);
+    expect(line!.attack).toBeNull();
+  });
+
   test("and so is one on a puzzle this box does not have", () => {
     const [line] = profileLines([row({ puzzleId: 999 })], titles, new Set([999]));
     expect(line!.openable).toBe(false);

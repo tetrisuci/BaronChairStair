@@ -1491,6 +1491,7 @@ export class Store {
    */
   discoveriesBy(playerId: string, limit = 25): {
     puzzleId: number;
+    puzzleShape: string | null;
     attack: number;
     clears: ClearName[];
     foundAt: number;
@@ -1498,10 +1499,10 @@ export class Store {
   }[] {
     return this.db
       .query<
-        { puzzle_id: number; attack: number; clears: string; found_at: number; voided: number },
+        { puzzle_id: number; puzzle_shape: string | null; attack: number; clears: string; found_at: number; voided: number },
         [string, number]
       >(
-        `SELECT s.puzzle_id, s.attack, s.clears, s.found_at,
+        `SELECT s.puzzle_id, s.puzzle_shape, s.attack, s.clears, s.found_at,
                 CASE WHEN s.voided_at IS NULL THEN 0 ELSE 1 END AS voided
            FROM puzzle_solutions s
           WHERE ${CREDITED} AND s.found_by = ?1
@@ -1511,6 +1512,7 @@ export class Store {
       .all(playerId, limit)
       .map((row) => ({
         puzzleId: row.puzzle_id,
+        puzzleShape: row.puzzle_shape,
         attack: row.attack,
         clears: JSON.parse(row.clears) as ClearName[],
         foundAt: row.found_at,
@@ -1605,7 +1607,7 @@ export class Store {
     return this.db
       .query(
         `DELETE FROM puzzle_solutions
-          WHERE puzzle_id = ?1 AND source = 'reference' AND canonical_key <> ?2`,
+          WHERE puzzle_id = ?1 AND source = 'reference' AND voided_at IS NULL AND canonical_key <> ?2`,
       )
       .run(puzzleId, keep).changes;
   }
@@ -1945,18 +1947,20 @@ export class Store {
    * the number printed beside a row that opens that gallery — a count that
    * disagrees with what the gallery then shows is worse than no count.
    */
-  galleryCounts(): Map<number, number> {
-    return new Map(
-      this.db
-        .query<{ puzzle_id: number; n: number }, []>(
-          `SELECT puzzle_id, COUNT(*) AS n
-             FROM puzzle_solutions s
-            WHERE s.${LIVE} AND s.source IN ('reference', 'player')
-            GROUP BY puzzle_id`,
-        )
-        .all()
-        .map((row) => [row.puzzle_id, row.n] as const),
-    );
+  galleryCounts(currentShapes?: ReadonlyMap<number, string>): Map<number, number> {
+    const rows = this.db
+      .query<{ puzzle_id: number; puzzle_shape: string | null }, []>(
+        `SELECT puzzle_id, puzzle_shape
+           FROM puzzle_solutions s
+          WHERE s.${LIVE} AND s.source IN ('reference', 'player')`,
+      )
+      .all();
+    const counts = new Map<number, number>();
+    for (const row of rows) {
+      if (currentShapes !== undefined && row.puzzle_shape !== currentShapes.get(row.puzzle_id)) continue;
+      counts.set(row.puzzle_id, (counts.get(row.puzzle_id) ?? 0) + 1);
+    }
+    return counts;
   }
 
   /**
@@ -1978,7 +1982,7 @@ export class Store {
    * `json_array_length` counts the pieces where the placements already are,
    * so the JSON is neither parsed here nor sent.
    */
-  liveAlternates(): AlternateLine[] {
+  liveAlternates(currentShapes?: ReadonlyMap<number, string>): AlternateLine[] {
     return this.db
       .query<
         {
@@ -1991,18 +1995,20 @@ export class Store {
           finder_id: string | null;
           username: string | null;
           avatar_url: string | null;
+          puzzle_shape: string | null;
         },
         []
       >(
         `SELECT s.solution_id, s.puzzle_id, s.found_at, s.attack, s.clears,
                 json_array_length(s.placements) AS pieces,
-                s.found_by AS finder_id, p.username, p.avatar_url
+                s.found_by AS finder_id, p.username, p.avatar_url, s.puzzle_shape
            FROM puzzle_solutions s
            LEFT JOIN players p ON p.id = s.found_by
           WHERE ${CREDITED} AND s.${LIVE}
           ORDER BY s.found_at DESC, s.solution_id DESC`,
       )
       .all()
+      .filter((row) => currentShapes === undefined || row.puzzle_shape === currentShapes.get(row.puzzle_id))
       .map((row) => ({
         solutionId: row.solution_id,
         puzzleId: row.puzzle_id,

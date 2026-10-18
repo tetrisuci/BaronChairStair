@@ -22,6 +22,8 @@ import { DEFAULT_HANDLING } from "../shared/tetris/handling";
 // `server/db.ts` does not load `server/config.ts`, so importing it before
 // `beforeAll` has set the environment cannot point the app at another file.
 import { Store, type NewSolution } from "../server/db";
+import { contentHash } from "../server/archive-rows";
+import { shapeKey } from "../server/puzzles";
 import type { SolutionStep } from "../shared/puzzle";
 
 const DB = join(tmpdir(), `puzzle-routes-${process.pid}.sqlite`);
@@ -294,11 +296,14 @@ describe("the alternate solutions list", () => {
     { piece: "T", cells: [[3, 0], [4, 0], [5, 0], [4, 1]], clear: null, attack: 0 },
   ];
   const filed = (store: Store, over: Partial<NewSolution>): number => {
+    const puzzle = archive.find((entry) => entry.id === (over.puzzleId ?? 0));
     const { solutionId } = store.recordSolution({
       puzzleId: 0, canonicalKey: "", keyVersion: 1,
       placements, events: null, handling: null,
       attack: 999, targetAttack: 999, clears: [], solvedStrict: true,
       source: "player", foundBy: FINDER.id, guildId: null, ...over,
+      contentHash: puzzle ? contentHash(puzzle) : undefined,
+      puzzleShape: puzzle ? shapeKey(puzzle) : undefined,
     });
     if (solutionId === null) throw new Error(`could not seed ${over.canonicalKey}`);
     return solutionId;

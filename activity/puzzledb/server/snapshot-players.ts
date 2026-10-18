@@ -356,6 +356,7 @@ function counted(db: Database, bounds: Bounds, sql: string): SnapshotCount[] {
 
 interface LineCells {
   puzzleId: number;
+  puzzleShape: string | null;
   day: number;
   placements: string;
   attack: number;
@@ -373,20 +374,26 @@ interface LineCells {
 function lines(db: Database, bounds: Bounds): SnapshotLine[] {
   return db
     .query<LineCells, Bounds>(
-      `SELECT s.puzzle_id AS puzzleId, ${LINE_DAY} AS day, s.placements AS placements,
+      `SELECT s.puzzle_id AS puzzleId, s.puzzle_shape AS puzzleShape, ${LINE_DAY} AS day, s.placements AS placements,
               s.attack AS attack, s.clears AS clears
          FROM puzzle_solutions s
         WHERE ${CREDITED} AND s.${LIVE} AND s.found_at < $cutStart
         ORDER BY s.puzzle_id, day, s.solution_id`,
     )
     .all(bounds)
-    .map((row) => ({
-      puzzleId: row.puzzleId,
-      day: row.day,
-      attack: row.attack,
-      clears: knownClears(JSON.parse(row.clears), row.puzzleId),
-      steps: reprojected(row.placements, row.puzzleId),
-    }));
+    .map((row) => {
+      const line = {
+        puzzleId: row.puzzleId,
+        day: row.day,
+        attack: row.attack,
+        clears: knownClears(JSON.parse(row.clears), row.puzzleId),
+        steps: reprojected(row.placements, row.puzzleId),
+      } as SnapshotLine;
+      // Keep version identity available to the dataset builder without adding
+      // it to the public snapshot shape or serialized line data.
+      Object.defineProperty(line, "puzzleShape", { value: row.puzzleShape, enumerable: false });
+      return line;
+    });
 }
 
 function servers(db: Database, bounds: Bounds): SnapshotServer[] {

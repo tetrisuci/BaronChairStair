@@ -58,6 +58,7 @@ import {
   voidDiscoveries,
 } from "../server/archive-rows";
 import { type PlayerProfile, Store } from "../server/db";
+import { shapeKey } from "../server/puzzles";
 import { writeOverride } from "../server/puzzle-overrides";
 import {
   acceptSubmission,
@@ -342,6 +343,12 @@ export const DEFAULT_PINS: readonly DayPin[] = Object.freeze([
 
 const COMMITTED_PUZZLES = resolve(import.meta.dir, "../data/puzzles.json");
 const TRACKED_ARCHIVE = resolve(import.meta.dir, "../data/archive/puzzles.sqlite");
+const COMMITTED_SHAPES = new Map(
+  (JSON.parse(readFileSync(COMMITTED_PUZZLES, "utf8")) as { puzzles: Puzzle[] }).puzzles.map((puzzle) => [
+    puzzle.id,
+    shapeKey(puzzle),
+  ]),
+);
 
 /**
  * Throws, at import, if the policy or the data has moved under the cases above.
@@ -597,6 +604,7 @@ function plantLines(store: Store, cast: Cast): void {
       source: player === null ? "enumerated" : "player",
       foundBy: player?.id ?? null,
       guildId: player === null ? null : GUILD_ID,
+      puzzleShape: COMMITTED_SHAPES.get(line.puzzleId),
     });
   }
 }
