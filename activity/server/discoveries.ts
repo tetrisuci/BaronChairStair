@@ -17,6 +17,8 @@
 
 import type { Store } from "./db";
 import { SOLUTION_KEY_VERSION, solutionFingerprint } from "../shared/solution-key";
+import { contentHash } from "./archive-rows";
+import { shapeKey } from "./puzzles";
 import type { ClearName } from "../shared/puzzle";
 import {
   countsAsAlternate,
@@ -85,6 +87,9 @@ export function seedReferenceSolutions(
   let skipped = 0;
 
   for (const puzzle of puzzles) {
+    const versionHash = contentHash(puzzle);
+    const versionShape = shapeKey(puzzle);
+    store.stampMissingSolutionVersions(puzzle.id, versionHash, versionShape);
     const answer = puzzle.solution;
     if (!answer?.length) {
       skipped += 1;
@@ -122,7 +127,10 @@ export function seedReferenceSolutions(
         source: "reference",
         foundBy: null,
         guildId: null,
+        contentHash: versionHash,
+        puzzleShape: versionShape,
       });
+      store.stampSolutionVersion(puzzle.id, key, versionHash, versionShape);
       if (discovered) seeded += 1;
       // After the insert, never before: a delete that ran first would leave the
       // puzzle with no reference at all if the insert then threw.
@@ -209,6 +217,8 @@ export function recordDiscovery(
       source: "player",
       foundBy: finder.playerId,
       guildId: finder.guildId,
+      contentHash: contentHash(puzzle),
+      puzzleShape: shapeKey(puzzle),
     }).discovered;
   } catch (error) {
     console.error(
@@ -218,7 +228,10 @@ export function recordDiscovery(
   }
 
   try {
-    return { isNew: discovered && credited, known: store.countSolutions(puzzle.id) };
+    return {
+      isNew: discovered && credited,
+      known: store.countSolutions(puzzle.id, shapeKey(puzzle)),
+    };
   } catch (error) {
     // The row is written; only the count failed. Say what is true rather than
     // discarding a discovery that happened.
@@ -258,6 +271,7 @@ export interface ProfileLine {
 export function profileLines(
   rows: readonly {
     puzzleId: number;
+    puzzleShape?: string | null;
     attack: number;
     clears: ClearName[];
     foundAt: number;
@@ -265,10 +279,14 @@ export function profileLines(
   }[],
   titleOf: (puzzleId: number) => string | null,
   cleared: ReadonlySet<number>,
+  activeShapeOf?: (puzzleId: number) => string | undefined,
 ): ProfileLine[] {
   return rows.map((row) => {
     const title = titleOf(row.puzzleId);
-    const openable = !row.voided && title !== null && cleared.has(row.puzzleId);
+    const shapeMatches =
+      activeShapeOf === undefined ||
+      (row.puzzleShape !== undefined && row.puzzleShape !== null && row.puzzleShape === activeShapeOf(row.puzzleId));
+    const openable = !row.voided && title !== null && cleared.has(row.puzzleId) && shapeMatches;
     return {
       puzzleId: row.puzzleId,
       title: title ?? "",

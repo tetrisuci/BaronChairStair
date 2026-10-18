@@ -111,6 +111,7 @@ function harness() {
           return requests.get(id)!.puzzle.promise;
         },
         puzzleSolutions: (id: number) => requests.get(id)!.gallery.promise,
+        puzzleHistory: async () => ({ versions: [] }),
       },
     },
     badge: { hide() {} }, input: { setGameInputEnabled() {} }, credits: { update() {} },

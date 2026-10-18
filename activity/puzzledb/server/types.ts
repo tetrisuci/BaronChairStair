@@ -120,6 +120,8 @@ export interface SnapshotClear extends SnapshotPlayer {
  */
 export interface SnapshotLine {
   readonly puzzleId: number;
+  /** The board shape this line was filed against; absent only in hand-built snapshots. */
+  readonly puzzleShape?: string | null;
   /** The game's day it was filed on, worked out in SQL from a time that never leaves it. */
   readonly day: number;
   readonly attack: number;

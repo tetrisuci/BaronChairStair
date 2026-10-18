@@ -66,6 +66,40 @@ describe("what the gallery holds", () => {
     expect(gallery[0]!.finder).toBeNull();
   });
 
+  test("the current version excludes old and retired rows, while history keeps them", () => {
+    store.recordSolution(
+      line({ canonicalKey: "old", contentHash: "old-hash", puzzleShape: "old-shape" }),
+    );
+    store.recordSolution(
+      line({ canonicalKey: "retired", contentHash: "new-hash", puzzleShape: "new-shape" }),
+    );
+    store.recordSolution(
+      line({ canonicalKey: "current", contentHash: "new-hash", puzzleShape: "new-shape" }),
+    );
+    store.archiveReader.run(
+      "UPDATE puzzle_solutions SET voided_at = 10 WHERE canonical_key IN ('old', 'retired')",
+    );
+
+    expect(store.solutionGallery(93, "new-shape").map((row) => row.solutionId)).toEqual([3]);
+    expect(store.historicalGallery(93, "old-hash").map((row) => row.solutionId)).toEqual([1]);
+  });
+
+  test("a retired row with the current shape stays out of current reads", () => {
+    store.recordSolution(
+      line({ canonicalKey: "retired-same-shape", contentHash: "same-hash", puzzleShape: "same-shape" }),
+    );
+    store.recordSolution(
+      line({ canonicalKey: "current-same-shape", contentHash: "same-hash", puzzleShape: "same-shape" }),
+    );
+    store.archiveReader.run(
+      "UPDATE puzzle_solutions SET voided_at = 10 WHERE canonical_key = 'retired-same-shape'",
+    );
+
+    expect(store.solutionGallery(93, "same-shape").map((row) => row.solutionId)).toEqual([2]);
+    expect(store.solutionsFor(93, "same-shape").map((row) => row.solutionId)).toEqual([2]);
+    expect(store.countSolutions(93, "same-shape")).toBe(1);
+  });
+
   test("finders arrive named, and in the order they found things", () => {
     store.recordSolution(line({ canonicalKey: "a", foundBy: "ada" }));
     store.recordSolution(line({ canonicalKey: "b", foundBy: "bo" }));
@@ -184,6 +218,17 @@ describe("what a profile may say about a line", () => {
   test("a voided line is shut even to somebody who solved that puzzle", () => {
     // The board it describes no longer exists, so there is nothing to step.
     const [line] = profileLines([row({ voided: true })], titles, new Set([92]));
+    expect(line!.openable).toBe(false);
+    expect(line!.attack).toBeNull();
+  });
+
+  test("a line from an older shape is shut even when the reader solved the puzzle", () => {
+    const [line] = profileLines(
+      [row({ puzzleShape: "old-shape" })],
+      titles,
+      new Set([92]),
+      () => "current-shape",
+    );
     expect(line!.openable).toBe(false);
     expect(line!.attack).toBeNull();
   });

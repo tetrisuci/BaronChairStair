@@ -97,6 +97,7 @@ const READ_COLUMNS: Readonly<Record<string, readonly string[]>> = {
     "found_by",
     "found_at",
     "voided_at",
+    "puzzle_shape",
   ],
   guilds: ["guild_id", "public_key", "name"],
   site_facts: ["name", "value"],

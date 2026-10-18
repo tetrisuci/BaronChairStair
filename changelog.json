@@ -4,7 +4,8 @@
     {
       "version": "beta 0.25",
       "changes": [
-        "**Board touch controls recover cleanly when a gesture is interrupted.** If the app loses a finger mid-drag or is backgrounded, the piece and touch state reset; the next tap, drag or hold works normally, including after restarting or reopening a puzzle. On iPhone, the board also suppresses the system's magnified loupe during a tap-and-hold while keeping the game's hold gesture."
+        "**Board touch controls recover cleanly when a gesture is interrupted.** If the app loses a finger mid-drag or is backgrounded, the piece and touch state reset; the next tap, drag or hold works normally, including after restarting or reopening a puzzle. On iPhone, the board also suppresses the system's magnified loupe during a tap-and-hold while keeping the game's hold gesture.",
+        "**Updated puzzles now keep their old solutions in a Previous versions menu.** Current galleries show only lines for the active board, while archived versions remain readable with their original queue and maker answer."
       ]
     },
     {

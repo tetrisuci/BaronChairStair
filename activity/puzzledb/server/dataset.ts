@@ -78,6 +78,7 @@ export function buildDataset(
     policy,
     days: new Set(days.map(([day]) => day)),
     listed: new Set(puzzles.map(([id]) => id)),
+    shapes: new Map(archive.puzzles.map((puzzle) => [puzzle.id, shapeKey(puzzle)])),
   });
   const written = writePublicDatabase({ puzzles, days, about, players });
   const { sqlite, data } = written;

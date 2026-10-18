@@ -35,7 +35,9 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
+import { contentHash } from "../server/archive-rows";
 import { Store } from "../server/db";
+import { shapeKey } from "../server/puzzles";
 import { SOLUTION_KEY_VERSION, solutionFingerprint, solutionKey } from "../shared/solution-key";
 import { searchSolutions, type SearchReport } from "../shared/tetris/enumerate";
 import { pieceBudget, solvesPuzzle, type Puzzle, type SolutionStep } from "../shared/puzzle";
@@ -202,6 +204,8 @@ function fileLines(store: Store, verdict: Verdict): number {
       source: "enumerated",
       foundBy: null,
       guildId: null,
+      contentHash: contentHash(verdict.puzzle),
+      puzzleShape: shapeKey(verdict.puzzle),
     });
     if (discovered) filed++;
   }

@@ -56,7 +56,7 @@ import {
   readJsonBody,
 } from "./limits";
 import { DAILY_TIERS, type DailyTier } from "../shared/daily";
-import { PuzzleArchive } from "./puzzles";
+import { PuzzleArchive, shapeKey } from "./puzzles";
 import { reloadInPlace } from "./archive-reload";
 import {
   apiError,
@@ -528,10 +528,12 @@ app.get("/api/profile/:id?", requireSession, (c) => {
   // themselves — the same gate `/api/puzzles/:id/solutions` enforces, asked
   // here so the row can say so instead of failing when it is clicked.
   const mine = store.clearedPuzzleIds(session.player.id);
+  const currentShapes = new Map(archive.puzzles.map((puzzle) => [puzzle.id, shapeKey(puzzle)]));
   const found = profileLines(
     store.discoveriesBy(id),
     (puzzleId) => archive.get(puzzleId)?.title ?? null,
     mine,
+    (puzzleId) => currentShapes.get(puzzleId),
   );
 
   return c.json({
@@ -946,7 +948,7 @@ app.get("/api/archive", requireSession, (c) => {
 app.get("/api/alternates", requireSession, (c) => {
   const session = c.get("session");
   const alternates = alternateRows(
-    store.liveAlternates(),
+    store.liveAlternates(new Map(archive.puzzles.map((puzzle) => [puzzle.id, shapeKey(puzzle)]))),
     (puzzleId) => archive.get(puzzleId) ?? null,
     (puzzleId) => maySeeSolution(session, puzzleId),
     store.clearedPuzzleIds(session.player.id),
@@ -1089,7 +1091,21 @@ app.get("/api/puzzles/:id/solutions", requireSession, (c) => {
   if (!store.hasCleared(session.player.id, puzzleId)) {
     throw new HTTPException(403, { message: "Solve it yourself first" });
   }
-  return c.json({ solutions: store.solutionGallery(puzzleId) });
+  return c.json({ solutions: store.solutionGallery(puzzleId, shapeKey(puzzle)) });
+});
+
+app.get("/api/puzzles/:id/history", requireSession, (c) => {
+  const puzzleId = Number.parseInt(c.req.param("id") ?? "", 10);
+  const puzzle = archive.get(puzzleId);
+  if (!puzzle) throw new HTTPException(404, { message: "No such puzzle" });
+  const session = c.get("session");
+  if (!maySeeSolution(session, puzzleId)) {
+    throw new HTTPException(403, { message: "That is one of today's — play it on the daily first" });
+  }
+  if (!store.hasCleared(session.player.id, puzzleId)) {
+    throw new HTTPException(403, { message: "Solve it yourself first" });
+  }
+  return c.json({ versions: store.puzzleHistory(puzzle) });
 });
 
 app.get("/api/archive/:id", requireSession, (c) => {

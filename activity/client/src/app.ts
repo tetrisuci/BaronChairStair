@@ -12,7 +12,16 @@ import { attachPointerPlay, type PointerPlayHandle } from "./game/pointer";
 import type { Handling } from "@shared/tetris/handling";
 import type { InputEvent } from "@shared/tetris/verify";
 import type { Connection } from "./discord";
-import type { DailyEntry, DailyResponse, GalleryLine, RetryNotice, RushState, StoredRun, SubmitResponse } from "./api";
+import type {
+  DailyEntry,
+  DailyResponse,
+  GalleryLine,
+  PuzzleHistoryVersion,
+  RetryNotice,
+  RushState,
+  StoredRun,
+  SubmitResponse,
+} from "./api";
 import type { ArchiveListing } from "@shared/puzzle";
 import { filterArchive } from "@shared/archive-filter";
 import { ApiError, DAILY_STALE_STATUS } from "./api";
@@ -138,7 +147,8 @@ export class App {
     onPlayer: (id) => void this.enterProfile(id),
   });
   private readonly solutionsMenu = createSolutionsMenu({
-    onOpen: (line) => this.stepSolution(line),
+    onOpen: (line, puzzle) => this.stepSolution(line, puzzle),
+    onVersion: (version) => this.showHistoricalSolutions(version),
     onClose: () => this.backToPuzzle(),
   });
   /** The puzzle whose solutions are being read, and its lines. */
@@ -146,6 +156,9 @@ export class App {
   private solutionsLines: readonly GalleryLine[] = [];
   /** A new request, screen or Explore tab makes an older gallery opening obsolete. */
   private solutionRequest = 0;
+  private solutionsHistory: readonly PuzzleHistoryVersion[] = [];
+  /** The historical menu currently being read, if any. */
+  private historicalSolutions: PuzzleHistoryVersion | null = null;
   private readonly canvas = el("canvas", {
     class: "field",
     attrs: { role: "img", "aria-label": "Puzzle playfield" },
@@ -802,6 +815,8 @@ export class App {
     if (!loaded || request !== this.solutionRequest) return;
     this.solutionsFor = loaded.puzzle;
     this.solutionsLines = loaded.solutions;
+    this.solutionsHistory = loaded.versions;
+    this.historicalSolutions = null;
     this.showSolutionsMenu();
   }
 
@@ -817,7 +832,11 @@ export class App {
   private async loadSolutions(
     id: number,
     request: number,
-  ): Promise<{ puzzle: PuzzlePrompt; solutions: readonly GalleryLine[] } | null> {
+  ): Promise<{
+    puzzle: PuzzlePrompt;
+    solutions: readonly GalleryLine[];
+    versions: readonly PuzzleHistoryVersion[];
+  } | null> {
     if (id < 0 || request !== this.solutionRequest) return null;
     if (this.lockedPuzzleIds().has(id)) {
       this.toast("That is one of today's — play it on the daily first");
@@ -831,11 +850,12 @@ export class App {
       return null;
     }
     try {
-      const [{ puzzle }, { solutions }] = await Promise.all([
+      const [{ puzzle }, { solutions }, { versions }] = await Promise.all([
         this.connection.api.archivePuzzle(id),
         this.connection.api.puzzleSolutions(id),
+        this.connection.api.puzzleHistory(id),
       ]);
-      return request === this.solutionRequest ? { puzzle, solutions } : null;
+      return request === this.solutionRequest ? { puzzle, solutions, versions } : null;
     } catch (error) {
       if (request === this.solutionRequest) {
         this.toast(error instanceof ApiError ? error.message : "Could not open that puzzle");
@@ -871,6 +891,8 @@ export class App {
     if (!loaded || request !== this.solutionRequest) return;
     this.solutionsFor = loaded.puzzle;
     this.solutionsLines = loaded.solutions;
+    this.solutionsHistory = loaded.versions;
+    this.historicalSolutions = null;
     const line = this.solutionsLines.find((one) => one.solutionId === solutionId);
     if (!line) {
       this.showSolutionsMenu();
@@ -907,8 +929,14 @@ export class App {
   private showSolutionsMenu(): void {
     const puzzle = this.solutionsFor;
     if (!puzzle) return;
+    this.historicalSolutions = null;
     this.leaveForScreen();
-    this.solutionsMenu.update(puzzle, this.solutionsLines, this.connection.player.id);
+    this.solutionsMenu.update(
+      puzzle,
+      this.solutionsLines,
+      this.connection.player.id,
+      this.solutionsHistory,
+    );
     this.credits.update(puzzle);
     this.showScreen({ wide: true }, this.solutionsMenu.element);
   }
@@ -920,9 +948,10 @@ export class App {
    * and the app already has a good one. Nothing is playable here: no run is
    * started, so `activeRun` answers null and the keyboard does nothing.
    */
-  private stepSolution(line: GalleryLine): void {
-    const puzzle = this.solutionsFor;
+  private stepSolution(line: GalleryLine, selectedPuzzle?: PuzzlePrompt): void {
+    const puzzle = selectedPuzzle ?? this.solutionsFor;
     if (!puzzle) return;
+    const historicalVersion = this.historicalSolutions;
     this.disposeActiveMode();
     this.mode = "daily";
     this.sheet = { puzzle, solution: line.placements, scored: false };
@@ -948,7 +977,12 @@ export class App {
           el("button", {
             class: "btn",
             text: "← All solutions",
-            on: { click: () => this.showSolutionsMenu() },
+            on: {
+              click: () =>
+                historicalVersion
+                  ? this.showHistoricalSolutions(historicalVersion)
+                  : this.showSolutionsMenu(),
+            },
           }),
         ),
       ),
@@ -964,6 +998,19 @@ export class App {
     // be looking at the note that path wrote.
     this.walkthrough.readingOnly();
     this.relayout();
+  }
+
+  private showHistoricalSolutions(version: PuzzleHistoryVersion): void {
+    this.historicalSolutions = version;
+    this.leaveForScreen();
+    this.solutionsMenu.update(
+      version.puzzle,
+      version.lines,
+      this.connection.player.id,
+      [],
+      true,
+    );
+    this.showScreen({ wide: true }, this.solutionsMenu.element);
   }
 
   /**
