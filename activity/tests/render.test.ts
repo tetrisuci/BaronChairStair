@@ -1306,6 +1306,41 @@ describe("the solutions menu", () => {
       "No solutions on file for this one.",
     );
   });
+
+  test("previous versions open separately from the current gallery", () => {
+    const opened: unknown[] = [];
+    const version = {
+      id: 9,
+      changedAt: 1_700_000_000_000,
+      contentHash: "old",
+      puzzle: PUZZLE,
+      lines: [line({ solutionId: 2 })],
+    };
+    const made = createSolutionsMenu(
+      {
+        onOpen: () => {},
+        onVersion: (selected) => opened.push(selected),
+        onClose: () => {},
+      },
+      () => 0,
+    );
+    made.update(PUZZLE as never, [line()] as never, "me", [version] as never);
+
+    const history = made.element.querySelector(".solutions-menu__history-card")!;
+    expect(history.textContent).toContain("Previous versions");
+    (history.querySelector("button") as HTMLButtonElement).click();
+    expect(opened[0]).toBe(version);
+  });
+
+  test("a previous version is labeled read-only", () => {
+    const made = createSolutionsMenu({ onOpen: () => {}, onClose: () => {} }, () => 0);
+    made.update(PUZZLE as never, [line()] as never, "me", [], true);
+
+    expect(made.element.querySelector(".solutions-menu__title")!.textContent).toContain(
+      "Previous version",
+    );
+    expect(made.element.textContent).toContain("kept for reference and no longer playable");
+  });
 });
 
 describe("a wheel anywhere on a screen scrolls it", () => {

@@ -18,7 +18,7 @@ import {
   writeOverride,
 } from "./puzzle-overrides";
 import { bestStreak, currentStreak } from "../shared/streaks";
-import { readPublishedArchive } from "./archive-rows";
+import { contentHistory, readPublishedArchive, type ContentChange } from "./archive-rows";
 import { CREDITED, LIVE } from "./discovery-sql";
 import { migrateSiteIdentity, SiteIdentity, withFreshKey } from "./site-identity";
 import {
@@ -367,6 +367,8 @@ export function migrateArchive(db: Database): void {
   // column exists only for a process that happened to construct a Store, and a
   // sync against a deployed database throws "no such column".
   addColumnIfMissing(db, "puzzle_solutions", "voided_at", "INTEGER");
+  addColumnIfMissing(db, "puzzle_solutions", "content_hash", "TEXT");
+  addColumnIfMissing(db, "puzzle_solutions", "puzzle_shape", "TEXT");
   db.run(ARCHIVE_SCHEMA);
   const columns = db
     .query<{ name: string }, []>("PRAGMA table_info(archive_content_log)")
@@ -644,7 +646,9 @@ CREATE TABLE IF NOT EXISTS puzzle_solutions (
   -- deleting them: the claim "these placements solve this position" dies with
   -- the position, but the fact that somebody once found it does not, and the
   -- discovery board is paid on the finding. See \`voidDiscoveries\`.
-  voided_at     INTEGER
+  voided_at     INTEGER,
+  content_hash  TEXT,
+  puzzle_shape  TEXT
 );
 
 -- The leaderboard reads by finder; the maker view reads by puzzle.
@@ -744,6 +748,10 @@ export interface NewSolution {
   readonly source: SolutionSource;
   readonly foundBy: string | null;
   readonly guildId: string | null;
+  /** Fingerprint of the puzzle content this line was played against. */
+  readonly contentHash?: string;
+  /** Board/queue/hold/target fingerprint used for active gallery filtering. */
+  readonly puzzleShape?: string;
 }
 
 /** A solution on record, without the log — which no reader needs by default. */
@@ -833,6 +841,28 @@ export interface AlternateLine {
   readonly clears: readonly ClearName[];
   readonly pieces: number;
   readonly finder: PlayerProfile | null;
+}
+
+/** The columns selected by both current and historical gallery queries. */
+interface GalleryRow {
+  readonly solution_id: number;
+  readonly placements: string;
+  readonly attack: number;
+  readonly clears: string;
+  readonly source: string;
+  readonly found_at: number;
+  readonly solved_strict: number;
+  readonly finder_id: string | null;
+  readonly username: string | null;
+  readonly avatar_url: string | null;
+}
+
+export interface PuzzleHistoryVersion {
+  readonly id: number;
+  readonly changedAt: number;
+  readonly contentHash: string;
+  readonly puzzle: Puzzle;
+  readonly lines: readonly GalleryLine[];
 }
 
 /** One line of the discovery board. */
@@ -1055,6 +1085,8 @@ export class Store {
       // population of already-dead rows to find. NULL is the truth for all of
       // them.
     );
+    this.addMissingColumn("puzzle_solutions", "content_hash", "TEXT");
+    this.addMissingColumn("puzzle_solutions", "puzzle_shape", "TEXT");
     // After the column, and in this order. Both statements are no-ops on a
     // database that has already run them.
     //
@@ -1272,8 +1304,9 @@ export class Store {
       .query(
         `INSERT INTO puzzle_solutions
            (puzzle_id, canonical_key, key_version, placements, events, handling,
-            attack, target_attack, clears, solved_strict, source, found_by, guild_id, found_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+            attack, target_attack, clears, solved_strict, source, found_by, guild_id, found_at,
+            content_hash, puzzle_shape)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
          ON CONFLICT (puzzle_id, canonical_key) WHERE voided_at IS NULL DO NOTHING`,
       )
       .run(
@@ -1291,11 +1324,98 @@ export class Store {
         entry.foundBy,
         entry.guildId,
         Date.now(),
+        entry.contentHash ?? null,
+        entry.puzzleShape ?? null,
       );
     return {
       solutionId: written.changes > 0 ? Number(written.lastInsertRowid) : null,
       discovered: written.changes > 0,
     };
+  }
+
+  /** Adds version identity to a pre-version reference row without changing its credit. */
+  stampSolutionVersion(
+    puzzleId: number,
+    canonicalKey: string,
+    versionHash: string,
+    puzzleShape: string,
+  ): void {
+    this.db.run(
+      `UPDATE puzzle_solutions
+          SET content_hash = ?3, puzzle_shape = ?4
+        WHERE puzzle_id = ?1 AND canonical_key = ?2 AND source = 'reference' AND voided_at IS NULL`,
+      [puzzleId, canonicalKey, versionHash, puzzleShape],
+    );
+  }
+
+  /**
+   * Gives rows written before version metadata existed the version they were
+   * actually filed against. A row before the first content-log entry belongs
+   * to that entry's `was` snapshot; a row between entries belongs to the
+   * snapshot that became current at the earlier entry. Rows without history
+   * stay unmarked: treating them as current could publish a stale line.
+   */
+  stampMissingSolutionVersions(
+    puzzleId: number,
+    currentHash: string,
+    currentShape: string,
+  ): void {
+    const history = this.contentHistory(puzzleId);
+    const shapeOf = (entry: ContentChange): string =>
+      JSON.stringify([entry.board, entry.queue, entry.hold ?? null, entry.wasTarget]);
+    const shapeByHash = new Map<string, string>([[currentHash, currentShape]]);
+    for (let index = 0; index < history.length; index += 1) {
+      const entry = history[index]!;
+      shapeByHash.set(entry.wasHash, shapeOf(entry));
+      shapeByHash.set(entry.becameHash, history[index + 1] ? shapeOf(history[index + 1]!) : currentShape);
+    }
+
+    const rows = this.db
+      .query<
+        { solution_id: number; found_at: number; voided_at: number | null; content_hash: string | null; puzzle_shape: string | null },
+        [number]
+      >(
+        `SELECT solution_id, found_at, voided_at, content_hash, puzzle_shape
+           FROM puzzle_solutions WHERE puzzle_id = ?1`,
+      )
+      .all(puzzleId);
+
+    for (const row of rows) {
+      let hash = row.content_hash;
+      if (!hash && row.voided_at !== null) {
+        const retired = history.find((entry) => entry.at === row.voided_at);
+        hash = retired?.wasHash ?? null;
+      }
+      // There is no safe version to assign when a legacy row has no content
+      // history. Leaving it unmarked keeps a possibly stale line out of the
+      // current gallery; a later archive edit can still tag it precisely.
+      if (!hash && history.length === 0) continue;
+      if (!hash) {
+        let inferred: string | null = null;
+        for (let index = 0; index < history.length; index += 1) {
+          const entry = history[index]!;
+          if (row.found_at < entry.at) {
+            inferred = entry.wasHash;
+            break;
+          }
+          const next = history[index + 1];
+          if (next && row.found_at < next.at) {
+            inferred = entry.becameHash;
+            break;
+          }
+        }
+        // A row after the last logged edit may belong to an unlogged static
+        // rebuild. There is no trustworthy version to assign in that interval.
+        if (!inferred) continue;
+        hash = inferred;
+      }
+      const shape = row.puzzle_shape ?? shapeByHash.get(hash) ?? currentShape;
+      if (row.content_hash === hash && row.puzzle_shape === shape) continue;
+      this.db.run(
+        `UPDATE puzzle_solutions SET content_hash = ?2, puzzle_shape = ?3 WHERE solution_id = ?1`,
+        [row.solution_id, hash, shape],
+      );
+    }
   }
 
   /**
@@ -1444,14 +1564,18 @@ export class Store {
    * loose", and a line played on a board that has since been edited answers
    * that question about a board they are no longer looking at.
    */
-  solutionsFor(puzzleId: number): StoredSolution[] {
-    return this.db
-      .query<StoredSolutionRow, [number]>(
-        `SELECT solution_id, puzzle_id, canonical_key, key_version, placements, attack,
-                clears, solved_strict, source, found_by, found_at
-           FROM puzzle_solutions WHERE puzzle_id = ?1 AND ${LIVE} ORDER BY found_at ASC`,
-      )
-      .all(puzzleId)
+  solutionsFor(puzzleId: number, currentShape?: string): StoredSolution[] {
+    // Review data keeps legacy rows until boot can attribute them; the player
+    // gallery is stricter and never uses this compatibility branch.
+    const sql =
+      `SELECT solution_id, puzzle_id, canonical_key, key_version, placements, attack,
+              clears, solved_strict, source, found_by, found_at
+         FROM puzzle_solutions WHERE puzzle_id = ?1 AND ${currentShape === undefined ? LIVE : `${LIVE} AND (puzzle_shape = ?2 OR puzzle_shape IS NULL)`} ORDER BY found_at ASC`;
+    const rows =
+      currentShape === undefined
+        ? this.db.query<StoredSolutionRow, [number]>(sql).all(puzzleId)
+        : this.db.query<StoredSolutionRow, [number, string]>(sql).all(puzzleId, currentShape);
+    return rows
       .map(toStoredSolution);
   }
 
@@ -1486,13 +1610,13 @@ export class Store {
       .run(puzzleId, keep).changes;
   }
 
-  countSolutions(puzzleId: number): number {
+  countSolutions(puzzleId: number, currentShape?: string): number {
     return (
       this.db
-        .query<{ n: number }, [number]>(
-          `SELECT COUNT(*) AS n FROM puzzle_solutions WHERE puzzle_id = ?1 AND ${LIVE}`,
+        .query<{ n: number }, [number, string] | [number]>(
+          `SELECT COUNT(*) AS n FROM puzzle_solutions WHERE puzzle_id = ?1 AND ${currentShape === undefined ? LIVE : `${LIVE} AND puzzle_shape = ?2`}`,
         )
-        .get(puzzleId)?.n ?? 0
+        .get(...(currentShape === undefined ? [puzzleId] : [puzzleId, currentShape]))?.n ?? 0
     );
   }
 
@@ -1724,31 +1848,25 @@ export class Store {
    * The input log is deliberately not selected: 8 KB a row, and nothing that
    * draws a board needs it.
    */
-  solutionGallery(puzzleId: number): GalleryLine[] {
-    return this.db
-      .query<
-        {
-          solution_id: number;
-          placements: string;
-          attack: number;
-          clears: string;
-          source: string;
-          found_at: number;
-          solved_strict: number;
-          finder_id: string | null;
-          username: string | null;
-          avatar_url: string | null;
-        },
-        [number]
-      >(
-        `SELECT s.solution_id, s.placements, s.attack, s.clears, s.source, s.found_at,
-                s.solved_strict, s.found_by AS finder_id, p.username, p.avatar_url
-           FROM puzzle_solutions s
-           LEFT JOIN players p ON p.id = s.found_by
-          WHERE s.puzzle_id = ?1 AND s.${LIVE} AND s.source IN ('reference', 'player')
-          ORDER BY s.source = 'reference' DESC, s.found_at ASC, s.solution_id ASC`,
-      )
-      .all(puzzleId)
+  /**
+   * Returns the active gallery, or a shape-scoped gallery when the caller has
+   * a currently served puzzle. Shape-scoping is what keeps rows from an older
+   * static puzzle rebuild out of the current board even when archive sync was
+   * not the operation that changed the file.
+   */
+  solutionGallery(puzzleId: number, currentShape?: string): GalleryLine[] {
+    const versioned = currentShape !== undefined;
+    const sql =
+      `SELECT s.solution_id, s.placements, s.attack, s.clears, s.source, s.found_at,
+              s.solved_strict, s.found_by AS finder_id, p.username, p.avatar_url
+         FROM puzzle_solutions s
+         LEFT JOIN players p ON p.id = s.found_by
+        WHERE s.puzzle_id = ?1 AND ${versioned ? `s.${LIVE} AND s.puzzle_shape = ?2` : `s.${LIVE}`} AND s.source IN ('reference', 'player')
+        ORDER BY s.source = 'reference' DESC, s.found_at ASC, s.solution_id ASC`;
+    const rows = versioned
+      ? this.db.query<GalleryRow, [number, string]>(sql).all(puzzleId, currentShape!)
+      : this.db.query<GalleryRow, [number]>(sql).all(puzzleId);
+    return rows
       .map((row) => ({
         solutionId: row.solution_id,
         placements: JSON.parse(row.placements) as SolutionStep[],
@@ -1765,6 +1883,55 @@ export class Store {
             : null,
         foundAt: row.found_at,
         solvedStrict: row.solved_strict === 1,
+      }));
+  }
+
+  contentHistory(puzzleId: number): ContentChange[] {
+    return contentHistory(this.db, puzzleId);
+  }
+
+  historicalGallery(puzzleId: number, versionHash: string): GalleryLine[] {
+    return this.db
+      .query<GalleryRow, [number, string]>(
+        `SELECT s.solution_id, s.placements, s.attack, s.clears, s.source, s.found_at,
+                s.solved_strict, s.found_by AS finder_id, p.username, p.avatar_url
+           FROM puzzle_solutions s LEFT JOIN players p ON p.id = s.found_by
+          WHERE s.puzzle_id = ?1 AND s.content_hash = ?2 AND s.source IN ('reference', 'player')
+          ORDER BY s.source = 'reference' DESC, s.found_at ASC, s.solution_id ASC`,
+      )
+      .all(puzzleId, versionHash)
+      .map((row) => ({
+        solutionId: row.solution_id,
+        placements: JSON.parse(row.placements) as SolutionStep[],
+        attack: row.attack,
+        clears: JSON.parse(row.clears) as ClearName[],
+        source: row.source as SolutionSource,
+        finder:
+          row.finder_id !== null && row.username !== null
+            ? { id: row.finder_id, username: row.username, avatarUrl: row.avatar_url }
+            : null,
+        foundAt: row.found_at,
+        solvedStrict: row.solved_strict === 1,
+      }));
+  }
+
+  puzzleHistory(puzzle: Puzzle): PuzzleHistoryVersion[] {
+    return this.contentHistory(puzzle.id)
+      .filter((entry) => entry.wasPublished)
+      .map((entry) => ({
+        id: entry.entryId,
+        changedAt: entry.at,
+        contentHash: entry.wasHash,
+        puzzle: {
+          ...puzzle,
+          board: entry.board,
+          queue: entry.queue,
+          hold: entry.hold,
+          targetAttack: entry.wasTarget,
+          requiredClears: entry.wasClears ?? undefined,
+          solution: entry.solution,
+        },
+        lines: this.historicalGallery(puzzle.id, entry.wasHash),
       }));
   }
 
@@ -1859,19 +2026,38 @@ export class Store {
    * count beside a puzzle in the review tool, and a voided line is not a line
    * on the puzzle sitting there now.
    */
-  solutionCounts(): SolutionCount[] {
-    return this.db
-      .query<{ puzzle_id: number; total: number; missing_goal: number }, []>(
-        `SELECT puzzle_id, COUNT(*) AS total,
-                SUM(CASE WHEN solved_strict = 0 THEN 1 ELSE 0 END) AS missing_goal
-           FROM puzzle_solutions WHERE ${LIVE} GROUP BY puzzle_id ORDER BY total DESC`,
+  solutionCounts(currentShapes?: ReadonlyMap<number, string>): SolutionCount[] {
+    if (currentShapes === undefined) {
+      return this.db
+        .query<{ puzzle_id: number; total: number; missing_goal: number }, []>(
+          `SELECT puzzle_id, COUNT(*) AS total,
+                  SUM(CASE WHEN solved_strict = 0 THEN 1 ELSE 0 END) AS missing_goal
+             FROM puzzle_solutions WHERE ${LIVE} GROUP BY puzzle_id ORDER BY total DESC`,
+        )
+        .all()
+        .map((row) => ({ puzzleId: row.puzzle_id, total: row.total, missingGoal: row.missing_goal }));
+    }
+
+    const counts = new Map<number, { total: number; missingGoal: number }>();
+    this.db
+      .query<{ puzzle_id: number; puzzle_shape: string | null; solved_strict: number }, []>(
+        `SELECT puzzle_id, puzzle_shape, solved_strict
+           FROM puzzle_solutions WHERE ${LIVE}`,
       )
       .all()
-      .map((row) => ({
-        puzzleId: row.puzzle_id,
-        total: row.total,
-        missingGoal: row.missing_goal,
-      }));
+      .forEach((row) => {
+        // A legacy row has no version marker. Keep it visible to callers that
+        // use this compatibility path; normal server boot stamps such rows
+        // before any review or player request can read them.
+        if (row.puzzle_shape !== null && row.puzzle_shape !== currentShapes.get(row.puzzle_id)) return;
+        const count = counts.get(row.puzzle_id) ?? { total: 0, missingGoal: 0 };
+        count.total += 1;
+        if (row.solved_strict === 0) count.missingGoal += 1;
+        counts.set(row.puzzle_id, count);
+      });
+    return [...counts.entries()]
+      .sort((left, right) => right[1].total - left[1].total || left[0] - right[0])
+      .map(([puzzleId, count]) => ({ puzzleId, total: count.total, missingGoal: count.missingGoal }));
   }
 
   private addMissingColumn(

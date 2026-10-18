@@ -26,6 +26,7 @@ import {
   upsertArchive,
 } from "../server/archive-rows";
 import { Store } from "../server/db";
+import { shapeKey } from "../server/puzzles";
 import { COMMUNITY_ID_BASE, type ClearRequirement, type Puzzle } from "../shared/puzzle";
 
 let dir: string;
@@ -216,6 +217,17 @@ describe("discovered solutions, when content is edited", () => {
     expect(outcome.solutionsVoided).toBe(2);
     expect(store.countSolutions(1)).toBe(0);
     expect(contentHistory(db, 1)[0]?.solutionsVoided).toBe(2);
+    const tagged = db
+      .query<{ content_hash: string; puzzle_shape: string; voided_at: number }, []>(
+        "SELECT content_hash, puzzle_shape, voided_at FROM puzzle_solutions ORDER BY solution_id LIMIT 1",
+      )
+      .get();
+    expect(tagged).toEqual({
+      content_hash: contentHash(puzzle()),
+      puzzle_shape: shapeKey(puzzle()),
+      voided_at: NOW + 1,
+    });
+    expect(store.historicalGallery(1, contentHash(puzzle()))).toHaveLength(2);
   });
 
   test("the next player to find one of those lines is credited for it", () => {
@@ -312,6 +324,53 @@ describe("an unpublished puzzle's discoveries", () => {
     expect(store.countSolutions(1)).toBe(1);
     expect(contentHistory(db, 1)[0]?.solutionsVoided).toBeNull();
   });
+
+  test("player history excludes unpublished draft revisions", () => {
+    upsertArchive(db, puzzle(), NOW);
+    upsertArchive(db, puzzle({ queue: ["S", "Z", "L"] }), NOW + 1);
+    expect(store.puzzleHistory(puzzle({ queue: ["S", "Z", "L"] }))).toEqual([]);
+
+    publishArchive(db, [1], "officer", NOW + 2);
+    upsertArchive(db, puzzle({ queue: ["Z", "L", "T"] }), NOW + 3);
+    expect(store.puzzleHistory(puzzle({ queue: ["Z", "L", "T"] }))).toHaveLength(1);
+  });
+});
+
+describe("legacy solution version backfill", () => {
+  test("does not call a post-history unlogged line current", () => {
+    upsertArchive(db, puzzle(), NOW);
+    publishArchive(db, [1], "officer", NOW);
+    upsertArchive(db, puzzle({ queue: ["S", "Z", "L"] }), NOW + 1);
+
+    store.upsertPlayer({ id: "p1", username: "someone", avatarUrl: null });
+    store.recordSolution({
+      puzzleId: 1,
+      canonicalKey: "legacy-after-edit",
+      keyVersion: 1,
+      placements: [],
+      events: null,
+      handling: null,
+      attack: 4,
+      targetAttack: 4,
+      clears: ["tsd"],
+      solvedStrict: true,
+      source: "player",
+      foundBy: "p1",
+      guildId: null,
+    });
+
+    const current = puzzle({ queue: ["Z", "L", "T"] });
+    store.stampMissingSolutionVersions(1, contentHash(current), shapeKey(current));
+
+    const row = db
+      .query<{ content_hash: string | null; puzzle_shape: string | null }, []>(
+        "SELECT content_hash, puzzle_shape FROM puzzle_solutions WHERE canonical_key = 'legacy-after-edit'",
+      )
+      .get();
+    expect(row).toEqual({ content_hash: null, puzzle_shape: null });
+    expect(store.solutionGallery(1, shapeKey(current))).toEqual([]);
+  });
+
 });
 
 describe("the frozen clear requirement, when content is edited", () => {

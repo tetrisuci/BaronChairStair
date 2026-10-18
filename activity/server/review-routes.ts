@@ -48,7 +48,7 @@ import type { SolutionCount, Store } from "./db";
 import { type AppRouter, bearerToken, type Variables } from "./http";
 import { readJsonBody } from "./limits";
 import type { OverrideLogEntry, PuzzleOverride } from "./puzzle-overrides";
-import { boardProblem, overrideProblem, type PuzzleArchive, withOverride } from "./puzzles";
+import { boardProblem, overrideProblem, shapeKey, type PuzzleArchive, withOverride } from "./puzzles";
 import { mintReviewToken, readReviewGrant, readReviewToken } from "./review-token";
 import {
   readOverrideChanges,
@@ -433,9 +433,11 @@ function toReviewPuzzle(
  */
 function holdingUpFor(
   store: ReviewDependencies["store"],
-  puzzleId: number,
+  puzzle: Puzzle,
 ): SolutionCount | undefined {
-  return store.solutionCounts().find((row) => row.puzzleId === puzzleId);
+  return store
+    .solutionCounts(new Map([[puzzle.id, shapeKey(puzzle)]]))
+    .find((row) => row.puzzleId === puzzle.id);
 }
 
 function correctablePuzzle(
@@ -612,7 +614,11 @@ export function registerReviewRoutes(app: AppRouter, deps: ReviewDependencies): 
     // whatever the club numbers next inherits that correction.
     // One query for the whole archive. Asked per puzzle this would be 138
     // round trips to render one page.
-    const counted = new Map(store.solutionCounts().map((row) => [row.puzzleId, row]));
+    const counted = new Map(
+      store
+        .solutionCounts(new Map(archive.originals.map((puzzle) => [puzzle.id, shapeKey(puzzle)])))
+        .map((row) => [row.puzzleId, row]),
+    );
     const listed = new Set(archive.originals.map((puzzle) => puzzle.id));
     const orphans = [...overrides.values()]
       .filter((override) => !listed.has(override.puzzleId))
@@ -670,7 +676,7 @@ export function registerReviewRoutes(app: AppRouter, deps: ReviewDependencies): 
       goal: puzzle.goal,
       targetAttack: puzzle.targetAttack,
       requiredClears: puzzle.requiredClears ?? null,
-      solutions: store.solutionsFor(puzzle.id),
+      solutions: store.solutionsFor(puzzle.id, shapeKey(puzzle)),
     });
   });
 
@@ -721,7 +727,7 @@ export function registerReviewRoutes(app: AppRouter, deps: ReviewDependencies): 
         override ?? undefined,
         store.overrideHistory(puzzle.id),
         archive.correctionsApplied,
-        holdingUpFor(store, puzzle.id),
+        holdingUpFor(store, puzzle),
       ),
     });
   });
@@ -754,7 +760,7 @@ export function registerReviewRoutes(app: AppRouter, deps: ReviewDependencies): 
             undefined,
             store.overrideHistory(id),
             archive.correctionsApplied,
-            holdingUpFor(store, id),
+            holdingUpFor(store, puzzle),
           )
         : null,
     });

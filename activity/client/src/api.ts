@@ -94,6 +94,14 @@ export interface GalleryLine {
   readonly solvedStrict: boolean;
 }
 
+export interface PuzzleHistoryVersion {
+  readonly id: number;
+  readonly changedAt: number;
+  readonly contentHash: string;
+  readonly puzzle: PuzzlePrompt;
+  readonly lines: readonly GalleryLine[];
+}
+
 /**
  * One alternate solution, as Explore's "Alternate solutions" tab lists it.
  * Mirrors `AlternateRow` in `server/alternates.ts`, which says why each field
@@ -715,6 +723,10 @@ export class Api {
    */
   puzzleSolutions(id: number): Promise<{ solutions: readonly GalleryLine[] }> {
     return this.request(`/api/puzzles/${id}/solutions`);
+  }
+
+  puzzleHistory(id: number): Promise<{ versions: readonly PuzzleHistoryVersion[] }> {
+    return this.request(`/api/puzzles/${id}/history`);
   }
 
   /**

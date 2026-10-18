@@ -1092,6 +1092,17 @@
 .solutions-menu__head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
 .solutions-menu__title { margin: 0; }
 .solutions-menu__count { margin: 0; }
+.solutions-menu__history-card {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, max-content));
+  gap: 6px;
+  align-items: center;
+  padding: 8px;
+  border: var(--edge) solid var(--ink-line);
+  border-radius: var(--radius-sm);
+  background: var(--cream);
+}
+.solutions-menu__history-card .note { margin: 0; }
 
 /*
  * Cards across, wrapping. `auto-fill` rather than `auto-fit`: with one solution

@@ -28,6 +28,7 @@ import type { Database } from "bun:sqlite";
 import type { ClearRequirement, Mino, Puzzle, RowCode, SolutionStep } from "../shared/puzzle";
 import { clearShortfall, COMMUNITY_ID_BASE, requirementFromSolution } from "../shared/puzzle";
 import type { ArchiveMeta } from "../tools/decode-archive";
+import { shapeKey } from "./puzzles";
 
 const COLUMNS = `
   id, title, author, difficulty, goal, set_name, board, queue, hold,
@@ -310,11 +311,21 @@ export function countDiscoveries(db: Database, puzzleId: number): number | null 
  * retired — the timestamp says when a line stopped describing its board, and
  * moving it forward would lose that.
  */
-export function voidDiscoveries(db: Database, puzzleId: number): void {
-  db.run("UPDATE puzzle_solutions SET voided_at = ?2 WHERE puzzle_id = ?1 AND voided_at IS NULL", [
-    puzzleId,
-    Date.now(),
-  ]);
+export function voidDiscoveries(
+  db: Database,
+  puzzleId: number,
+  at = Date.now(),
+  versionHash: string | null = null,
+  versionShape: string | null = null,
+): void {
+  db.run(
+    `UPDATE puzzle_solutions
+        SET voided_at = ?2,
+            content_hash = COALESCE(content_hash, ?3),
+            puzzle_shape = COALESCE(puzzle_shape, ?4)
+      WHERE puzzle_id = ?1 AND voided_at IS NULL`,
+    [puzzleId, at, versionHash, versionShape],
+  );
 }
 
 /**
@@ -363,6 +374,7 @@ export function contentHistory(db: Database, puzzleId: number): ContentChange[] 
   return db
     .query<ContentLogRow, [number]>(
       `SELECT entry_id, puzzle_id, was_hash, became_hash, was_target, was_clears,
+              was_board, was_queue, was_hold, was_solution,
               was_published, runs_before, solutions_voided, at, by
          FROM archive_content_log WHERE puzzle_id = ?1 ORDER BY entry_id ASC`,
     )
@@ -373,6 +385,10 @@ export function contentHistory(db: Database, puzzleId: number): ContentChange[] 
       wasHash: row.was_hash,
       becameHash: row.became_hash,
       wasTarget: row.was_target,
+      board: JSON.parse(row.was_board) as RowCode[],
+      queue: JSON.parse(row.was_queue) as Mino[],
+      hold: row.was_hold as Mino | null,
+      solution: JSON.parse(row.was_solution) as SolutionStep[],
       wasClears: row.was_clears ? (JSON.parse(row.was_clears) as ClearRequirement[]) : null,
       wasPublished: row.was_published === 1,
       runsBefore: row.runs_before,
@@ -388,6 +404,10 @@ interface ContentLogRow {
   was_hash: string;
   became_hash: string;
   was_target: number;
+  was_board: string;
+  was_queue: string;
+  was_hold: string | null;
+  was_solution: string;
   was_clears: string | null;
   was_published: number;
   runs_before: number | null;
@@ -403,6 +423,10 @@ export interface ContentChange {
   readonly wasHash: string;
   readonly becameHash: string;
   readonly wasTarget: number;
+  readonly board: readonly RowCode[];
+  readonly queue: readonly Mino[];
+  readonly hold: Mino | null;
+  readonly solution: readonly SolutionStep[];
   readonly wasClears: readonly ClearRequirement[] | null;
   readonly wasPublished: boolean;
   readonly runsBefore: number | null;
@@ -601,7 +625,9 @@ export function upsertArchive(
     return { kind: "amended", fields: [...moved, "content"] };
   }
   // Last, after every write that can throw. See voidDiscoveries.
-  if (solutionsVoided) voidDiscoveries(db, puzzle.id);
+  if (solutionsVoided) {
+    voidDiscoveries(db, puzzle.id, now, existing.contentHash, shapeKey(existing.puzzle));
+  }
 
   return {
     kind: "edited",

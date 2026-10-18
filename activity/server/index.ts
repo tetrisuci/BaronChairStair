@@ -56,7 +56,7 @@ import {
   readJsonBody,
 } from "./limits";
 import { DAILY_TIERS, type DailyTier } from "../shared/daily";
-import { PuzzleArchive } from "./puzzles";
+import { PuzzleArchive, shapeKey } from "./puzzles";
 import { reloadInPlace } from "./archive-reload";
 import {
   apiError,
@@ -1089,7 +1089,21 @@ app.get("/api/puzzles/:id/solutions", requireSession, (c) => {
   if (!store.hasCleared(session.player.id, puzzleId)) {
     throw new HTTPException(403, { message: "Solve it yourself first" });
   }
-  return c.json({ solutions: store.solutionGallery(puzzleId) });
+  return c.json({ solutions: store.solutionGallery(puzzleId, shapeKey(puzzle)) });
+});
+
+app.get("/api/puzzles/:id/history", requireSession, (c) => {
+  const puzzleId = Number.parseInt(c.req.param("id") ?? "", 10);
+  const puzzle = archive.get(puzzleId);
+  if (!puzzle) throw new HTTPException(404, { message: "No such puzzle" });
+  const session = c.get("session");
+  if (!maySeeSolution(session, puzzleId)) {
+    throw new HTTPException(403, { message: "That is one of today's — play it on the daily first" });
+  }
+  if (!store.hasCleared(session.player.id, puzzleId)) {
+    throw new HTTPException(403, { message: "Solve it yourself first" });
+  }
+  return c.json({ versions: store.puzzleHistory(puzzle) });
 });
 
 app.get("/api/archive/:id", requireSession, (c) => {

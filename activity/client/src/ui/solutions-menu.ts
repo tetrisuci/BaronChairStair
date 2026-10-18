@@ -17,7 +17,7 @@
  */
 
 import type { PuzzlePrompt } from "@shared/puzzle";
-import type { GalleryLine } from "../api";
+import type { GalleryLine, PuzzleHistoryVersion } from "../api";
 import { SolutionPlayer } from "../game/solution-player";
 import { cellsGlyph, stackOnly } from "../render/piece-glyph";
 import { el, panel, replaceChildren } from "./dom";
@@ -25,14 +25,22 @@ import { ago } from "./ago";
 
 export interface SolutionsMenuCallbacks {
   /** Step this line out on the board. */
-  readonly onOpen: (line: GalleryLine) => void;
+  readonly onOpen: (line: GalleryLine, puzzle?: PuzzlePrompt) => void;
+  /** Open a read-only previous puzzle version. */
+  readonly onVersion?: (version: PuzzleHistoryVersion) => void;
   /** Back to the puzzle this was opened from. */
   readonly onClose: () => void;
 }
 
 export interface SolutionsMenu {
   readonly element: HTMLElement;
-  update(puzzle: PuzzlePrompt, lines: readonly GalleryLine[], selfId: string): void;
+  update(
+    puzzle: PuzzlePrompt,
+    lines: readonly GalleryLine[],
+    selfId: string,
+    history?: readonly PuzzleHistoryVersion[],
+    archived?: boolean,
+  ): void;
 }
 
 /** Who found it. The maker's own answer belongs to nobody. */
@@ -48,6 +56,7 @@ export function createSolutionsMenu(
   const heading = el("h2", { class: "display solutions-menu__title", text: "Solutions" });
   const count = el("p", { class: "note solutions-menu__count", text: "" });
   const list = el("div", { class: "solutions-menu__list" });
+  const history = el("div", { class: "solutions-menu__history" });
 
   const element = el(
     "div",
@@ -66,6 +75,7 @@ export function createSolutionsMenu(
     ),
     count,
     list,
+    history,
   );
 
   function entry(
@@ -88,7 +98,7 @@ export function createSolutionsMenu(
       {
         class: `solutions-menu__entry${mine ? " solutions-menu__entry--self" : ""}`,
         title: "Step through this one on the board",
-        on: { click: () => callbacks.onOpen(line) },
+        on: { click: () => callbacks.onOpen(line, puzzle) },
       },
       el("span", { class: "solutions-menu__rank", text: `${index + 1}` }),
       preview,
@@ -117,8 +127,27 @@ export function createSolutionsMenu(
 
   return {
     element,
-    update(puzzle, lines, selfId) {
-      heading.textContent = `Solutions — ${puzzle.title || `sheet ${puzzle.id}`}`;
+    update(puzzle, lines, selfId, versions = [], archived = false) {
+      heading.textContent = `${archived ? "Previous version" : "Solutions"} — ${puzzle.title || `sheet ${puzzle.id}`}`;
+      replaceChildren(
+        history,
+        !archived && versions.length > 0
+          ? el(
+              "div",
+              { class: "solutions-menu__history-card" },
+              el("p", { class: "note", text: "Previous versions" }),
+              ...versions.map((version) =>
+                el("button", {
+                  class: "btn",
+                  text: `Version from ${new Date(version.changedAt).toLocaleDateString()}`,
+                  on: { click: () => callbacks.onVersion?.(version) },
+                }),
+              ),
+            )
+          : archived
+            ? el("p", { class: "note", text: "Archived version — kept for reference and no longer playable." })
+            : null,
+      );
       if (lines.length === 0) {
         count.textContent = "No solutions on file for this one.";
         replaceChildren(list);
