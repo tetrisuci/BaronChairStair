@@ -762,6 +762,22 @@ export interface PointerBoard {
   redo(): void;
 }
 
+export interface PointerPlayOptions {
+  /** Injectable so tests do not wait out a real hold. */
+  readonly holdDelay?: number;
+  /** The hold clock, for tests that fire it by hand. */
+  readonly clock?: HoldClock;
+  /** Surface whose native iOS long-press loupe should be suppressed. */
+  readonly touchTarget?: HTMLElement;
+}
+
+export interface PointerPlayHandle {
+  /** Cancels any active gesture and balances every contact, keeping listeners. */
+  reset(): void;
+  /** Cancels state and removes the event listeners. Safe to call more than once. */
+  dispose(): void;
+}
+
 /**
  * Wires the tracker to the play surface.
  *
@@ -778,11 +794,11 @@ export interface PointerBoard {
 export function attachPointerPlay(
   element: HTMLElement,
   board: PointerBoard,
-  /** Injectable so tests do not wait out a real hold. */
-  holdDelay: number = HOLD_MS,
-  /** The hold clock, for tests that fire it by hand. */
-  clock: HoldClock = timeoutClock,
-): () => void {
+  options: PointerPlayOptions = {},
+): PointerPlayHandle {
+  const holdDelay = options.holdDelay ?? HOLD_MS;
+  const clock = options.clock ?? timeoutClock;
+  const touchTarget = options.touchTarget ?? element;
   const chord = new MultiTapTracker();
   const apply = (gesture: Gesture | ChordGesture | null): void => {
     if (!gesture) return;
@@ -892,12 +908,61 @@ export function attachPointerPlay(
     if (chordGesture) apply(chordGesture);
   };
 
+  /** A browser interruption ended one contact without a player command. */
+  const cancelContact = (pointerId: number): void => {
+    chord.cancel(pointerId);
+    const wasActive = pointerId === activeId;
+    if (wasActive) {
+      activeId = null;
+      apply(tracker.cancel());
+    }
+    if (contacts.delete(pointerId)) board.contactUp();
+  };
+
   const onCancel = (event: PointerEvent): void => {
-    chord.cancel(event.pointerId);
-    if (contacts.delete(event.pointerId)) board.contactUp();
-    if (event.pointerId !== activeId) return;
-    activeId = null;
-    apply(tracker.cancel());
+    cancelContact(event.pointerId);
+  };
+
+  const reset = (): void => {
+    // Cancel the primary before lifting contacts: cancelCarry clears any
+    // pending placement gate, then the balanced lifts can safely restart it.
+    if (activeId !== null) {
+      const pointerId = activeId;
+      activeId = null;
+      chord.cancel(pointerId);
+      apply(tracker.cancel());
+      try {
+        element.releasePointerCapture(pointerId);
+      } catch {
+        // Capture may already have been released by the browser.
+      }
+    }
+    for (const pointerId of contacts) {
+      chord.cancel(pointerId);
+      contacts.delete(pointerId);
+      board.contactUp();
+    }
+  };
+
+  const onLostCapture = (event: PointerEvent): void => {
+    // Normal pointerup/pointercancel releases capture after their handlers
+    // have already removed the contact. An early loss must also clear a
+    // secondary finger: it has no drag, but still owns a chord/contact count.
+    if (contacts.has(event.pointerId)) cancelContact(event.pointerId);
+  };
+
+  const onBlur = (): void => reset();
+  const ownerDocument = element.ownerDocument;
+  const ownerWindow = ownerDocument.defaultView;
+  const onVisibilityChange = (): void => {
+    if (ownerDocument.visibilityState === "hidden") reset();
+  };
+
+  const suppressTouchLoupe = (event: TouchEvent): void => {
+    // WebKit's tap-then-hold loupe is separate from the callout CSS and is
+    // suppressed by canceling touchstart. Keep this on the canvas only, so
+    // page controls, fields, and scrolling outside the board retain defaults.
+    if (event.cancelable) event.preventDefault();
   };
 
   const stopContextMenu = (event: Event): void => event.preventDefault();
@@ -905,13 +970,28 @@ export function attachPointerPlay(
   element.addEventListener("pointermove", onMove);
   element.addEventListener("pointerup", onUp);
   element.addEventListener("pointercancel", onCancel);
+  element.addEventListener("lostpointercapture", onLostCapture);
   element.addEventListener("contextmenu", stopContextMenu);
+  touchTarget.addEventListener("touchstart", suppressTouchLoupe, { passive: false });
+  ownerWindow?.addEventListener("blur", onBlur);
+  ownerDocument.addEventListener("visibilitychange", onVisibilityChange);
 
-  return () => {
-    element.removeEventListener("pointerdown", onDown);
-    element.removeEventListener("pointermove", onMove);
-    element.removeEventListener("pointerup", onUp);
-    element.removeEventListener("pointercancel", onCancel);
-    element.removeEventListener("contextmenu", stopContextMenu);
+  let disposed = false;
+  return {
+    reset,
+    dispose: () => {
+      if (disposed) return;
+      disposed = true;
+      reset();
+      element.removeEventListener("pointerdown", onDown);
+      element.removeEventListener("pointermove", onMove);
+      element.removeEventListener("pointerup", onUp);
+      element.removeEventListener("pointercancel", onCancel);
+      element.removeEventListener("lostpointercapture", onLostCapture);
+      element.removeEventListener("contextmenu", stopContextMenu);
+      touchTarget.removeEventListener("touchstart", suppressTouchLoupe);
+      ownerWindow?.removeEventListener("blur", onBlur);
+      ownerDocument.removeEventListener("visibilitychange", onVisibilityChange);
+    },
   };
 }

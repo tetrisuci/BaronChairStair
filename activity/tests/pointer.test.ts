@@ -814,7 +814,209 @@ describe("the pointer adapter", () => {
     node.dispatchEvent(pointer("pointerup", 45, 65));
     expect(calls).toEqual(["grab", "carry:1,0", "carry:1,-3", "settle"]);
 
-    detach();
+    detach.dispose();
+  });
+
+  test("touch defaults are canceled on the board only, while game gestures still work", async () => {
+    const { attachPointerPlay } = await import("../client/src/game/pointer");
+    const stage = element();
+    const canvas = window.document.createElement("canvas") as unknown as HTMLElement;
+    stage.append(canvas as unknown as Node);
+    const calls: string[] = [];
+    const fake = fakeClock();
+    const play = attachPointerPlay(
+      stage,
+      {
+        sampleAt: () => at(3, 4),
+        grabBase: () => calls.push("grab"),
+        carryAt: () => calls.push("carry"),
+        settleAt: () => calls.push("settle"),
+        contactDown: () => {},
+        contactUp: () => {},
+        slamDrop: () => calls.push("slam"),
+        cancelCarry: () => calls.push("cancelCarry"),
+        rotate: () => calls.push("rotate"),
+        hold: () => calls.push("hold"),
+        undo: () => calls.push("undo"),
+        redo: () => calls.push("redo"),
+      },
+      { holdDelay: 20, clock: fake.clock, touchTarget: canvas },
+    );
+
+    const boardTouch = new window.Event("touchstart", { bubbles: true, cancelable: true });
+    canvas.dispatchEvent(boardTouch as unknown as Event);
+    expect(boardTouch.defaultPrevented).toBe(true);
+    const stageMarginTouch = new window.Event("touchstart", { bubbles: true, cancelable: true });
+    stage.dispatchEvent(stageMarginTouch as unknown as Event);
+    expect(stageMarginTouch.defaultPrevented).toBe(false);
+
+    stage.dispatchEvent(pointer("pointerdown", 10, 10));
+    stage.dispatchEvent(pointer("pointerup", 10, 10));
+    expect(calls).toEqual(["rotate"]);
+    calls.length = 0;
+    stage.dispatchEvent(pointer("pointerdown", 10, 10));
+    fake.fire(2);
+    expect(calls).toEqual(["hold"]);
+    stage.dispatchEvent(pointer("pointerup", 10, 10));
+    play.dispose();
+  });
+
+  test("unexpected capture loss cancels the carry and the next pointer is fresh", async () => {
+    const { attachPointerPlay } = await import("../client/src/game/pointer");
+    const node = element();
+    node.getBoundingClientRect = () => ({ left: 0, top: 0 }) as DOMRect;
+    const calls: string[] = [];
+    let contacts = 0;
+    const play = attachPointerPlay(node, {
+      sampleAt: (x) => ({ column: x / 10, row: 4 }),
+      grabBase: () => calls.push("grab"),
+      carryAt: () => calls.push("carry"),
+      settleAt: () => calls.push("settle"),
+      contactDown: () => contacts++,
+      contactUp: () => contacts--,
+      slamDrop: () => calls.push("slam"),
+      cancelCarry: () => calls.push("cancelCarry"),
+      rotate: () => calls.push("rotate"),
+      hold: () => calls.push("hold"),
+      undo: () => calls.push("undo"),
+      redo: () => calls.push("redo"),
+    });
+
+    node.dispatchEvent(pointer("pointerdown", 10, 10, { pointerId: 1 }));
+    node.dispatchEvent(pointer("pointermove", 30, 10, { pointerId: 1 }));
+    node.dispatchEvent(pointer("lostpointercapture", 30, 10, { pointerId: 1 }));
+    expect(calls).toEqual(["grab", "carry", "cancelCarry"]);
+    expect(contacts).toBe(0);
+
+    node.dispatchEvent(pointer("pointerdown", 10, 10, { pointerId: 2 }));
+    node.dispatchEvent(pointer("pointerup", 10, 10, { pointerId: 2 }));
+    expect(calls.at(-1)).toBe("rotate");
+    expect(contacts).toBe(0);
+    // Browsers normally report capture loss after pointerup. It must not
+    // cancel or otherwise change the already completed tap.
+    node.dispatchEvent(pointer("lostpointercapture", 10, 10, { pointerId: 2 }));
+    expect(calls.at(-1)).toBe("rotate");
+    play.dispose();
+  });
+
+  test("pointer cancellation balances the contact and leaves the next tap usable", async () => {
+    const { attachPointerPlay } = await import("../client/src/game/pointer");
+    const node = element();
+    node.getBoundingClientRect = () => ({ left: 0, top: 0 }) as DOMRect;
+    const calls: string[] = [];
+    let contacts = 0;
+    const play = attachPointerPlay(node, {
+      sampleAt: () => at(3, 4),
+      grabBase: () => calls.push("grab"),
+      carryAt: () => calls.push("carry"),
+      settleAt: () => calls.push("settle"),
+      contactDown: () => contacts++,
+      contactUp: () => contacts--,
+      slamDrop: () => calls.push("slam"),
+      cancelCarry: () => calls.push("cancelCarry"),
+      rotate: () => calls.push("rotate"),
+      hold: () => calls.push("hold"),
+      undo: () => calls.push("undo"),
+      redo: () => calls.push("redo"),
+    });
+
+    node.dispatchEvent(pointer("pointerdown", 10, 10, { pointerId: 1 }));
+    node.dispatchEvent(pointer("pointercancel", 10, 10, { pointerId: 1 }));
+    expect(calls).toEqual(["cancelCarry"]);
+    expect(contacts).toBe(0);
+    node.dispatchEvent(pointer("pointerdown", 10, 10, { pointerId: 2 }));
+    node.dispatchEvent(pointer("pointerup", 10, 10, { pointerId: 2 }));
+    expect(calls.at(-1)).toBe("rotate");
+    expect(contacts).toBe(0);
+    play.dispose();
+  });
+
+  test("capture loss clears a secondary contact from the chord and run", async () => {
+    const { attachPointerPlay } = await import("../client/src/game/pointer");
+    const node = element();
+    const calls: string[] = [];
+    let contacts = 0;
+    const play = attachPointerPlay(node, {
+      sampleAt: () => at(3, 4),
+      grabBase: () => calls.push("grab"),
+      carryAt: () => calls.push("carry"),
+      settleAt: () => calls.push("settle"),
+      contactDown: () => contacts++,
+      contactUp: () => contacts--,
+      slamDrop: () => calls.push("slam"),
+      cancelCarry: () => calls.push("cancelCarry"),
+      rotate: () => calls.push("rotate"),
+      hold: () => calls.push("hold"),
+      undo: () => calls.push("undo"),
+      redo: () => calls.push("redo"),
+    });
+
+    node.dispatchEvent(pointer("pointerdown", 10, 10, { pointerId: 1 }));
+    node.dispatchEvent(pointer("pointerdown", 20, 20, { pointerId: 2 }));
+    node.dispatchEvent(pointer("lostpointercapture", 20, 20, { pointerId: 2 }));
+    expect(contacts).toBe(1);
+    node.dispatchEvent(pointer("pointerup", 10, 10, { pointerId: 1 }));
+    expect(contacts).toBe(0);
+
+    node.dispatchEvent(pointer("pointerdown", 30, 30, { pointerId: 3 }));
+    node.dispatchEvent(pointer("pointerup", 30, 30, { pointerId: 3 }));
+    expect(calls).toEqual(["rotate"]);
+    expect(contacts).toBe(0);
+    play.dispose();
+  });
+
+  test("reset, blur and page hiding clear every contact and allow another gesture", async () => {
+    const { attachPointerPlay } = await import("../client/src/game/pointer");
+    const node = element();
+    node.getBoundingClientRect = () => ({ left: 0, top: 0 }) as DOMRect;
+    const calls: string[] = [];
+    let contacts = 0;
+    const play = attachPointerPlay(node, {
+      sampleAt: () => at(3, 4),
+      grabBase: () => calls.push("grab"),
+      carryAt: () => calls.push("carry"),
+      settleAt: () => calls.push("settle"),
+      contactDown: () => contacts++,
+      contactUp: () => contacts--,
+      slamDrop: () => calls.push("slam"),
+      cancelCarry: () => calls.push("cancelCarry"),
+      rotate: () => calls.push("rotate"),
+      hold: () => calls.push("hold"),
+      undo: () => calls.push("undo"),
+      redo: () => calls.push("redo"),
+    });
+
+    node.dispatchEvent(pointer("pointerdown", 10, 10, { pointerId: 1 }));
+    node.dispatchEvent(pointer("pointerdown", 20, 20, { pointerId: 2 }));
+    play.reset();
+    expect(contacts).toBe(0);
+    node.dispatchEvent(pointer("pointerdown", 10, 10, { pointerId: 3 }));
+    node.dispatchEvent(pointer("pointerup", 10, 10, { pointerId: 3 }));
+    expect(calls.at(-1)).toBe("rotate");
+
+    node.dispatchEvent(pointer("pointerdown", 10, 10, { pointerId: 4 }));
+    window.dispatchEvent(new window.Event("blur"));
+    expect(contacts).toBe(0);
+    node.dispatchEvent(pointer("pointerdown", 10, 10, { pointerId: 5 }));
+    node.dispatchEvent(pointer("pointerup", 10, 10, { pointerId: 5 }));
+    expect(calls.at(-1)).toBe("rotate");
+
+    Object.defineProperty(window.document, "visibilityState", {
+      configurable: true,
+      value: "hidden",
+    });
+    node.dispatchEvent(pointer("pointerdown", 10, 10, { pointerId: 6 }));
+    window.document.dispatchEvent(new window.Event("visibilitychange"));
+    expect(contacts).toBe(0);
+    Object.defineProperty(window.document, "visibilityState", {
+      configurable: true,
+      value: "visible",
+    });
+    node.dispatchEvent(pointer("pointerdown", 10, 10, { pointerId: 7 }));
+    node.dispatchEvent(pointer("pointerup", 10, 10, { pointerId: 7 }));
+    expect(calls.at(-1)).toBe("rotate");
+    expect(contacts).toBe(0);
+    play.dispose();
   });
 
   test("a touch carries 1.5×, a mouse 1:1, through the same sample map", async () => {
@@ -866,7 +1068,7 @@ describe("the pointer adapter", () => {
     node.dispatchEvent(pointer("pointermove", 25, 45, { pointerType: "touch" }));
     expect(calls).toEqual(["grab", "carry:0,-1", "carry:58,-1", "carry:0,-1"]);
 
-    detach();
+    detach.dispose();
   });
 
   test("a tap never grabs, lifted or not", async () => {
@@ -891,7 +1093,7 @@ describe("the pointer adapter", () => {
     node.dispatchEvent(pointer("pointerdown", 10, 10));
     node.dispatchEvent(pointer("pointerup", 10, 10));
     expect(calls).toEqual(["rotate"]);
-    detach();
+    detach.dispose();
   });
 
   test("a fast downward flick slams on the lift", async () => {
@@ -921,7 +1123,7 @@ describe("the pointer adapter", () => {
     node.dispatchEvent(pointer("pointermove", 25, 145));
     node.dispatchEvent(pointer("pointerup", 25, 145));
     expect(calls).toEqual(["grab", "carry:0,-9", "slam"]);
-    detach();
+    detach.dispose();
   });
 
   test("a two-finger tap is an undo, not a rotate and not two gestures", async () => {
@@ -952,7 +1154,7 @@ describe("the pointer adapter", () => {
     // The chord is the whole meaning of those two fingers: one undo, and the
     // rotation the primary's tap would otherwise also fire is dropped.
     expect(calls).toEqual(["undo"]);
-    detach();
+    detach.dispose();
   });
 
   test("the primary lifting first still completes the chord", async () => {
@@ -980,7 +1182,7 @@ describe("the pointer adapter", () => {
     node.dispatchEvent(pointer("pointerup", 30, 30, { pointerId: 2 }));
     node.dispatchEvent(pointer("pointerup", 10, 10, { pointerId: 1 }));
     expect(calls).toEqual(["undo"]);
-    detach();
+    detach.dispose();
   });
 
   test("a three-finger tap is a redo", async () => {
@@ -1010,7 +1212,7 @@ describe("the pointer adapter", () => {
       node.dispatchEvent(pointer("pointerup", 10 * id, 10, { pointerId: id }));
     }
     expect(calls).toEqual(["redo"]);
-    detach();
+    detach.dispose();
   });
 
   test("a chord works with every finger off the board", async () => {
@@ -1039,7 +1241,7 @@ describe("the pointer adapter", () => {
     node.dispatchEvent(pointer("pointerup", 5, 400, { pointerId: 1 }));
     node.dispatchEvent(pointer("pointerup", 60, 400, { pointerId: 2 }));
     expect(calls).toEqual(["undo"]);
-    detach();
+    detach.dispose();
   });
 
   test("a drag with a second finger resting settles instead of undoing", async () => {
@@ -1069,7 +1271,7 @@ describe("the pointer adapter", () => {
     node.dispatchEvent(pointer("pointerup", 30, 30, { pointerId: 2 }));
     // The primary was playing, not tapping: the drag lands, the chord is void.
     expect(calls).toEqual(["grab", "carry:3,0", "settle"]);
-    detach();
+    detach.dispose();
   });
 
   test("two fingers resting together are not a long-press", async () => {
@@ -1094,8 +1296,7 @@ describe("the pointer adapter", () => {
         undo: () => calls.push("undo"),
         redo: () => calls.push("redo"),
       },
-      HOLD_MS,
-      fake.clock,
+      { holdDelay: HOLD_MS, clock: fake.clock },
     );
 
     node.dispatchEvent(pointer("pointerdown", 10, 10, { pointerId: 1 }));
@@ -1111,7 +1312,7 @@ describe("the pointer adapter", () => {
     node.dispatchEvent(pointer("pointerup", 10, 10, { pointerId: 1 }));
     node.dispatchEvent(pointer("pointerup", 30, 30, { pointerId: 2 }));
     expect(calls).toEqual(["hold"]);
-    detach();
+    detach.dispose();
   });
 
   test("the context menu is suppressed", async () => {
@@ -1141,6 +1342,6 @@ describe("the pointer adapter", () => {
     });
     node.dispatchEvent(event as unknown as Event);
     expect(defaultPrevented).toBe(true);
-    detach();
+    detach.dispose();
   });
 });

@@ -101,6 +101,7 @@ function harness() {
     daily: { day: 281, puzzles: [{ tier: "easy", puzzle: puzzle(22), run: null, solution: null }], streak: 0 },
     dailyTier: "easy", run: null, rush: null, duel: null, duelTick: null, builder: null,
     solutionPlayer: null, deck, stage: node(),
+    pointerPlay: { reset() {}, dispose() {} },
     connection: {
       player: { id: "reader" },
       api: {

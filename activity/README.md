@@ -984,6 +984,12 @@ placement exactly like a typed one, and a square reachable only by a kick is
 placed with the kick that reaches it — the spin credit follows the route, not
 the finger.
 
+On iPhone, the board keeps the system's magnified touch loupe from covering a
+tap-and-hold, while the game's own hold-to-swap remains available. If the
+browser or app interrupts a drag, the preview is canceled and the next touch
+starts a fresh gesture; restarting or reopening a puzzle also clears any old
+contact state.
+
 A kick or tuck reaches its seat by descending mid-route, and the drag
 delivers that descent at whatever rate the slider sets (`Settings > sdf`): the
 key stays down for as many frames as the drop needs, so at the default

@@ -2,6 +2,12 @@
   "$comment": "The project's version and its player-facing release notes. Newest first; order in this list IS the version order. Read by client/changelog.py for /puzzle changelog, requested privately. Adding a release means putting it at the top. Keep `changes` to things a player can see.",
   "releases": [
     {
+      "version": "beta 0.25",
+      "changes": [
+        "**Board touch controls recover cleanly when a gesture is interrupted.** If the app loses a finger mid-drag or is backgrounded, the piece and touch state reset; the next tap, drag or hold works normally, including after restarting or reopening a puzzle. On iPhone, the board also suppresses the system's magnified loupe during a tap-and-hold while keeping the game's hold gesture."
+      ]
+    },
+    {
       "version": "beta 0.24",
       "changes": [
         "**A dropped duel connection during a server handover now ends the match without a winner.** The other player is told the server is updating. Using the Leave command still forfeits the match.",
